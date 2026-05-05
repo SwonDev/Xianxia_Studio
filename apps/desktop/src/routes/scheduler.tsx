@@ -98,14 +98,17 @@ function SchedulerRoute() {
               <div
                 key={i}
                 className={cn(
-                  'min-h-[88px] p-2 rounded-md border flex flex-col gap-1',
+                  'min-h-[88px] p-2 rounded-md flex flex-col gap-1',
                   day
-                    ? isToday
-                      ? 'border-gold-500/50 bg-gold-500/5'
-                      : isOptimal
-                      ? 'border-jade-500/20 bg-jade-700/5'
-                      : 'border-border/30 bg-obsidian-800/30'
-                    : 'border-transparent',
+                    ? cn(
+                        'border',
+                        isToday
+                          ? 'border-gold-500/50 bg-gold-500/5'
+                          : isOptimal
+                          ? 'border-jade-500/20 bg-jade-700/5'
+                          : 'border-border/30 bg-obsidian-800/30',
+                      )
+                    : 'opacity-0 pointer-events-none',
                 )}
               >
                 {day && (

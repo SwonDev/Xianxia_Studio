@@ -172,6 +172,8 @@ function Row({ label, value, mono, highlight }: { label: string; value: string; 
   );
 }
 
+// SettingsRoute is the named export above. Helpers below.
+
 function VerifyStackPanel() {
   const { data: report, isFetching, refetch } = useQuery({
     queryKey: ['verify-stack'],

@@ -23,7 +23,7 @@ const TOPIC_PRESETS = [
 ];
 
 const PHASES = [
-  { phase: 1, label: 'Guion', icon: Type, hint: 'Generación con Gemma 3' },
+  { phase: 1, label: 'Guion', icon: Type, hint: 'Generación con Gemma 4' },
   { phase: 2, label: 'Metadatos', icon: Type, hint: 'Título, descripción, tags' },
   { phase: 3, label: 'Voz', icon: Volume2, hint: 'Qwen3-TTS' },
   { phase: 4, label: 'Imágenes', icon: ImageIcon, hint: 'Z-Image-Turbo' },
@@ -167,15 +167,24 @@ function GeneratorWizard() {
           </Field>
 
           <Field label="Voz narradora">
-            <select
-              value={voice}
-              onChange={(e) => setVoice(e.target.value)}
-              className="w-full bg-obsidian-800 border border-border/50 rounded-md px-3 py-2 text-paper-100"
-            >
-              {['Vivian', 'Serena', 'Eric', 'Dylan', 'Aiden', 'Ryan'].map((v) => (
-                <option key={v} value={v}>{v}</option>
-              ))}
-            </select>
+            <div className="relative">
+              <select
+                value={voice}
+                onChange={(e) => setVoice(e.target.value)}
+                className="w-full appearance-none bg-obsidian-800 border border-border/50 rounded-md pl-3 pr-9 py-2 text-paper-100 text-sm focus:outline-none focus:border-gold-500 focus:ring-2 focus:ring-gold-500/20 cursor-pointer"
+              >
+                {['Vivian', 'Serena', 'Eric', 'Dylan', 'Aiden', 'Ryan'].map((v) => (
+                  <option key={v} value={v} className="bg-obsidian-800 text-paper-100">{v}</option>
+                ))}
+              </select>
+              <svg
+                aria-hidden="true"
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gold-400"
+                viewBox="0 0 16 16" fill="none"
+              >
+                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </div>
           </Field>
 
           <Toggle

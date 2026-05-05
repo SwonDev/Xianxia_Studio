@@ -77,13 +77,13 @@ function ProjectCard({ project }: { project: Project }) {
     }
   })();
   return (
-    <article className="rounded-lg border border-border/50 bg-card/60 p-5 hover:border-gold-500/40 transition-colors duration-200">
-      <header className="flex items-start justify-between mb-3">
-        <h3 className="font-display text-lg font-medium leading-snug line-clamp-2">{project.title}</h3>
+    <article className="rounded-lg border border-border/50 bg-card/60 p-5 hover:border-gold-500/40 transition-colors duration-200 flex flex-col h-full min-h-[170px]">
+      <header className="flex items-start justify-between gap-3 mb-3">
+        <h3 className="font-display text-lg font-medium leading-snug line-clamp-2 min-h-[3.2em]">{project.title}</h3>
         <Badge tone={status.tone}>{status.label}</Badge>
       </header>
-      <p className="text-xs text-paper-300 line-clamp-2 mb-4">{project.topic}</p>
-      <div className="flex items-center gap-4 text-[11px] text-paper-300">
+      <p className="text-xs text-paper-300 line-clamp-2 mb-4 flex-1">{project.topic}</p>
+      <div className="flex items-center gap-4 text-[11px] text-paper-300 mt-auto pt-2 border-t border-border/30">
         {project.duration_seconds && (
           <span className="flex items-center gap-1">
             <Clock className="w-3 h-3" />

@@ -21,6 +21,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,md,json,yaml,yml}\""
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/node": "^22.10.0",
     "prettier": "^3.4.2",
     "sharp": "^0.34.5"
