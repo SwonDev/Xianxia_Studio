@@ -28,6 +28,8 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from ..codec import best_video_encoder
+
 from ..models import whisper_model
 
 router = APIRouter()
@@ -184,13 +186,29 @@ def burn_in(req: BurnInRequest) -> BurnInResponse:
     video_path = Path(req.video_path).resolve()
     out_path = Path(req.out_path).resolve()
     cwd = ass_path.parent
+    enc = best_video_encoder()
+    if enc.codec_name == "libx264":
+        encode_args = ["-preset", req.preset, "-crf", str(req.crf)]
+    else:
+        encode_args = enc.ffmpeg_args
+
+    # Hardware-accelerated DECODE before the subtitles filter for GPU encoders.
+    # libass is CPU-only by design, so we copy frames CPU↔GPU only once.
+    decode_args: list[str] = []
+    if enc.codec_name == "h264_nvenc":
+        decode_args = ["-hwaccel", "cuda"]
+    elif enc.codec_name == "h264_qsv":
+        decode_args = ["-hwaccel", "qsv"]
+    elif enc.codec_name == "h264_amf":
+        decode_args = ["-hwaccel", "d3d11va"]
+
     cmd = [
         "ffmpeg", "-y",
+        *decode_args,
         "-i", str(video_path),
         "-vf", f"subtitles={ass_path.name}",
-        "-c:v", "libx264",
-        "-preset", req.preset,
-        "-crf", str(req.crf),
+        "-c:v", enc.codec_name,
+        *encode_args,
         "-c:a", "copy",
         str(out_path),
     ]
@@ -260,31 +278,54 @@ def _entries_to_srt(entries) -> str:
 
 
 async def _translate_entries(entries, target: str, model: str):
-    out = []
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        for start, end, body in entries:
-            prompt = (
-                f"Translate the following English narration sentence into {target}. "
-                f"Output ONLY the translation, no preamble, no explanation, "
-                f"no quotation marks. Keep the cinematic xianxia register.\n\n"
-                f"English: {body}\n{target}:"
-            )
+    """Translate SRT entries via Ollama, overriding the model's SYSTEM prompt.
+
+    The xianxia-llm Modelfile baked in a Spanish-leaning narrator system that
+    causes the abliterated model to return empty strings for some target
+    languages (notably CJK). We override `system` per-request to a generic
+    translator instruction so the model focuses on the translation task.
+
+    Concurrency: defaults to 1 because Ollama on 8 GB VRAM hosts overflows to
+    CPU at OLLAMA_NUM_PARALLEL>=2 with this model (>50 % slowdown per slot).
+    Tune via env XIANXIA_TRANSLATE_CONCURRENCY when running on bigger cards.
+    """
+    import asyncio
+
+    conc = int(os.environ.get("XIANXIA_TRANSLATE_CONCURRENCY", "1"))
+    sem = asyncio.Semaphore(conc)
+    translator_system = (
+        "You are a professional cinematic translator for xianxia and wuxia "
+        "narration. Output ONLY the requested translation. No preamble, no "
+        "notes, no explanation, no quotation marks."
+    )
+
+    async def translate_one(client, start, end, body):
+        async with sem:
+            prompt = f'Translate this English text to {target}:\n\n"{body}"'
             r = await client.post(
                 f"{OLLAMA_URL}/api/generate",
                 json={
                     "model": model,
+                    "system": translator_system,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.3, "num_ctx": 2048},
+                    "options": {"temperature": 0.3, "num_ctx": 1024, "num_predict": 256},
                 },
             )
             r.raise_for_status()
             t = r.json().get("response", "").strip()
-            t = re.sub(r"^[\"'`]+|[\"'`]+$", "", t)
-            t = re.sub(r"^[A-Za-z一-鿿]+\s*[:：]\s*", "", t)
-            t = t.split("\n")[0].strip()
-            out.append((start, end, t))
-    return out
+            # Strip surrounding quotes (any flavour)
+            t = t.strip("\"'`“”‘’「」 ")
+            # Take first non-empty line
+            for line in t.split("\n"):
+                if line.strip():
+                    return start, end, line.strip().strip("\"'`“”‘’「」 ")
+            return start, end, t
+
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        coros = [translate_one(client, s, e, b) for s, e, b in entries]
+        results = await asyncio.gather(*coros)
+    return list(results)
 
 
 def _ass_header(font: str, size: int) -> str:

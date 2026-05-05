@@ -101,16 +101,21 @@ async def generate_shorts(req: ShortsRequest) -> ShortsResponse:
         hook = pick.get("hook", "")
         score = float(pick.get("score", 0.5))
         out_path = out_dir / f"short-{i:02d}-{uuid.uuid4().hex[:6]}.mp4"
-        # FFmpeg cut + crop to 9:16. Subject tracking happens in Node sidecar (HyperFrames).
+        # GPU-accelerated cut + crop+scale to 9:16. NVENC for encode + cuda
+        # decode (when available) keeps the whole pipeline on the GPU bus.
+        from ..codec import best_video_encoder
+        enc = best_video_encoder()
+        decode_args = ["-hwaccel", "cuda"] if enc.codec_name == "h264_nvenc" else []
+        encode_args = enc.ffmpeg_args if enc.codec_name != "libx264" else ["-preset", "medium", "-crf", "20"]
         cmd = [
-            "ffmpeg",
-            "-y",
+            "ffmpeg", "-y",
+            *decode_args,
             "-ss", f"{start:.3f}",
             "-to", f"{end:.3f}",
             "-i", req.video_path,
             "-vf", "crop=ih*9/16:ih,scale=1080:1920",
-            "-c:v", "libx264",
-            "-preset", "medium",
+            "-c:v", enc.codec_name,
+            *encode_args,
             "-c:a", "aac",
             str(out_path),
         ]

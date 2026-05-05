@@ -206,7 +206,7 @@ fn recommend_models(gpu: &Option<GpuInfo>, total_ram_gb: f64) -> ModelRecommenda
             tier: "high".to_string(),
             estimated_download_gb: 28.0,
         }
-    } else if vram >= 6.0 {
+    } else if vram >= 8.0 {
         ModelRecommendation {
             llm_hf_repo: "mradermacher/supergemma4-e4b-abliterated-i1-GGUF".to_string(),
             llm_gguf_file: "supergemma4-e4b-abliterated.i1-Q4_K_M.gguf".to_string(),
@@ -216,6 +216,19 @@ fn recommend_models(gpu: &Option<GpuInfo>, total_ram_gb: f64) -> ModelRecommenda
             tts: "qwen3-tts-1.7b".to_string(),
             tier: "medium".to_string(),
             estimated_download_gb: 14.5,
+        }
+    } else if vram >= 6.0 {
+        // 6-8 GB VRAM: same E4B model but recommend smaller TTS so the LLM
+        // can run with OLLAMA_NUM_PARALLEL=2 without overflowing to CPU.
+        ModelRecommendation {
+            llm_hf_repo: "mradermacher/supergemma4-e4b-abliterated-i1-GGUF".to_string(),
+            llm_gguf_file: "supergemma4-e4b-abliterated.i1-Q4_K_M.gguf".to_string(),
+            llm_label: "Gemma 4 E4B abliterated".to_string(),
+            llm_abliterated: true,
+            image: "z-image-turbo-gguf-q8".to_string(),
+            tts: "qwen3-tts-0.6b".to_string(),
+            tier: "medium-low".to_string(),
+            estimated_download_gb: 12.0,
         }
     } else if vram >= 3.0 || total_ram_gb >= 16.0 {
         ModelRecommendation {
