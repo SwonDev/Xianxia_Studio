@@ -6,7 +6,7 @@ import {
   AlertTriangle, Cpu, Youtube, Database, Bot, Download, Link2, Unlink, KeyRound, ShieldCheck, RefreshCw, CheckCircle2, XCircle,
 } from 'lucide-react';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
-import { tauri, events } from '@/lib/tauri';
+import { tauri, events, type CheckItem } from '@/lib/tauri';
 import { cn } from '@/lib/utils';
 
 export const Route = createFileRoute('/settings')({
@@ -180,16 +180,33 @@ function VerifyStackPanel() {
     queryFn: tauri.verifyStack,
     refetchInterval: 15000,
   });
+
+  // Group checks by their `group` field for cleaner display
+  const grouped = (report?.checks ?? []).reduce<Record<string, CheckItem[]>>((acc, c) => {
+    const g = c.group || 'Otros';
+    (acc[g] = acc[g] || []).push(c);
+    return acc;
+  }, {});
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-sm text-paper-300">
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-sm">
           {report?.all_ok ? (
-            <span className="text-jade-300">Todos los componentes operativos.</span>
+            <span className="text-jade-300 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4" />
+              Todos los componentes operativos
+            </span>
+          ) : report?.summary ? (
+            <span className="text-paper-300">
+              {report.summary.models_ready_count}/{report.summary.models_total} modelos listos ·{' '}
+              {report.summary.gpu_available ? '🟢 GPU' : '⚪ CPU'} ·{' '}
+              {report.summary.video_hw_accelerated ? '🟢 HW codec' : '⚪ libx264'}
+            </span>
           ) : (
-            'Algunos componentes no están listos. Reabre el instalador si faltan.'
+            <span className="text-paper-300">Verificando…</span>
           )}
-        </p>
+        </div>
         <button
           onClick={() => refetch()}
           disabled={isFetching}
@@ -199,21 +216,29 @@ function VerifyStackPanel() {
           Re-verificar
         </button>
       </div>
-      <ul className="space-y-1.5">
-        {report?.checks.map((c) => (
-          <li key={c.id} className="flex items-center gap-3 text-sm py-1.5 border-b border-border/30 last:border-0">
-            {c.ok ? (
-              <CheckCircle2 className="w-4 h-4 text-jade-400 shrink-0" />
-            ) : (
-              <XCircle className="w-4 h-4 text-crimson-400 shrink-0" />
-            )}
-            <span className="flex-1 min-w-0">{c.label}</span>
-            <span className="text-[11px] text-paper-300 truncate max-w-[280px]" title={c.detail}>
-              {c.detail}
-            </span>
-          </li>
-        ))}
-      </ul>
+
+      {Object.entries(grouped).map(([groupName, items]) => (
+        <div key={groupName} className="mb-4 last:mb-0">
+          <h3 className="text-[10.5px] uppercase tracking-[0.2em] text-paper-300 font-medium mb-2">
+            {groupName}
+          </h3>
+          <ul className="space-y-1.5">
+            {items.map((c) => (
+              <li key={c.id} className="flex items-center gap-3 text-sm py-1.5 border-b border-border/20 last:border-0">
+                {c.ok ? (
+                  <CheckCircle2 className="w-4 h-4 text-jade-400 shrink-0" />
+                ) : (
+                  <XCircle className="w-4 h-4 text-paper-400 shrink-0" />
+                )}
+                <span className="flex-1 min-w-0">{c.label}</span>
+                <span className="text-[11px] text-paper-300 truncate max-w-[320px]" title={c.detail}>
+                  {c.detail}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
     </div>
   );
 }

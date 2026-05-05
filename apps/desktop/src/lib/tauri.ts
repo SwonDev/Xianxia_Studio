@@ -80,11 +80,25 @@ export interface CheckItem {
   label: string;
   ok: boolean;
   detail: string;
+  group: string;
+}
+
+export interface StackSummary {
+  gpu_available: boolean;
+  video_hw_accelerated: boolean;
+  ollama_running: boolean;
+  xianxia_llm_registered: boolean;
+  sidecar_python_running: boolean;
+  sidecar_node_running: boolean;
+  comfyui_running: boolean;
+  models_ready_count: number;
+  models_total: number;
 }
 
 export interface StackReport {
   all_ok: boolean;
   checks: CheckItem[];
+  summary: StackSummary;
 }
 
 export interface AppCredentialsStatus {
