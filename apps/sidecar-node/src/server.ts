@@ -1,5 +1,12 @@
 import Fastify from 'fastify';
-import { renderNarrative, renderShort, renderThumbnail } from './render.js';
+import {
+  renderNarrative,
+  renderShort,
+  renderThumbnail,
+  type AtmosphericFx,
+  type Transition,
+} from './render.js';
+import type { CinematicProfile } from './effects.js';
 import { logger } from './logger.js';
 
 // Fastify v5: use `loggerInstance` to pass a pre-built logger; `logger` only
@@ -16,13 +23,25 @@ app.post<{
   Body: {
     project_id: string;
     title: string;
-    images: { path: string; start: number; duration: number }[];
+    images: {
+      path: string;
+      foreground_path?: string;
+      mid_path?: string;
+      start: number;
+      duration: number;
+      fx?: AtmosphericFx;
+      transition?: Transition;
+      light_rays?: boolean;
+    }[];
     narration_path: string;
     music_path?: string;
     out_path: string;
     width?: number;
     height?: number;
     fps?: number;
+    cinematic?: CinematicProfile;
+    music_volume?: number;
+    music_ducking?: boolean;
   };
 }>('/render/narrative', async (req) => {
   const result = await renderNarrative(req.body);

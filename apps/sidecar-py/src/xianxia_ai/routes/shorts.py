@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..codec import best_video_encoder
+from ..effects import EffectsConfig, cinematic_look_filters
 from ..prompts import SHORTS_DETECTION_PROMPT
 
 router = APIRouter()
@@ -47,6 +48,7 @@ class ShortsRequest(BaseModel):
     subject_tracking: bool = True
     burn_subtitles: bool = True
     audio_ducking: bool = True
+    cinematic: str = "light"  # "off" | "light" | "full" (light is best for shorts)
 
 
 class ShortClip(BaseModel):
@@ -140,6 +142,7 @@ async def generate_shorts(req: ShortsRequest) -> ShortsResponse:
                 subject_tracking=req.subject_tracking,
                 burn_subtitles=req.burn_subtitles,
                 audio_ducking=req.audio_ducking,
+                cinematic_profile=req.cinematic,
             )
         except Exception as e:
             raise HTTPException(500, f"render short {i+1} failed: {e}") from e
@@ -214,6 +217,7 @@ def _render_short(
     subject_tracking: bool,
     burn_subtitles: bool,
     audio_ducking: bool,
+    cinematic_profile: str = "light",
 ) -> None:
     """Cut + reframe + burn-in pipeline for a single short.
 
@@ -261,8 +265,19 @@ def _render_short(
         # Light de-essing + dynamic range compression that keeps narration on top
         audio_filter = "loudnorm=I=-16:LRA=11:TP=-1.5"
 
-    # ── Final ffmpeg: scale to 1080x1920, burn subs, NVENC encode ──
-    vf = f"{crop_filter},scale=1080:1920,subtitles={ass_path.name}:fontsdir=."
+    # ── Final ffmpeg: scale to 1080x1920, cinematic look, burn subs, NVENC ──
+    profile = (cinematic_profile or "light").lower()
+    if profile == "off":
+        cine_filters: list[str] = []
+    elif profile == "full":
+        cine_filters = cinematic_look_filters(EffectsConfig())
+    else:
+        cine_filters = cinematic_look_filters(EffectsConfig.light())
+
+    vf_parts = [crop_filter, "scale=1080:1920", *cine_filters]
+    if ass_path.exists():
+        vf_parts.append(f"subtitles={ass_path.name}:fontsdir=.")
+    vf = ",".join(vf_parts)
     decode_args: list[str] = []
     if encoder.codec_name == "h264_nvenc":
         decode_args = ["-hwaccel", "cuda"]

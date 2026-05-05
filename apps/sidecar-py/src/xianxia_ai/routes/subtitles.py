@@ -29,6 +29,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..codec import best_video_encoder
+from ..effects import EffectsConfig, build_video_filter_chain
 
 from ..models import whisper_model
 
@@ -163,11 +164,13 @@ class BurnInRequest(BaseModel):
     out_path: str
     crf: int = 18
     preset: str = "medium"
+    cinematic: str = "full"  # "off" | "light" | "full"
 
 
 class BurnInResponse(BaseModel):
     out_path: str
     bytes: int
+    cinematic_profile: str
 
 
 @router.post("/burn-in", response_model=BurnInResponse)
@@ -202,11 +205,22 @@ def burn_in(req: BurnInRequest) -> BurnInResponse:
     elif enc.codec_name == "h264_amf":
         decode_args = ["-hwaccel", "d3d11va"]
 
+    profile = (req.cinematic or "full").lower()
+    if profile == "off":
+        cfg = EffectsConfig.disabled()
+    elif profile == "light":
+        cfg = EffectsConfig.light()
+    else:
+        cfg = EffectsConfig()
+
+    # Cinematic look applies BEFORE subtitles so karaoke text stays sharp.
+    vf = build_video_filter_chain(cinematic=cfg, subtitles_filename=ass_path.name)
+
     cmd = [
         "ffmpeg", "-y",
         *decode_args,
         "-i", str(video_path),
-        "-vf", f"subtitles={ass_path.name}",
+        "-vf", vf,
         "-c:v", enc.codec_name,
         *encode_args,
         "-c:a", "copy",
@@ -215,7 +229,11 @@ def burn_in(req: BurnInRequest) -> BurnInResponse:
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd))
     if proc.returncode != 0:
         raise HTTPException(500, f"ffmpeg failed: {proc.stderr[-500:]}")
-    return BurnInResponse(out_path=str(out_path), bytes=out_path.stat().st_size)
+    return BurnInResponse(
+        out_path=str(out_path),
+        bytes=out_path.stat().st_size,
+        cinematic_profile=profile,
+    )
 
 
 # ─── Helpers ────────────────────────────────────────────────────────
