@@ -35,6 +35,11 @@ pub fn run() {
             commands::create_project,
             commands::start_generation,
             commands::list_voices,
+            commands::music::music_list_tracks,
+            commands::music::music_add_tracks,
+            commands::music::music_remove_track,
+            commands::music::music_open_folder,
+            commands::music::music_get_dir,
             hardware::detect_hardware,
             hardware::safe_llm_alternative,
             installer::runner::run_install,
@@ -61,6 +66,9 @@ pub fn run() {
                 window.open_devtools();
             }
             tracing::info!("Xianxia Studio starting up");
+
+            // Bootstrap music library (creates dir, seeds from workspace bundle).
+            commands::music::bootstrap();
 
             // Bring up the sidecar supervisor IMMEDIATELY (independent of DB) so
             // the topbar dots and other service-level UI work even if the DB

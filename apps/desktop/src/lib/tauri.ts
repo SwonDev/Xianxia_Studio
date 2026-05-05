@@ -225,7 +225,26 @@ export const tauri = {
   youtubeSetAppCredentials: (clientId: string, clientSecret: string) =>
     invoke<void>('youtube_set_app_credentials', { clientId, clientSecret }),
   youtubeClearAppCredentials: () => invoke<void>('youtube_clear_app_credentials'),
+  // Music library
+  musicListTracks: () => invoke<MusicLibrary>('music_list_tracks'),
+  musicAddTracks: (paths: string[]) => invoke<number>('music_add_tracks', { paths }),
+  musicRemoveTrack: (name: string) => invoke<void>('music_remove_track', { name }),
+  musicOpenFolder: () => invoke<void>('music_open_folder'),
+  musicGetDir: () => invoke<string>('music_get_dir'),
 };
+
+export interface MusicTrack {
+  name: string;
+  path: string;
+  size_bytes: number;
+  duration_seconds: number | null;
+}
+
+export interface MusicLibrary {
+  dir: string;
+  tracks: MusicTrack[];
+  total_bytes: number;
+}
 
 export const events = {
   onInstallProgress: (cb: (p: InstallProgress) => void): Promise<UnlistenFn> =>

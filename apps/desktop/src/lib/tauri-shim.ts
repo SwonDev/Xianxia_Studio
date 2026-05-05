@@ -582,6 +582,14 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
     case 'youtube_app_status':
       return { configured: false, client_id_preview: null } as unknown as T;
 
+    case 'music_list_tracks':
+      return { dir: '(browser shim)', tracks: [], total_bytes: 0 } as unknown as T;
+    case 'music_add_tracks':
+    case 'music_remove_track':
+    case 'music_open_folder':
+    case 'music_get_dir':
+      throw new Error(`'${cmd}' solo disponible en la app Tauri (acceso a filesystem).`);
+
     case 'get_install_manifest':
     case 'run_install':
     case 'install_llm':

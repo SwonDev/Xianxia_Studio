@@ -249,9 +249,12 @@ async fn spawn_python() -> Result<Child> {
     let server = resolve_sidecar("sidecar-py", "server.py")
         .ok_or_else(|| anyhow!("sidecar-py/server.py not found"))?;
     let cwd = server.parent().unwrap().to_path_buf();
-    let assets_music = workspace_root()
-        .map(|w| w.join("assets").join("music"))
-        .unwrap_or_else(|| paths::paths().unwrap().data_dir.join("assets/music"));
+    // Always use the central data_dir music library so the user's added tracks
+    // (via the Settings UI) are visible to the sidecar. The bootstrap step in
+    // commands::music seeds this dir from the workspace bundle on first run.
+    let assets_music = paths::paths()
+        .map(|p| p.data_dir.join("assets").join("music"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("./assets/music"));
     let out_dir = paths::paths()?.data_dir.join("projects");
     let _ = std::fs::create_dir_all(&out_dir);
 
