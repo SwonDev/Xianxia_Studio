@@ -309,14 +309,20 @@ async function runPipeline(project_id: string, args: GenerateArgs): Promise<void
 
     if (beats.length === 0) throw new Error('No image beats produced — script lacks IMAGE markers');
 
-    // Phase 6: Render. Mode selection based on what assets we have:
-    //   - HyperFrames (Node sidecar) when ALL beats have depth layers AND Node is up:
-    //     full effects pack — parallax 2.5D, atmospheric particles, transitions
-    //   - FFmpeg-fast (Python /render) otherwise: 4-6× faster, no parallax/particles,
-    //     but full cinematic look + Ken Burns + crossfade + NVENC
+    // Phase 6: Render. Strategy:
+    //   - When vertical, render HORIZONTAL first (1920×1080) — Z-Image was generated
+    //     horizontally for speed, and rendering horizontal lets the FFmpeg parallax
+    //     2.5D path animate the bg+fg layers without lowvram offload. We then call
+    //     /reframe to produce the 1080×1920 vertical via subject-tracking +
+    //     blur-extend. This preserves composition, no "stretched" feel.
+    //   - HyperFrames (Node) only when all beats have depth layers, Node is up, AND
+    //     we're rendering horizontal (HyperFrames doesn't reframe).
     const allLayered = layeredBeats.every((b) => 'foreground_path' in b && b.foreground_path);
     const nodeUp = await reachable(`${NODE}/health`);
-    const useHyperFrames = allLayered && nodeUp;
+    const useHyperFrames = allLayered && nodeUp && !vertical;
+    // Always render horizontal first when vertical=true; reframe second.
+    const renderW = vertical ? 1920 : W;
+    const renderH = vertical ? 1080 : H;
 
     phase(project_id, 6, 'running', 0.2,
       useHyperFrames
@@ -339,8 +345,8 @@ async function runPipeline(project_id: string, args: GenerateArgs): Promise<void
           images: layeredBeats,
           narration_path: tts.audio_path,
           out_path: renderOut,
-          width: W,
-          height: H,
+          width: renderW,
+          height: renderH,
           fps: 24,
           cinematic: 'full',
           music_ducking: false,
@@ -349,24 +355,52 @@ async function runPipeline(project_id: string, args: GenerateArgs): Promise<void
       );
       videoPath = r.out_path;
     } else {
+      // Pass through foreground_path so FFmpeg parallax 2.5D activates.
       const r = await http<{ video_path: string; render_seconds: number }>(PY, '/render', 'POST', {
-        images: beats.map((b) => ({
+        images: layeredBeats.map((b) => ({
           image_path: b.path,
           start_seconds: b.start,
           duration_seconds: b.duration,
+          foreground_path: 'foreground_path' in b ? (b as { foreground_path?: string }).foreground_path : undefined,
+          transition: b.transition,
         })),
         narration_path: tts.audio_path,
-        width: W,
-        height: H,
+        width: renderW,
+        height: renderH,
         fps: 24,
-        crossfade_seconds: 0.7,
+        crossfade_seconds: 0.9,
         cinematic: 'full',
         music_ducking: false,
+        kenburns_start: 1.00,
+        kenburns_end: 1.10,
       }, 15 * 60_000);
       videoPath = r.video_path;
       renderMs = r.render_seconds * 1000;
     }
     if (!renderMs) renderMs = Date.now() - renderT0;
+
+    // Vertical reframe step (only when vertical=true). Uses /reframe with
+    // MediaPipe subject tracking + blur-extend fallback. Preserves composition.
+    if (vertical) {
+      phase(project_id, 6, 'running', 0.85, 'Reframe vertical 1080×1920 (subject tracking + blur-extend)…');
+      try {
+        const rf = await http<{ out_path: string; method: string; seconds: number }>(
+          PY, '/reframe', 'POST',
+          {
+            video_path: videoPath,
+            out_path: videoPath.replace(/\.mp4$/i, '.vertical.mp4'),
+            target_width: 1080,
+            target_height: 1920,
+            fallback: 'blur-extend',
+            smoothing: 0.10,
+          },
+          10 * 60_000,
+        );
+        videoPath = rf.out_path;
+      } catch {
+        // Reframe failed — fall through with horizontal video; subs phase still runs.
+      }
+    }
     phase(project_id, 6, 'done', 1,
       `${useHyperFrames ? 'HyperFrames' : 'FFmpeg'}: ${baseName(videoPath)} (${(renderMs/1000).toFixed(1)}s)`);
 

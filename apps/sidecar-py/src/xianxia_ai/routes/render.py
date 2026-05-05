@@ -39,6 +39,13 @@ class ImageBeat(BaseModel):
     image_path: str
     start_seconds: float
     duration_seconds: float
+    # Optional 2.5D parallax layers (from /depth/batch). When both fg and image
+    # paths are present, the renderer composes bg+fg with different zoom speeds
+    # for true parallax depth instead of a single-image Ken Burns.
+    foreground_path: str | None = None
+    # Optional per-beat transition kind for the OUTGOING edge:
+    # 'fade' (default), 'fadeblack', 'circleopen', 'wiperight', 'pixelize', 'dissolve'.
+    transition: str | None = None
 
 
 class RenderRequest(BaseModel):
@@ -89,41 +96,93 @@ def render(req: RenderRequest) -> RenderResponse:
     fade = max(0.0, float(req.crossfade_seconds))
     W, H, FPS = int(req.width), int(req.height), int(req.fps)
 
-    # Build FFmpeg inputs: each image looped for its beat duration
+    # Map ImageBeat → FFmpeg input slot. When a beat has foreground_path, we
+    # add TWO inputs (bg + fg) and remember the indices so the filter graph
+    # can composite them. Otherwise just one (the image).
     inputs: list[str] = []
+    beat_slots: list[tuple[int, int | None]] = []  # (bg_idx, fg_idx_or_None)
+    slot = 0
     for b in req.images:
         inputs += ["-loop", "1", "-t", f"{b.duration_seconds:.3f}", "-i", b.image_path]
-    audio_inputs_idx_start = len(req.images)
+        bg_i = slot; slot += 1
+        fg_i: int | None = None
+        if b.foreground_path and Path(b.foreground_path).exists():
+            inputs += ["-loop", "1", "-t", f"{b.duration_seconds:.3f}", "-i", b.foreground_path]
+            fg_i = slot; slot += 1
+        beat_slots.append((bg_i, fg_i))
+
+    audio_idx = slot
     inputs += ["-i", req.narration_path]
-    audio_idx = audio_inputs_idx_start  # narration index
+    slot += 1
+    music_idx: int | None = None
     if req.music_path and Path(req.music_path).exists():
         inputs += ["-i", req.music_path]
-        music_idx = audio_inputs_idx_start + 1
-    else:
-        music_idx = None
+        music_idx = slot; slot += 1
 
-    # Per-clip filter: zoompan (Ken Burns) → scale → setsar → cinematic look
+    # Per-clip filter chain. For 2.5D parallax: bg slow zoom + fg fast zoom,
+    # both with ease-in-out time mapping so motion feels organic. The eased
+    # progress `p` replaces the linear `on/N` so accel/decel curves smoothly.
+    #
+    # Easing function: quadratic ease-in-out
+    #     p_eased = 0.5 - 0.5 * cos(PI * on / N)
+    # (Equivalent to a smoothstep from 0 to 1, no abrupt start/stop.)
     clip_filters: list[str] = []
-    for i, b in enumerate(req.images):
+    for i, (b, (bg_i, fg_i)) in enumerate(zip(req.images, beat_slots)):
         nframes = max(1, int(b.duration_seconds * FPS))
-        if abs(req.kenburns_end - req.kenburns_start) < 1e-3:
-            zp = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
-        else:
-            z_expr = (
-                f"min({req.kenburns_start}+"
-                f"{req.kenburns_end - req.kenburns_start}*on/{nframes},"
-                f"{req.kenburns_end})"
-            )
-            zp = f"zoompan=z='{z_expr}':d={nframes}:s={W}x{H}:fps={FPS}"
-        chain = [zp, "setsar=1", "format=yuv420p"]
-        if cinema_str:
-            chain.append(cinema_str)
-        clip_filters.append(f"[{i}:v]" + ",".join(chain) + f"[c{i}]")
+        ks = req.kenburns_start
+        ke = req.kenburns_end
+        delta = ke - ks
+        # Eased zoom expression as a string-substitution for {p}.
+        # FFmpeg expr supports `cos(x)` and `PI`. Use `min()` clamp at end.
+        eased_z = (
+            f"min({ks}+{delta:.4f}*((1-cos(PI*on/{nframes}))/2),{ke})"
+        )
+        flat_z = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
 
-    # xfade chain: c0 + c1 → x1, x1 + c2 → x2, ..., last → vfinal
+        if fg_i is not None:
+            # 2.5D parallax: bg with reduced delta (60%), fg with boosted delta (140%)
+            bg_delta = delta * 0.6
+            fg_delta = delta * 1.4
+            bg_z = f"min({ks}+{bg_delta:.4f}*((1-cos(PI*on/{nframes}))/2),{ks + bg_delta:.4f})"
+            fg_z = f"min({ks}+{fg_delta:.4f}*((1-cos(PI*on/{nframes}))/2),{ks + fg_delta:.4f})"
+            bg_zp = f"zoompan=z='{bg_z}':d={nframes}:s={W}x{H}:fps={FPS}"
+            fg_zp = f"zoompan=z='{fg_z}':d={nframes}:s={W}x{H}:fps={FPS}"
+            chain = (
+                f"[{bg_i}:v]{bg_zp},setsar=1[bgz{i}];"
+                f"[{fg_i}:v]{fg_zp},setsar=1[fgz{i}];"
+                f"[bgz{i}][fgz{i}]overlay=0:0:format=auto[ov{i}];"
+                f"[ov{i}]format=yuv420p"
+            )
+            if cinema_str:
+                chain += "," + cinema_str
+            chain += f"[c{i}]"
+            clip_filters.append(chain)
+        else:
+            zp = f"zoompan=z='{eased_z}':d={nframes}:s={W}x{H}:fps={FPS}" if abs(delta) > 1e-3 else flat_z
+            chain_parts = [f"[{bg_i}:v]{zp}", "setsar=1", "format=yuv420p"]
+            if cinema_str:
+                chain_parts.append(cinema_str)
+            clip_filters.append(",".join(chain_parts) + f"[c{i}]")
+
+    # xfade chain with per-beat transition kind. FFmpeg xfade transitions:
+    #   fade (default), fadeblack, fadewhite, dissolve, pixelize,
+    #   wiperight, wipeleft, circleopen, circleclose, radial, hblur, hlslice
+    # Mapping our friendly names to xfade names + a default fallback.
+    XFADE_MAP = {
+        "fade": "fade",
+        "fadeblack": "fadeblack",
+        "fadewhite": "fadewhite",
+        "dissolve": "dissolve",
+        "pixelize": "pixelize",
+        "wiperight": "wiperight",
+        "wipeleft": "wipeleft",
+        "circleopen": "circleopen",
+        "circleclose": "circleclose",
+        "radial": "radial",
+        "hblur": "hblur",
+    }
     xfade_filters: list[str] = []
     if len(req.images) == 1:
-        # Single beat — just relabel
         xfade_filters.append("[c0]copy[vfinal]")
     else:
         prev = "c0"
@@ -131,8 +190,10 @@ def render(req: RenderRequest) -> RenderResponse:
         for i in range(1, len(req.images)):
             label = "vfinal" if i == len(req.images) - 1 else f"x{i}"
             offset = cumulative - fade
+            outgoing = req.images[i - 1].transition or "fade"
+            kind = XFADE_MAP.get(outgoing, "fade")
             xfade_filters.append(
-                f"[{prev}][c{i}]xfade=transition=fade:duration={fade}:offset={offset:.3f}[{label}]"
+                f"[{prev}][c{i}]xfade=transition={kind}:duration={fade}:offset={offset:.3f}[{label}]"
             )
             cumulative += req.images[i].duration_seconds - fade
             prev = label
@@ -171,6 +232,9 @@ def render(req: RenderRequest) -> RenderResponse:
     else:
         encode_args = ["-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p"]
 
+    # Total visible video duration after xfade overlap.
+    visible_total = sum(b.duration_seconds for b in req.images) - fade * (len(req.images) - 1)
+
     cmd = [
         "ffmpeg", "-y",
         *inputs,
@@ -180,7 +244,10 @@ def render(req: RenderRequest) -> RenderResponse:
         "-c:v", enc.codec_name,
         *encode_args,
         "-c:a", "aac", "-b:a", "192k",
-        "-shortest",
+        # Force exact output duration so the video doesn't stretch to match the
+        # narration when audio is longer. -shortest is unreliable here because
+        # xfade extends the last frame implicitly.
+        "-t", f"{visible_total:.3f}",
         str(out_path),
     ]
 

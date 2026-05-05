@@ -31,7 +31,7 @@ async fn node_alive(client: &reqwest::Client) -> bool {
         .unwrap_or(false)
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct GenerateRequest {
     pub topic: String,
     pub languages: Vec<String>,
@@ -40,6 +40,10 @@ pub struct GenerateRequest {
     pub llm_model: Option<String>,
     pub voice_speaker: Option<String>,
     pub use_musicgen: bool,
+    /// When true, render the source horizontal then call /reframe to produce
+    /// a 1080×1920 vertical via subject tracking + blur-extend fallback.
+    #[serde(default)]
+    pub vertical: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -295,15 +299,29 @@ async fn run(
             .json()
             .await?
     } else {
-        // Map beats → ImageBeat for /render
+        // Map beats → ImageBeat for /render. Pass through foreground_path so the
+        // FFmpeg parallax 2.5D path activates when depth layers exist.
         let images: Vec<serde_json::Value> = beats
             .iter()
-            .map(|b| serde_json::json!({
-                "image_path": b["path"],
-                "start_seconds": b["start"],
-                "duration_seconds": b["duration"],
-            }))
+            .map(|b| {
+                let mut o = serde_json::json!({
+                    "image_path": b["path"],
+                    "start_seconds": b["start"],
+                    "duration_seconds": b["duration"],
+                });
+                if let Some(fg) = b.get("foreground_path").and_then(|v| v.as_str()) {
+                    o["foreground_path"] = serde_json::json!(fg);
+                }
+                if let Some(t) = b.get("transition").and_then(|v| v.as_str()) {
+                    o["transition"] = serde_json::json!(t);
+                }
+                o
+            })
             .collect();
+        // For vertical output, render at horizontal first then /reframe so subject
+        // composition is preserved (avoids the 768×1344 lowvram bottleneck).
+        let render_w = if req.vertical { 1920 } else { 1920 };
+        let render_h = if req.vertical { 1080 } else { 1080 };
         client
             .post(format!("{}/render", PY_SIDECAR))
             .timeout(std::time::Duration::from_secs(15 * 60))
@@ -314,17 +332,55 @@ async fn run(
                 "music_volume": 0.32,
                 "music_ducking": true,
                 "out_dir": out_dir,
-                "crossfade_seconds": 0.7,
+                "crossfade_seconds": 0.9,
                 "cinematic": "full",
+                "width": render_w,
+                "height": render_h,
+                "kenburns_start": 1.00,
+                "kenburns_end": 1.10,
             }))
             .send()
             .await?
             .json()
             .await?
     };
+    // Resolve the produced video path (different keys for /render vs /render/narrative).
+    let mut produced_video = render
+        .get("video_path")
+        .or_else(|| render.get("out_path"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| video_out.clone());
+
+    // ─── Phase 6b: Smart vertical reframe (when vertical=true) ─────────
+    if req.vertical {
+        emit(app, pid, 6, "running", 60.0, "Reframe vertical 1080×1920…");
+        let vert_path = format!("{}/video-vertical.mp4", out_dir);
+        let reframe_resp: Result<serde_json::Value, _> = client
+            .post(format!("{}/reframe", PY_SIDECAR))
+            .timeout(std::time::Duration::from_secs(10 * 60))
+            .json(&serde_json::json!({
+                "video_path": produced_video,
+                "out_path": vert_path,
+                "target_width": 1080,
+                "target_height": 1920,
+                "fallback": "blur-extend",
+                "smoothing": 0.10,
+            }))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())?
+            .json()
+            .await;
+        if let Ok(rframe) = reframe_resp {
+            produced_video = rframe["out_path"].as_str().unwrap_or(&produced_video).to_string();
+        }
+    }
+
     persist_step(pool, pid, 6, "done", &render).await?;
-    let render_mode = if use_hyperframes { "HyperFrames" } else { "FFmpeg" };
-    emit(app, pid, 6, "done", 100.0, &format!("Vídeo renderizado ({})", render_mode));
+    let mut tag = if use_hyperframes { "HyperFrames" } else { "FFmpeg" }.to_string();
+    if req.vertical { tag.push_str(" + reframe"); }
+    emit(app, pid, 6, "done", 100.0, &format!("Vídeo renderizado ({})", tag));
 
     // ─── Phase 7: Thumbnail ──────────────────────────────────────────
     emit(app, pid, 7, "running", 0.0, "Generando thumbnail…");
@@ -355,20 +411,65 @@ async fn run(
         .await?;
     emit(app, pid, 7, "done", 100.0, "Thumbnail listo");
 
-    // ─── Phase 8: Subtitles ──────────────────────────────────────────
-    emit(app, pid, 8, "running", 0.0, "Transcribiendo subtítulos…");
-    let _subs: serde_json::Value = client
-        .post(format!("{}/transcribe", PY_SIDECAR))
+    // ─── Phase 8: Subtitles (Whisper word-level + ASS karaoke + burn-in) ─
+    emit(app, pid, 8, "running", 0.0, "Transcribiendo + karaoke ASS…");
+    // Free Z-Image VRAM (image phase) before Whisper loads (~1 GB).
+    unload(&client, "image").await;
+    unload(&client, "comfyui").await;
+
+    let primary_lang = req.languages.first().cloned().unwrap_or_else(|| "en".to_string());
+    let subs: serde_json::Value = client
+        .post(format!("{}/subtitles", PY_SIDECAR))
+        .timeout(std::time::Duration::from_secs(15 * 60))
         .json(&serde_json::json!({
             "audio_path": narration_audio,
-            "language": "en",
+            "source_language": primary_lang,
+            "target_languages": req.languages,
             "out_dir": out_dir,
         }))
         .send()
         .await?
         .json()
         .await?;
-    emit(app, pid, 8, "done", 100.0, "Subtítulos listos");
+
+    // Find the ASS for the primary language and burn it on the produced video.
+    let ass_path = subs["subtitles"]
+        .as_array()
+        .and_then(|a| {
+            a.iter()
+                .find(|s| s["language"] == serde_json::Value::String(primary_lang.clone()))
+                .or_else(|| a.first())
+        })
+        .and_then(|s| s["ass_path"].as_str())
+        .map(|s| s.to_string());
+
+    let mut final_video = produced_video.clone();
+    if let Some(ass) = ass_path {
+        emit(app, pid, 8, "running", 60.0, "Quemando karaoke en NVENC…");
+        let burn_out = produced_video.replace(".mp4", ".subs.mp4");
+        let burn_resp: serde_json::Value = client
+            .post(format!("{}/subtitles/burn-in", PY_SIDECAR))
+            .timeout(std::time::Duration::from_secs(15 * 60))
+            .json(&serde_json::json!({
+                "video_path": produced_video,
+                "ass_path": ass,
+                "out_path": burn_out,
+                // Cinematic look already applied during render — burn-in just overlays subs.
+                "cinematic": "off",
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(p) = burn_resp["out_path"].as_str() {
+            final_video = p.to_string();
+        }
+    }
+
+    // Free Whisper for the next pipeline run.
+    unload(&client, "whisper").await;
+    persist_step(pool, pid, 8, "done", &serde_json::json!({"video": final_video, "subs": subs})).await?;
+    emit(app, pid, 8, "done", 100.0, "Subtítulos karaoke listos");
 
     // ─── Phase 9: YouTube upload (M5 wires this) ─────────────────────
     emit(app, pid, 9, "pending", 0.0, "Pendiente de upload (M5)");

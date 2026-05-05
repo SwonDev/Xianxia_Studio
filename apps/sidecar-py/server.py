@@ -20,6 +20,7 @@ from xianxia_ai.routes import (
     image,
     install,
     music,
+    reframe,
     render,
     script,
     shorts,
@@ -68,6 +69,7 @@ app.include_router(render.router, prefix="/render", tags=["render"])
 app.include_router(shorts.router, prefix="/shorts", tags=["shorts"])
 app.include_router(depth.router, prefix="/depth", tags=["depth"])
 app.include_router(unload.router, prefix="/unload", tags=["unload"])
+app.include_router(reframe.router, prefix="/reframe", tags=["reframe"])
 
 
 if __name__ == "__main__":
