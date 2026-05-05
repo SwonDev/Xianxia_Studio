@@ -20,6 +20,8 @@ use std::sync::Arc;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+mod hf_seed;
+
 use crate::installer::paths;
 use crate::installer::python_env;
 
@@ -263,13 +265,19 @@ async fn spawn_python() -> Result<Child> {
 
     tracing::info!(server = %server.display(), "spawning python sidecar");
     let comfy_dir = paths::paths()?.data_dir.join("runtime").join("comfyui");
+    let hf_home = paths::paths()?.data_dir.join("hf-cache");
+    // Seed HF cache from the user's standard ~/.cache/huggingface/hub before
+    // spawning so already-downloaded models (Whisper, Z-Image, Qwen TTS, etc.)
+    // don't get re-downloaded into our isolated data_dir cache. Hardlinks
+    // when possible (zero disk overhead), copy fallback. Idempotent.
+    hf_seed::seed_from_user_cache(&hf_home);
     let child = Command::new(&py)
         .arg(&server)
         .current_dir(&cwd)
         .env("PYTHONPATH", cwd.join("src"))
         .env("XIANXIA_MUSIC_DIR", assets_music)
         .env("XIANXIA_OUT_DIR", out_dir)
-        .env("HF_HOME", paths::paths()?.data_dir.join("hf-cache"))
+        .env("HF_HOME", &hf_home)
         .env("HF_HUB_ENABLE_HF_TRANSFER", "1")
         // Always prefer the ComfyUI path (faster, supports GGUF auto-detection
         // for 8 GB cards). The Python /image route falls back to diffusers
