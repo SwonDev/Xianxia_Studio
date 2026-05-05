@@ -67,7 +67,7 @@ class SubtitleRequest(BaseModel):
     audio_path: str
     source_language: str = "en"
     target_languages: list[str] = ["en", "es", "zh"]
-    model: str = "gemma3:1b"
+    model: str = "xianxia-llm"
     out_dir: str | None = None
     project_id: str | None = None
 

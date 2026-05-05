@@ -335,7 +335,11 @@ pub fn full_manifest() -> Vec<Component> {
 }
 
 /// Adds the GGUF download + Modelfile creation steps for the chosen hardware
-/// tier, inserted right before the smoke test.
+/// tier, inserted right before the smoke test. The Ollama model registered is
+/// always named `xianxia-llm` (or `xianxia-llm-safe` if the user opted into
+/// the official Gemma 4 IT variant with safety filters); the pipeline always
+/// invokes `xianxia-llm` so swapping the underlying GGUF doesn't require code
+/// changes — just re-run the wizard.
 pub fn with_llm_for_tier(
     base: Vec<Component>,
     hf_repo: &str,

@@ -20,7 +20,7 @@ class ScriptRequest(BaseModel):
     topic: str
     target_minutes: int = 14
     languages: list[str] = ["en"]
-    model: str = "gemma3:4b"
+    model: str = "xianxia-llm"
     experimental: bool = False
 
 
@@ -43,7 +43,11 @@ class ScriptResponse(BaseModel):
 
 @router.post("", response_model=ScriptResponse)
 async def generate_script(req: ScriptRequest) -> ScriptResponse:
-    model = "xianxia-experimental" if req.experimental else req.model
+    # `xianxia-llm` is the registered Ollama model created from the
+    # supergemma4-e4b-abliterated GGUF (Gemma 4 family). The `experimental`
+    # flag is a no-op kept for backwards compatibility — abliterated IS the
+    # default, per project spec.
+    model = req.model
     prompt = SCRIPT_PROMPT_TEMPLATE.format(
         topic=req.topic,
         minutes=req.target_minutes,
@@ -80,7 +84,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
 class MetadataRequest(BaseModel):
     script: str
     languages: list[str] = ["en"]
-    model: str = "gemma3:4b"
+    model: str = "xianxia-llm"
 
 
 class MetadataResponse(BaseModel):

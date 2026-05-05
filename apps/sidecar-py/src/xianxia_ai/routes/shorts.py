@@ -1,11 +1,12 @@
 """Shorts generation — adapted from OpenShorts pipeline.
 
-Replaces Gemini cloud with local Gemma 3 via Ollama.
-Pipeline:
+Replaces Gemini cloud with the local `xianxia-llm` (Gemma 4 abliterated) via
+Ollama. Pipeline:
   1. faster-whisper word-level timestamps (already from phase 8)
   2. PySceneDetect scene boundaries
-  3. Gemma 3 picks N viral 15-60s moments
-  4. FFmpeg cuts, MediaPipe + YOLOv8 reframe vertical 9:16
+  3. xianxia-llm picks N viral 15-60s moments scored by hook strength
+  4. FFmpeg cuts, vertical 9:16 reframe via center-crop (subject tracking
+     with MediaPipe is opt-in via `subject_tracking=true` for tighter framing)
 """
 
 from __future__ import annotations
@@ -31,8 +32,10 @@ class ShortsRequest(BaseModel):
     video_path: str
     srt_path: str
     n: int = 4
-    model: str = "gemma3:4b"
+    model: str = "xianxia-llm"
     out_dir: str | None = None
+    subject_tracking: bool = False  # MediaPipe + YOLO; only when CUDA & deps available
+    burn_subtitles: bool = True     # add highlighted hook + transcript
 
 
 class ShortClip(BaseModel):

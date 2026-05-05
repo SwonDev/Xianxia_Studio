@@ -93,7 +93,7 @@ async fn run(
             "topic": req.topic,
             "target_minutes": req.target_minutes,
             "languages": req.languages,
-            "model": req.llm_model.clone().unwrap_or_else(|| "gemma3:4b".to_string()),
+            "model": req.llm_model.clone().unwrap_or_else(|| "xianxia-llm".to_string()),
             "experimental": req.experimental_llm,
         }))
         .send()

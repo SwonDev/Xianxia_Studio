@@ -37,7 +37,19 @@ Script:
 Return ONLY valid JSON, no commentary.
 """
 
-SHORTS_DETECTION_PROMPT = """Given the following xianxia narration script with timestamps and the audio waveform energy peaks, identify the {n} most viral 15-60 second moments.
+SHORTS_DETECTION_PROMPT = """You are picking the most viral 15–60 second moments from a long xianxia narration to extract as YouTube Shorts.
 
-Return JSON: [{{ "start": <sec>, "end": <sec>, "hook": "<short text>", "score": <0-1> }}]
+Pick the {n} BEST moments based on these criteria, in order:
+  1. A clear hook in the first 3 seconds (cliffhanger, shocking line, paradox)
+  2. Self-contained narrative (works without external context)
+  3. Strong visual or dramatic beat (god revealing power, betrayal, ascension)
+  4. Endable on a satisfying note (resolution, twist, or open question)
+
+Avoid:
+  - Pure exposition without action
+  - Mid-sentence cuts
+  - Moments shorter than 15s or longer than 60s
+
+Return ONLY a JSON array, no commentary, no markdown:
+[{{ "start": <sec>, "end": <sec>, "hook": "<<=80 char teaser line>", "score": <0.0-1.0>, "reason": "<why viral>" }}]
 """
