@@ -62,26 +62,33 @@ pub fn run() {
             }
             tracing::info!("Xianxia Studio starting up");
 
-            // Bring up the database, sidecar supervisor, and scheduler asynchronously.
+            // Bring up the sidecar supervisor IMMEDIATELY (independent of DB) so
+            // the topbar dots and other service-level UI work even if the DB
+            // migration check fails. Then bring up the DB + scheduler in parallel.
             let handle = app.handle().clone();
+            let supervisor = Arc::new(sidecars::Supervisor::new());
+            handle.manage(supervisor.clone());
+            tauri::async_runtime::spawn({
+                let sup = supervisor.clone();
+                async move {
+                    let _ = sup.start_all().await;
+                    sup.run_health_loop().await;
+                }
+            });
+
+            let handle_db = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 match db::init_pool().await {
                     Ok(pool) => {
                         let pool = Arc::new(pool);
-                        handle.manage(pool.clone());
-
-                        let supervisor = Arc::new(sidecars::Supervisor::new());
-                        let _ = supervisor.start_all().await;
-                        let supervisor_for_loop = supervisor.clone();
-                        tokio::spawn(async move { supervisor_for_loop.run_health_loop().await });
-                        handle.manage(supervisor);
-
+                        handle_db.manage(pool.clone());
                         let pool_clone = pool.clone();
                         tokio::spawn(async move { scheduler::run_loop(pool_clone).await });
-
-                        tracing::info!("background services up");
+                        tracing::info!("database + scheduler up");
                     }
-                    Err(e) => tracing::error!(error = %e, "db init failed"),
+                    Err(e) => {
+                        tracing::error!(error = %e, "db init failed — services UI still works, but project CRUD won't");
+                    }
                 }
             });
             Ok(())
