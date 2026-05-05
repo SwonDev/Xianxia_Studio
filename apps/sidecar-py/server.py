@@ -22,6 +22,7 @@ from xianxia_ai.routes import (
     render,
     script,
     shorts,
+    subtitles,
     transcribe,
     tts,
 )
@@ -60,6 +61,7 @@ app.include_router(tts.router, prefix="/tts", tags=["tts"])
 app.include_router(image.router, prefix="/image", tags=["image"])
 app.include_router(music.router, prefix="/music", tags=["music"])
 app.include_router(transcribe.router, prefix="/transcribe", tags=["transcribe"])
+app.include_router(subtitles.router, prefix="/subtitles", tags=["subtitles"])
 app.include_router(render.router, prefix="/render", tags=["render"])
 app.include_router(shorts.router, prefix="/shorts", tags=["shorts"])
 
