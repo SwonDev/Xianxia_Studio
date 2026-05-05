@@ -1,56 +1,73 @@
 {
-  "_comment": "ComfyUI workflow for Z-Image-Turbo. Loaded by routes/image.py when XIANXIA_USE_COMFYUI=1. Use ComfyUI-GGUF custom node when running on <8 GB VRAM (replace UNetLoaderGGUF -> CheckpointLoaderSimple).",
+  "_comment": "ComfyUI workflow for Z-Image-Turbo using the official Comfy-Org single-file split: BF16 diffusion model + Qwen3 4B FP8 text encoder + AE VAE. Requires Comfy-Org/z_image_turbo files placed in models/diffusion_models/, text_encoders/, vae/.",
   "_placeholders": "{{prompt}} {{width}} {{height}} {{seed}}",
-  "3": {
-    "class_type": "KSampler",
-    "_meta": { "title": "Z-Image-Turbo Sampler" },
+  "1": {
+    "class_type": "UNETLoader",
+    "_meta": {"title": "Z-Image-Turbo BF16"},
     "inputs": {
-      "seed": "{{seed}}",
-      "steps": 9,
-      "cfg": 0.0,
-      "sampler_name": "euler",
-      "scheduler": "simple",
-      "denoise": 1.0,
-      "model": ["10", 0],
-      "positive": ["6", 0],
-      "negative": ["7", 0],
-      "latent_image": ["5", 0]
+      "unet_name": "z_image_turbo_bf16.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "_meta": {"title": "Qwen3 4B (Z-Image text encoder, Lumina2 family)"},
+    "inputs": {
+      "clip_name": "qwen_3_4b_fp8_mixed.safetensors",
+      "type": "lumina2"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {"vae_name": "ae.safetensors"}
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Positive prompt"},
+    "inputs": {
+      "text": "{{prompt}}, cinematic xianxia, jade mountains, swirling qi mist, golden hour, ultra detailed, epic composition, photorealistic, 8k",
+      "clip": ["2", 0]
     }
   },
   "5": {
-    "class_type": "EmptyLatentImage",
-    "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 }
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negative prompt"},
+    "inputs": {
+      "text": "low quality, blurry, distorted, watermark, text overlay",
+      "clip": ["2", 0]
+    }
   },
   "6": {
-    "class_type": "CLIPTextEncode",
-    "_meta": { "title": "Positive (xianxia)" },
-    "inputs": { "text": "{{prompt}}, cinematic xianxia, jade mountains, swirling qi mist, golden hour, ultra detailed, epic composition, photorealistic, 8k", "clip": ["11", 0] }
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {"title": "Z-Image is Lumina2 / Flow-matching family"},
+    "inputs": {"model": ["1", 0], "shift": 3.0}
   },
   "7": {
-    "class_type": "CLIPTextEncode",
-    "_meta": { "title": "Negative" },
-    "inputs": { "text": "low quality, blurry, distorted, watermark, text overlay, modern", "clip": ["11", 0] }
+    "class_type": "EmptyLatentImage",
+    "inputs": {"width": "{{width}}", "height": "{{height}}", "batch_size": 1}
   },
   "8": {
-    "class_type": "VAEDecode",
-    "inputs": { "samples": ["3", 0], "vae": ["12", 0] }
+    "class_type": "KSampler",
+    "_meta": {"title": "Z-Image-Turbo (8 steps, cfg=1, euler/simple)"},
+    "inputs": {
+      "seed": "{{seed}}",
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": ["6", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["7", 0]
+    }
   },
   "9": {
-    "class_type": "SaveImage",
-    "inputs": { "filename_prefix": "xianxia", "images": ["8", 0] }
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["8", 0], "vae": ["3", 0]}
   },
   "10": {
-    "class_type": "UNetLoaderGGUF",
-    "_meta": { "title": "Z-Image-Turbo GGUF Q8" },
-    "inputs": { "unet_name": "z-image-turbo-Q8_0.gguf" }
-  },
-  "11": {
-    "class_type": "CLIPLoader",
-    "_meta": { "title": "Z-Image text encoder" },
-    "inputs": { "clip_name": "z-image-clip.safetensors", "type": "default" }
-  },
-  "12": {
-    "class_type": "VAELoader",
-    "inputs": { "vae_name": "z-image-vae.safetensors" }
+    "class_type": "SaveImage",
+    "inputs": {"filename_prefix": "xianxia", "images": ["9", 0]}
   }
 }
