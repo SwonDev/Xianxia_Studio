@@ -61,13 +61,21 @@ function InstallWizard() {
         {step === 'welcome' && (
           <Pane key="welcome">
             <h2 className="font-display text-2xl mb-4">¿Qué se va a instalar?</h2>
-            <ul className="space-y-3 text-sm text-paper-200">
-              <Item icon="🐍" text="Python 3.11 embebido (~30 MB) — para los modelos de IA" />
-              <Item icon="🎬" text="FFmpeg 8 (~80 MB) — procesamiento de vídeo" />
-              <Item icon="🦙" text="Ollama (~600 MB) — servidor LLM local" />
-              <Item icon="🐉" text="Modelos Gemma 3, Qwen3-TTS, Z-Image-Turbo (variable según tu hardware)" />
-              <Item icon="🎵" text="faster-whisper para transcripción" />
-              <Item icon="📦" text="Bibliotecas Python (torch, diffusers, qwen-tts, ~3 GB)" />
+            <p className="text-sm text-paper-300 mb-5">
+              Stack completo, todo local, todo autoinstalable. Tamaño total ≈
+              <strong className="text-gold-300"> 25–30 GB</strong> según tu GPU.
+            </p>
+            <ul className="space-y-2.5 text-sm text-paper-200">
+              <Item icon="🐍" text="Python 3.11 embebido (~30 MB) + libs IA: torch+CUDA, diffusers, transformers, accelerate, qwen-tts, faster-whisper, mediapipe, rembg, opencv (~8–10 GB)" />
+              <Item icon="📦" text="Node 22 portable + Fastify sidecar para HyperFrames (~120 MB)" />
+              <Item icon="🎬" text="FFmpeg 8 con NVENC h264/hevc (~80 MB) — render + cinematic post-pass" />
+              <Item icon="🦙" text="Ollama + xianxia-llm registrado desde supergemma4-e4b-abliterated GGUF Q4_K_M (~5.3 GB) — guion narrativo, modelo de la familia Gemma 4" />
+              <Item icon="🐉" text="Z-Image-Turbo BF16 + Qwen3-4B FP8 encoder + AE VAE para ComfyUI (~17 GB) — generación de imágenes xianxia" />
+              <Item icon="🎙️" text="Qwen3-TTS-12Hz-1.7B-CustomVoice (~3.5 GB) — narración cinematográfica multilenguaje" />
+              <Item icon="✂️" text="ComfyUI + custom node ComfyUI-GGUF (~250 MB) — runtime de inferencia para Z-Image" />
+              <Item icon="🎞️" text="HyperFrames CLI (~60 MB) — render HTML/CSS/GSAP a vídeo" />
+              <Item icon="📐" text="rembg + onnxruntime-gpu + MediaPipe (~700 MB) — segmentación de profundidad para parallax 2.5D y subject tracking para reframe vertical" />
+              <Item icon="🔊" text="faster-whisper-large-v3 (~3 GB) — transcripción con timestamps por palabra" />
             </ul>
             <div className="mt-6 p-4 rounded-lg bg-jade-700/20 border border-jade-600/30 text-sm text-paper-200">
               <strong className="text-jade-300">Filosofía local-first:</strong> ningún

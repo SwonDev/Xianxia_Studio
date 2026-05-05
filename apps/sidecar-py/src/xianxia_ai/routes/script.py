@@ -1,4 +1,4 @@
-"""Script generation via Ollama (Gemma 3 / supergemma4-abliterated)."""
+"""Script generation via Ollama (xianxia-llm = supergemma4-e4b-abliterated, Gemma 4 family)."""
 
 from __future__ import annotations
 
@@ -127,7 +127,7 @@ async def generate_metadata(req: MetadataRequest) -> MetadataResponse:
 
 # ─── Marker parsing ────────────────────────────────────────────────────────
 # Accept both bracket form `[IMAGE: foo]` and markdown bold `**IMAGE: foo**` —
-# small LLMs (e.g. Gemma 3 1B) sometimes prefer the bold format.
+# small LLMs sometimes prefer the bold format over brackets.
 MARKER_RE = re.compile(
     r"(?:\[(?P<kind1>IMAGE|MUSIC|CHAPTER):\s*(?P<body1>[^\]]+?)\])"
     r"|(?:\*\*(?P<kind2>IMAGE|MUSIC|CHAPTER):\s*(?P<body2>[^\*]+?)\*\*)",

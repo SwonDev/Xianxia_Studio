@@ -93,6 +93,9 @@ export interface StackSummary {
   sidecar_python_running: boolean;
   sidecar_node_running: boolean;
   comfyui_running: boolean;
+  hyperframes_installed: boolean;
+  rembg_installed: boolean;
+  mediapipe_installed: boolean;
   models_ready_count: number;
   models_total: number;
 }

@@ -192,15 +192,32 @@ pub fn full_manifest() -> Vec<Component> {
         // ─── Python deps (heavy AI: torch, diffusers, qwen-tts, whisper) ─
         Component {
             id: "python-deps-ai".to_string(),
-            label: "Python AI (torch, diffusers, qwen-tts, whisper)".to_string(),
+            label: "Python AI (torch+CUDA, diffusers, qwen-tts, faster-whisper)".to_string(),
             category: Category::Postinstall,
-            size_bytes: 3500 * 1024 * 1024,
+            size_bytes: 8500 * 1024 * 1024,
             url: String::new(),
             url_macos: None,
             url_linux: None,
             sha256: None,
             kind: AssetKind::PipInstall {
                 requirements: "sidecar-py/requirements-ai.txt".to_string(),
+            },
+            required: true,
+            depends_on: vec!["python-deps-core".to_string()],
+        },
+
+        // ─── Python deps (parallax 2.5D + smart reframe) ────────────
+        Component {
+            id: "python-deps-vision".to_string(),
+            label: "rembg + onnxruntime-gpu + MediaPipe + opencv (parallax 2.5D, subject tracking)".to_string(),
+            category: Category::Postinstall,
+            size_bytes: 700 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::PipInstall {
+                requirements: "sidecar-py/requirements-vision.txt".to_string(),
             },
             required: true,
             depends_on: vec!["python-deps-core".to_string()],

@@ -41,6 +41,9 @@ pub struct StackSummary {
     pub sidecar_python_running: bool,
     pub sidecar_node_running: bool,
     pub comfyui_running: bool,
+    pub hyperframes_installed: bool,
+    pub rembg_installed: bool,
+    pub mediapipe_installed: bool,
     pub models_ready_count: usize,
     pub models_total: usize,
 }
@@ -202,16 +205,56 @@ pub async fn verify_stack() -> Result<StackReport, String> {
 
     let comfyui = http_ok("http://127.0.0.1:8188/system_stats").await;
     s.comfyui_running = comfyui;
+    let comfy_installed = paths::paths()
+        .ok()
+        .map(|p| p.data_dir.join("runtime/comfyui/main.py").exists())
+        .unwrap_or(false);
     checks.push(CheckItem {
         id: "comfyui".into(),
-        label: "ComfyUI (opcional)".into(),
-        ok: comfyui,
+        label: "ComfyUI (Z-Image runtime)".into(),
+        ok: comfyui || comfy_installed,
         detail: if comfyui {
-            ":8188 ok — disponible para workflows".into()
+            ":8188 activo — workflows disponibles".into()
+        } else if comfy_installed {
+            "instalado en runtime/comfyui (no arrancado)".into()
         } else {
-            ":8188 inactivo (sidecar Python usa diffusers directo)".into()
+            "no instalado — instala desde el wizard".into()
         },
         group: "Servicios".into(),
+    });
+
+    // ─── Group: CLI tools ────────────────────────────────────────────
+    let hyperframes_path = check_hyperframes();
+    s.hyperframes_installed = hyperframes_path.is_some();
+    checks.push(CheckItem {
+        id: "hyperframes".into(),
+        label: "HyperFrames CLI (render HTML/CSS)".into(),
+        ok: s.hyperframes_installed,
+        detail: hyperframes_path
+            .clone()
+            .map(|p| format!("✓ {}", p.display()))
+            .unwrap_or_else(|| "no encontrado en sidecar-node/node_modules/.bin".into()),
+        group: "Herramientas".into(),
+    });
+
+    let (rembg, rembg_detail) = check_python_pkg("rembg").await;
+    s.rembg_installed = rembg;
+    checks.push(CheckItem {
+        id: "rembg".into(),
+        label: "rembg + onnxruntime-gpu (parallax 2.5D)".into(),
+        ok: rembg,
+        detail: rembg_detail,
+        group: "Herramientas".into(),
+    });
+
+    let (mediapipe, mp_detail) = check_python_pkg("mediapipe").await;
+    s.mediapipe_installed = mediapipe;
+    checks.push(CheckItem {
+        id: "mediapipe".into(),
+        label: "MediaPipe (subject tracking)".into(),
+        ok: mediapipe,
+        detail: mp_detail,
+        group: "Herramientas".into(),
     });
 
     // ─── Group: Models ───────────────────────────────────────────────
@@ -239,6 +282,56 @@ async fn http_ok(url: &str) -> bool {
         .await
         .map(|r| r.status().is_success())
         .unwrap_or(false)
+}
+
+fn check_hyperframes() -> Option<PathBuf> {
+    // 1) Local install in apps/sidecar-node/node_modules/.bin
+    let workspace = option_env!("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .map(|p| p.join("..").join("..").join(".."));
+    if let Some(ws) = workspace {
+        for ext in &[".cmd", ".CMD", ""] {
+            let p = ws
+                .join("apps/sidecar-node/node_modules/.bin")
+                .join(format!("hyperframes{}", ext));
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    // 2) Global npm install
+    if let Ok(out) = std::process::Command::new("hyperframes")
+        .arg("--version")
+        .output()
+    {
+        if out.status.success() {
+            return Some(PathBuf::from("hyperframes (global)"));
+        }
+    }
+    None
+}
+
+/// Check whether a Python package is importable in the embedded interpreter.
+/// Returns (ok, detail_string).
+async fn check_python_pkg(pkg: &str) -> (bool, String) {
+    let py = match super::python_env::python_exe() {
+        Ok(p) if p.exists() => p,
+        _ => return (false, "intérprete embebido no disponible".into()),
+    };
+    let probe = format!("import {}; print(getattr({}, '__version__', 'ok'))", pkg, pkg);
+    let out = match std::process::Command::new(&py)
+        .args(["-c", &probe])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => return (false, format!("error ejecutando intérprete: {}", e)),
+    };
+    if out.status.success() {
+        let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (true, format!("v{}", v))
+    } else {
+        (false, format!("no instalado en {}", py.display()))
+    }
 }
 
 async fn ollama_has_model(name: &str) -> bool {

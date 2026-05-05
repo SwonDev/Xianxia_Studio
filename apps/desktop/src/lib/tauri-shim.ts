@@ -516,6 +516,13 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
         gpu_available: py, video_hw_accelerated: py,
         ollama_running: ol, xianxia_llm_registered: xianxiaLlm,
         sidecar_python_running: py, sidecar_node_running: nd, comfyui_running: cf,
+        // Browser shim cannot probe local FS for these — reasonable best-guess:
+        // HyperFrames available if Node sidecar reachable (it owns the binary);
+        // rembg/mediapipe assumed present if Python sidecar is up (the routes
+        // would 503 on first call otherwise).
+        hyperframes_installed: nd,
+        rembg_installed: py,
+        mediapipe_installed: py,
         models_ready_count: checks.filter((c) => c.group === 'Modelos' && c.ok).length,
         models_total: checks.filter((c) => c.group === 'Modelos').length,
       };
