@@ -70,7 +70,7 @@ function InstallWizard() {
               <Item icon="📦" text="Node 22 portable + Fastify sidecar para HyperFrames (~120 MB)" />
               <Item icon="🎬" text="FFmpeg 8 con NVENC h264/hevc (~80 MB) — render + cinematic post-pass" />
               <Item icon="🦙" text="Ollama + xianxia-llm registrado desde supergemma4-e4b-abliterated GGUF Q4_K_M (~5.3 GB) — guion narrativo, modelo de la familia Gemma 4" />
-              <Item icon="🐉" text="Z-Image-Turbo BF16 + Qwen3-4B FP8 encoder + AE VAE para ComfyUI (~17 GB) — generación de imágenes xianxia" />
+              <Item icon="🐉" text="Z-Image-Turbo Q4_K_M GGUF (~4.7 GB) + Qwen3-4B FP8 encoder + AE VAE para ComfyUI — generación rápida en 8 GB VRAM (BF16 12 GB opcional para 12+ GB)" />
               <Item icon="🎙️" text="Qwen3-TTS-12Hz-1.7B-CustomVoice (~3.5 GB) — narración cinematográfica multilenguaje" />
               <Item icon="✂️" text="ComfyUI + custom node ComfyUI-GGUF (~250 MB) — runtime de inferencia para Z-Image" />
               <Item icon="🎞️" text="HyperFrames CLI (~60 MB) — render HTML/CSS/GSAP a vídeo" />

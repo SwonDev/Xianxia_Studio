@@ -1,0 +1,72 @@
+{
+  "_comment": "ComfyUI workflow for Z-Image-Turbo Q4_K_M GGUF (~4.7 GB) via ComfyUI-GGUF custom node. Best for 8 GB VRAM cards: native vertical generation runs at ~2-4 s/step instead of 50 s/step (BF16 partial offload). Drop-in replacement: only the diffusion model loader changes (UnetLoaderGGUF instead of UNETLoader).",
+  "_placeholders": "{{prompt}} {{width}} {{height}} {{seed}}",
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "_meta": {"title": "Z-Image-Turbo Q4_K_M (GGUF)"},
+    "inputs": {
+      "unet_name": "z-image-turbo-Q4_K_M.gguf"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "_meta": {"title": "Qwen3 4B (Z-Image text encoder, Lumina2 family)"},
+    "inputs": {
+      "clip_name": "qwen_3_4b_fp8_mixed.safetensors",
+      "type": "lumina2"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {"vae_name": "ae.safetensors"}
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Positive prompt"},
+    "inputs": {
+      "text": "{{prompt}}, cinematic xianxia, jade mountains, swirling qi mist, golden hour, ultra detailed, epic composition, photorealistic, 8k",
+      "clip": ["2", 0]
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negative prompt"},
+    "inputs": {
+      "text": "low quality, blurry, distorted, watermark, text overlay",
+      "clip": ["2", 0]
+    }
+  },
+  "6": {
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {"title": "Z-Image is Lumina2 / Flow-matching family"},
+    "inputs": {"model": ["1", 0], "shift": 3.0}
+  },
+  "7": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {"width": "{{width}}", "height": "{{height}}", "batch_size": 1}
+  },
+  "8": {
+    "class_type": "KSampler",
+    "_meta": {"title": "Z-Image-Turbo (8 steps, cfg=1, euler/simple)"},
+    "inputs": {
+      "seed": "{{seed}}",
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": ["6", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["7", 0]
+    }
+  },
+  "9": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["8", 0], "vae": ["3", 0]}
+  },
+  "10": {
+    "class_type": "SaveImage",
+    "inputs": {"filename_prefix": "xianxia", "images": ["9", 0]}
+  }
+}

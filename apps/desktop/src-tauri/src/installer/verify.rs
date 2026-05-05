@@ -403,14 +403,24 @@ fn check_z_image() -> CheckItem {
     let group = "Modelos".to_string();
 
     if let Ok(p) = paths::paths() {
-        // ComfyUI single-file (Comfy-Org/z_image_turbo)
+        // 1. GGUF Q4_K_M (preferred for ≤ 8 GB VRAM, ~4.7 GB)
+        let gguf = p.data_dir.join("runtime/comfyui/models/diffusion_models/z-image-turbo-Q4_K_M.gguf");
+        if gguf.exists() {
+            let sz = std::fs::metadata(&gguf).ok().map(|m| m.len()).unwrap_or(0);
+            return CheckItem {
+                id, label, group,
+                ok: true,
+                detail: format!("ComfyUI GGUF Q4_K_M: {} ({:.1} GB) — fits 8 GB VRAM", gguf.display(), sz as f64 / 1024.0 / 1024.0 / 1024.0),
+            };
+        }
+        // 2. ComfyUI single-file BF16 (Comfy-Org/z_image_turbo, ~12 GB)
         let comfy_unet = p.data_dir.join("runtime/comfyui/models/diffusion_models/z_image_turbo_bf16.safetensors");
         if comfy_unet.exists() {
             let sz = std::fs::metadata(&comfy_unet).ok().map(|m| m.len()).unwrap_or(0);
             return CheckItem {
                 id, label, group,
                 ok: true,
-                detail: format!("ComfyUI native: {} ({:.1} GB)", comfy_unet.display(), sz as f64 / 1024.0 / 1024.0 / 1024.0),
+                detail: format!("ComfyUI BF16: {} ({:.1} GB)", comfy_unet.display(), sz as f64 / 1024.0 / 1024.0 / 1024.0),
             };
         }
         // Diffusers HF snapshot (Tongyi-MAI/Z-Image-Turbo)

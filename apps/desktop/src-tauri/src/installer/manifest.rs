@@ -315,10 +315,34 @@ pub fn full_manifest() -> Vec<Component> {
             depends_on: vec!["comfyui-clone".to_string()],
         },
 
+        // ─── Z-Image-Turbo Q4_K_M GGUF (~4.7 GB) — best fit for ≤ 8 GB VRAM ──
+        // The runtime auto-selects this variant when present (see comfyui_client
+        // py xianxia_workflow). For 12+ GB cards, the BF16 variant below gives
+        // sharper output but isn't required.
+        Component {
+            id: "z-image-comfy-gguf".to_string(),
+            label: "Z-Image-Turbo Q4_K_M GGUF (8 GB VRAM, ComfyUI-GGUF)".to_string(),
+            category: Category::Model,
+            size_bytes: (4_700u64) * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::HuggingfaceFileTo {
+                repo: "unsloth/Z-Image-Turbo-GGUF".to_string(),
+                filename: "z-image-turbo-Q4_K_M.gguf".to_string(),
+                target_path: "comfyui/models/diffusion_models/z-image-turbo-Q4_K_M.gguf".to_string(),
+            },
+            required: true,
+            depends_on: vec!["comfyui-clone".to_string(), "comfyui-gguf-node".to_string(), "python-deps-core".to_string()],
+        },
+
         // ─── Z-Image-Turbo single-files for ComfyUI native usage ─────
+        // BF16 (~11.7 GB) — optional, for 12+ GB VRAM cards. The pipeline runs
+        // fine on the GGUF variant alone for 8 GB cards.
         Component {
             id: "z-image-comfy-unet".to_string(),
-            label: "Z-Image-Turbo BF16 (ComfyUI)".to_string(),
+            label: "Z-Image-Turbo BF16 (ComfyUI, opcional 12+ GB VRAM)".to_string(),
             category: Category::Model,
             size_bytes: (11_700u64) * 1024 * 1024,
             url: String::new(),

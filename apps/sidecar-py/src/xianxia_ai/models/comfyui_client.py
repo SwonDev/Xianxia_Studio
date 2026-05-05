@@ -76,11 +76,11 @@ def wait_for_image(prompt_id: str, timeout: float = 600.0) -> Path:
 
 
 def xianxia_workflow(prompt: str, width: int = 1344, height: int = 768, seed: int = 42) -> dict:
-    """Default workflow: Z-Image-Turbo via the GGUF loader (low-VRAM friendly).
+    """Default workflow: Z-Image-Turbo, auto-selecting GGUF Q4_K_M (~4.7 GB)
+    when VRAM ≤ 9 GB or the GGUF file is present, BF16 (~12 GB) otherwise.
 
-    Loads the JSON template at workflows/z_image_turbo.json and substitutes
-    placeholders. Users can override the template path with
-    XIANXIA_COMFY_WORKFLOW=/abs/path/workflow.json (advanced users only).
+    Override with XIANXIA_COMFY_WORKFLOW=/abs/path/workflow.json.
+    Force a variant with XIANXIA_Z_IMAGE_VARIANT=gguf|bf16.
     """
     import json
     import os
@@ -90,7 +90,28 @@ def xianxia_workflow(prompt: str, width: int = 1344, height: int = 768, seed: in
     if custom and Path(custom).exists():
         path = Path(custom)
     else:
-        path = Path(__file__).resolve().parents[1] / "workflows" / "z_image_turbo.json"
+        workflows_dir = Path(__file__).resolve().parents[1] / "workflows"
+        variant = os.environ.get("XIANXIA_Z_IMAGE_VARIANT", "").lower()
+        if variant not in ("gguf", "bf16"):
+            # Auto-detect: prefer GGUF if its file exists. Try the env-provided
+            # ComfyUI dir first, then fall back to the canonical Tauri data path.
+            comfy_dir = os.environ.get("XIANXIA_COMFY_DIR")
+            candidates = []
+            if comfy_dir:
+                candidates.append(Path(comfy_dir))
+            # Tauri ProjectDirs: %APPDATA%/xianxia/XianxiaStudio/data/runtime/comfyui
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                candidates.append(Path(appdata) / "xianxia" / "XianxiaStudio" / "data" / "runtime" / "comfyui")
+            gguf_found = False
+            for c in candidates:
+                if (c / "models" / "diffusion_models" / "z-image-turbo-Q4_K_M.gguf").exists():
+                    gguf_found = True
+                    break
+            variant = "gguf" if gguf_found else "bf16"
+        path = workflows_dir / (
+            "z_image_turbo_gguf.json" if variant == "gguf" else "z_image_turbo.json"
+        )
     raw = path.read_text(encoding="utf-8")
     # Strip JSON comments (\"_comment\" / \"_placeholders\" keys are documentation
     # and parse fine since the loader keeps them; we just substitute strings).
