@@ -122,8 +122,11 @@ async def generate_metadata(req: MetadataRequest) -> MetadataResponse:
 
 
 # ─── Marker parsing ────────────────────────────────────────────────────────
+# Accept both bracket form `[IMAGE: foo]` and markdown bold `**IMAGE: foo**` —
+# small LLMs (e.g. Gemma 3 1B) sometimes prefer the bold format.
 MARKER_RE = re.compile(
-    r"\[(?P<kind>IMAGE|MUSIC|CHAPTER):\s*(?P<body>.+?)\]",
+    r"(?:\[(?P<kind1>IMAGE|MUSIC|CHAPTER):\s*(?P<body1>[^\]]+?)\])"
+    r"|(?:\*\*(?P<kind2>IMAGE|MUSIC|CHAPTER):\s*(?P<body2>[^\*]+?)\*\*)",
     re.IGNORECASE,
 )
 
@@ -146,8 +149,9 @@ def parse_markers(script: str) -> tuple[str, list[Marker]]:
         # Estimate timestamp from word count up to here
         words_before = len(" ".join(narration_parts).split())
         ts = (words_before / 150.0) * 60.0
-        kind = match.group("kind").lower()
-        body = match.group("body").strip()
+        # Match either bracket or bold capture group
+        kind = (match.group("kind1") or match.group("kind2") or "").lower()
+        body = (match.group("body1") or match.group("body2") or "").strip()
         seq += 1
         if kind == "image":
             markers.append(Marker(seq=seq, kind="image", timestamp_seconds=ts, prompt=body))
