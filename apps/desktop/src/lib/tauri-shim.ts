@@ -512,6 +512,19 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
         detail: xianxiaLlm ? 'Gemma 4 abliterated' : 'no registrado en Ollama',
         group: 'Modelos',
       });
+      // Herramientas group — best-guess flags since the browser shim can't
+      // probe the local FS. Tauri returns concrete results via verify_stack.
+      checks.push(
+        { id: 'hyperframes', label: 'HyperFrames CLI (render HTML/CSS)', ok: nd,
+          detail: nd ? '(asumido OK porque sidecar Node responde)' : 'no detectable desde browser',
+          group: 'Herramientas' },
+        { id: 'rembg', label: 'rembg + onnxruntime-gpu (parallax 2.5D)', ok: py,
+          detail: py ? '(asumido OK porque sidecar Python responde)' : 'no detectable desde browser',
+          group: 'Herramientas' },
+        { id: 'mediapipe', label: 'MediaPipe (subject tracking)', ok: py,
+          detail: py ? '(asumido OK porque sidecar Python responde)' : 'no detectable desde browser',
+          group: 'Herramientas' },
+      );
       const summary = {
         gpu_available: py, video_hw_accelerated: py,
         ollama_running: ol, xianxia_llm_registered: xianxiaLlm,

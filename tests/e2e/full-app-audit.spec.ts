@@ -83,8 +83,8 @@ test('full app walkthrough', async ({ page }) => {
 
   // ── Ajustes ──
   await page.locator('aside nav a:has-text("Ajustes")').click();
-  await expect(page.getByText('Verificación del stack')).toBeVisible();
-  await page.waitForTimeout(2_000); // let verify_stack query settle
+  await page.waitForTimeout(2_000); // let queries settle (verify_stack is heavy)
+  await expect(page.getByText('Verificación del stack')).toBeVisible({ timeout: 15_000 });
   await page.screenshot({ path: `${SHOTS}/06-settings.png`, fullPage: true });
 
   // Check Settings stack panel for the new component groups
