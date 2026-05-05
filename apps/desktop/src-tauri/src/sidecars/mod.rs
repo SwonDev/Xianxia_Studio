@@ -62,6 +62,20 @@ impl Supervisor {
         self.state.lock().await.clone()
     }
 
+    /// Eager probe + snapshot. Used by the topbar's `get_sidecar_state` query
+    /// so the dots flip green within one poll interval, regardless of the
+    /// health loop's sleep cadence.
+    pub async fn probe_snapshot(&self) -> SidecarState {
+        let py_ok = probe_python().await;
+        let node_ok = probe_node().await;
+        let ollama_ok = crate::installer::ollama::is_running().await;
+        let mut s = self.state.lock().await;
+        if py_ok { s.python = SidecarStatus::Running; }
+        if node_ok { s.node = SidecarStatus::Running; }
+        if ollama_ok { s.ollama = SidecarStatus::Running; }
+        s.clone()
+    }
+
     /// Kick off both sidecars in the background. Best-effort.
     pub async fn start_all(&self) -> Result<()> {
         let _ = self.spawn_python_if_needed().await;
@@ -122,8 +136,8 @@ impl Supervisor {
 
     pub async fn run_health_loop(self: Arc<Self>) {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
+            // Probe FIRST so the very first iteration (within ~1s of app boot)
+            // already updates the dots to green if services are up. Then sleep.
             let py_ok = probe_python().await;
             let node_ok = probe_node().await;
             let ollama_ok = crate::installer::ollama::is_running().await;
@@ -161,10 +175,14 @@ impl Supervisor {
                 }
             }
 
-            let mut s = self.state.lock().await;
-            s.python = if py_ok { SidecarStatus::Running } else { SidecarStatus::Stopped };
-            s.node = if node_ok { SidecarStatus::Running } else { SidecarStatus::Stopped };
-            s.ollama = if ollama_ok { SidecarStatus::Running } else { SidecarStatus::Stopped };
+            {
+                let mut s = self.state.lock().await;
+                s.python = if py_ok { SidecarStatus::Running } else { SidecarStatus::Stopped };
+                s.node = if node_ok { SidecarStatus::Running } else { SidecarStatus::Stopped };
+                s.ollama = if ollama_ok { SidecarStatus::Running } else { SidecarStatus::Stopped };
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
     }
 }
@@ -383,7 +401,8 @@ fn strip_extended(p: PathBuf) -> PathBuf {
 pub async fn get_sidecar_state(
     sup: tauri::State<'_, Arc<Supervisor>>,
 ) -> Result<SidecarState, String> {
-    Ok(sup.snapshot().await)
+    // Eager re-probe so the topbar dots flip green within one poll interval.
+    Ok(sup.probe_snapshot().await)
 }
 
 #[tauri::command]
