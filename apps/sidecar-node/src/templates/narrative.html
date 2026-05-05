@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>__TITLE__</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --gold: #c9a84c;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: var(--bg); width: __WIDTH__px; height: __HEIGHT__px; overflow: hidden; font-family: 'EB Garamond', Georgia, serif; color: #e8e8f0; }
+    .stage { position: relative; width: 100%; height: 100%; }
+    .beat { position: absolute; inset: 0; opacity: 0; }
+    .beat img {
+      width: 100%; height: 100%; object-fit: cover;
+      filter: brightness(0.95) contrast(1.05);
+      transform-origin: center;
+      will-change: transform, opacity;
+    }
+    .vignette {
+      position: absolute; inset: 0; pointer-events: none;
+      background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.55) 100%);
+      mix-blend-mode: multiply;
+    }
+    .title-card {
+      position: absolute; bottom: 60px; left: 80px;
+      font-size: 64px; font-weight: 500; letter-spacing: -0.02em;
+      text-shadow: 0 4px 24px rgba(0,0,0,0.7);
+      color: var(--gold);
+    }
+  </style>
+  <!-- HyperFrames timeline metadata -->
+  <meta name="hyperframes-fps" content="24" />
+  <audio data-track-index="0" data-volume="1.0" src="__NARRATION__"></audio>
+  <audio data-track-index="1" data-volume="0.18" src="__MUSIC__"></audio>
+</head>
+<body>
+  <div class="stage">
+    __BEATS__
+    <div class="vignette"></div>
+    <div class="title-card" data-start="0" data-duration="6">__TITLE__</div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script>
+    // Ken Burns + crossfade per beat
+    const beats = document.querySelectorAll('.beat');
+    beats.forEach((el) => {
+      const start = parseFloat(el.dataset.start);
+      const dur = parseFloat(el.dataset.duration);
+      const img = el.querySelector('img');
+
+      gsap.set(el, { opacity: 0 });
+      gsap.set(img, { scale: 1.05 });
+
+      const fade = 0.7;
+      gsap.to(el, { opacity: 1, duration: fade, delay: start, ease: 'power2.out' });
+      gsap.to(el, { opacity: 0, duration: fade, delay: start + dur - fade, ease: 'power2.in' });
+      gsap.to(img, { scale: 1.18, duration: dur, delay: start, ease: 'none' });
+    });
+  </script>
+</body>
+</html>

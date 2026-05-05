@@ -1,0 +1,62 @@
+[package]
+name = "xianxia-studio"
+version = "0.1.0"
+description = "Xianxia Studio — automated YouTube content production"
+authors = ["Xianxia Studio Team"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "xianxia_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-http = "2"
+tauri-plugin-os = "2"
+tauri-plugin-store = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+sysinfo = "0.32"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros", "migrate", "chrono"] }
+chrono = { version = "0.4", features = ["serde"] }
+ulid = { version = "1", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+sha2 = "0.10"
+hex = "0.4"
+keyring = "3"
+directories = "5"
+async-trait = "0.1"
+futures = "0.3"
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+zip = "2"
+flate2 = "1"
+tar = "0.4"
+which = "7"
+
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+nvml-wrapper = { version = "0.10", optional = true }
+
+[features]
+default = ["custom-protocol", "nvidia"]
+custom-protocol = ["tauri/custom-protocol"]
+nvidia = ["dep:nvml-wrapper"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

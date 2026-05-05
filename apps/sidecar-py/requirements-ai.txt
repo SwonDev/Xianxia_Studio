@@ -1,0 +1,15 @@
+# Heavy AI deps — installed after the wizard's first run.
+# Platform-specific torch wheels are resolved by the installer (CUDA/MPS/CPU).
+-r requirements.txt
+torch>=2.5
+git+https://github.com/huggingface/diffusers
+transformers>=4.46
+accelerate>=1.1
+qwen-tts>=0.1
+faster-whisper>=1.1
+moviepy>=2.1
+audiocraft>=1.3
+scenedetect[opencv]>=0.6
+mediapipe>=0.10
+ultralytics>=8.3
+opencv-python>=4.10

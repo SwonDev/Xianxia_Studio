@@ -1,0 +1,28 @@
+{
+  "name": "xianxia-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Xianxia Studio — desktop app for automated YouTube xianxia content production",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
+  },
+  "packageManager": "pnpm@10.26.2",
+  "scripts": {
+    "dev": "pnpm --filter @xianxia/desktop dev",
+    "build": "pnpm --filter @xianxia/desktop build",
+    "tauri:dev": "pnpm --filter @xianxia/desktop tauri dev",
+    "tauri:build": "pnpm --filter @xianxia/desktop tauri build",
+    "icons": "node scripts/gen-icons.mjs",
+    "design:lint": "npx @google/design.md lint DESIGN.md",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json,yaml,yml}\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "prettier": "^3.4.2",
+    "sharp": "^0.34.5"
+  }
+}

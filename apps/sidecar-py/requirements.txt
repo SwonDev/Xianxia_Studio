@@ -1,0 +1,12 @@
+# Core (always installed) — small, fast bootstrap
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.9
+websockets>=13
+httpx>=0.27
+soundfile>=0.12
+numpy>=1.26
+huggingface_hub>=0.26
+hf_transfer>=0.1.8
+Pillow>=10.4
+python-multipart>=0.0.20

@@ -1,0 +1,179 @@
+@import "tailwindcss";
+
+@plugin "tailwindcss-animate";
+
+@theme {
+  /* ─── Fonts ─────────────────────────────────────────────── */
+  --font-display: "EB Garamond", "Noto Serif SC", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+
+  /* ─── Colors — primitive (DESIGN.md tokens) ─────────────── */
+  --color-obsidian-950: oklch(0.13 0.01 280);
+  --color-obsidian-900: oklch(0.18 0.012 280);
+  --color-obsidian-800: oklch(0.23 0.012 280);
+  --color-obsidian-700: oklch(0.30 0.012 280);
+
+  --color-gold-300: oklch(0.83 0.13 85);
+  --color-gold-400: oklch(0.78 0.13 82);
+  --color-gold-500: oklch(0.74 0.13 80);
+  --color-gold-600: oklch(0.65 0.12 78);
+
+  --color-jade-300: oklch(0.80 0.11 158);
+  --color-jade-400: oklch(0.72 0.13 160);
+  --color-jade-500: oklch(0.60 0.11 162);
+  --color-jade-600: oklch(0.45 0.06 165);
+  --color-jade-700: oklch(0.36 0.05 165);
+
+  --color-crimson-400: oklch(0.62 0.16 22);
+  --color-crimson-500: oklch(0.52 0.18 22);
+
+  --color-paper-50:  oklch(0.97 0.005 90);
+  --color-paper-100: oklch(0.93 0.005 280);
+  --color-paper-200: oklch(0.85 0.008 280);
+  --color-paper-300: oklch(0.66 0.01 280);
+  --color-paper-400: oklch(0.50 0.01 280);
+
+  /* ─── Spacing ───────────────────────────────────────────── */
+  --spacing: 0.25rem;
+
+  /* ─── Radius ────────────────────────────────────────────── */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 20px;
+  --radius-2xl: 28px;
+
+  /* ─── Shadows ───────────────────────────────────────────── */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.45), 0 0 1px rgba(201,168,76,0.08);
+  --shadow-lg: 0 12px 28px rgba(0,0,0,0.55), 0 0 1px rgba(201,168,76,0.12);
+  --shadow-glow-gold: 0 0 24px rgba(201,168,76,0.35);
+  --shadow-glow-jade: 0 0 24px rgba(82,183,136,0.35);
+
+  /* ─── Easing ────────────────────────────────────────────── */
+  --ease-cinematic: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ─── Semantic tokens (CSS vars used by shadcn) ─────────── */
+:root {
+  --background: var(--color-obsidian-950);
+  --foreground: var(--color-paper-100);
+
+  --card: var(--color-obsidian-900);
+  --card-foreground: var(--color-paper-100);
+
+  --popover: var(--color-obsidian-800);
+  --popover-foreground: var(--color-paper-100);
+
+  --primary: var(--color-gold-500);
+  --primary-foreground: var(--color-obsidian-950);
+
+  --secondary: var(--color-jade-400);
+  --secondary-foreground: var(--color-obsidian-950);
+
+  --muted: var(--color-obsidian-800);
+  --muted-foreground: var(--color-paper-300);
+
+  --accent: var(--color-gold-300);
+  --accent-foreground: var(--color-obsidian-950);
+
+  --destructive: var(--color-crimson-500);
+  --destructive-foreground: var(--color-paper-50);
+
+  --border: oklch(0.30 0.012 280);
+  --input: oklch(0.23 0.012 280);
+  --ring: var(--color-gold-500);
+
+  --sidebar: var(--color-obsidian-950);
+  --sidebar-foreground: var(--color-paper-200);
+  --sidebar-primary: var(--color-gold-500);
+  --sidebar-primary-foreground: var(--color-obsidian-950);
+  --sidebar-accent: var(--color-obsidian-800);
+  --sidebar-accent-foreground: var(--color-paper-100);
+  --sidebar-border: oklch(0.23 0.012 280);
+  --sidebar-ring: var(--color-gold-500);
+
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html, body, #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow: hidden;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    font-feature-settings: "kern", "liga", "calt";
+    letter-spacing: -0.01em;
+  }
+
+  ::selection {
+    background-color: oklch(0.74 0.13 80 / 0.35);
+    color: var(--color-paper-50);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.30 0.012 280);
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: oklch(0.40 0.012 280);
+  }
+}
+
+@layer utilities {
+  .text-shimmer-gold {
+    background: linear-gradient(
+      90deg,
+      var(--color-gold-500) 0%,
+      var(--color-gold-300) 50%,
+      var(--color-gold-500) 100%
+    );
+    background-size: 200% auto;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmer 6s linear infinite;
+  }
+
+  @keyframes shimmer {
+    to { background-position: -200% center; }
+  }
+
+  .glow-gold {
+    box-shadow: var(--shadow-glow-gold);
+  }
+  .glow-jade {
+    box-shadow: var(--shadow-glow-jade);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

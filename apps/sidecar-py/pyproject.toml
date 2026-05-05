@@ -1,0 +1,41 @@
+[project]
+name = "xianxia-sidecar"
+version = "0.1.0"
+description = "Python AI sidecar for Xianxia Studio"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "websockets>=13",
+    "httpx>=0.27",
+    "soundfile>=0.12",
+    "numpy>=1.26",
+    "huggingface_hub>=0.26",
+    "Pillow>=10.4",
+    "python-multipart>=0.0.20",
+]
+
+[project.optional-dependencies]
+ai = [
+    "torch>=2.5",
+    "diffusers @ git+https://github.com/huggingface/diffusers",
+    "transformers>=4.46",
+    "accelerate>=1.1",
+    "qwen-tts>=0.1",
+    "faster-whisper>=1.1",
+    "moviepy>=2.1",
+    "audiocraft>=1.3",
+    "scenedetect[opencv]>=0.6",
+    "mediapipe>=0.10",
+    "ultralytics>=8.3",
+    "opencv-python>=4.10",
+]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

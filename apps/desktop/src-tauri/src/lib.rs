@@ -1,0 +1,90 @@
+// `dead_code` warnings during ramp-up: many modules expose APIs that are wired
+// to UI commands incrementally per milestone. Suppress until M7 ships.
+#![allow(dead_code)]
+
+mod commands;
+mod db;
+mod hardware;
+mod installer;
+mod pipeline;
+mod scheduler;
+mod sidecars;
+mod youtube;
+
+use std::sync::Arc;
+use tauri::Manager;
+use tracing_subscriber::EnvFilter;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .init();
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![
+            commands::greet,
+            commands::get_app_version,
+            commands::list_projects,
+            commands::create_project,
+            commands::start_generation,
+            hardware::detect_hardware,
+            hardware::safe_llm_alternative,
+            installer::runner::run_install,
+            installer::runner::get_install_manifest,
+            installer::llm::install_llm,
+            installer::verify::verify_stack,
+            installer::detect::detect_installed_tools,
+            sidecars::get_sidecar_state,
+            sidecars::get_workspace_root,
+            sidecars::get_sidecar_logs,
+            youtube::commands::youtube_status,
+            youtube::commands::youtube_disconnect,
+            youtube::commands::youtube_oauth_start,
+            youtube::commands::youtube_upload,
+            youtube::commands::youtube_publish_now,
+            youtube::commands::youtube_app_status,
+            youtube::commands::youtube_set_app_credentials,
+            youtube::commands::youtube_clear_app_credentials,
+        ])
+        .setup(|app| {
+            #[cfg(debug_assertions)]
+            {
+                let window = app.get_webview_window("main").unwrap();
+                window.open_devtools();
+            }
+            tracing::info!("Xianxia Studio starting up");
+
+            // Bring up the database, sidecar supervisor, and scheduler asynchronously.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match db::init_pool().await {
+                    Ok(pool) => {
+                        let pool = Arc::new(pool);
+                        handle.manage(pool.clone());
+
+                        let supervisor = Arc::new(sidecars::Supervisor::new());
+                        let _ = supervisor.start_all().await;
+                        let supervisor_for_loop = supervisor.clone();
+                        tokio::spawn(async move { supervisor_for_loop.run_health_loop().await });
+                        handle.manage(supervisor);
+
+                        let pool_clone = pool.clone();
+                        tokio::spawn(async move { scheduler::run_loop(pool_clone).await });
+
+                        tracing::info!("background services up");
+                    }
+                    Err(e) => tracing::error!(error = %e, "db init failed"),
+                }
+            });
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

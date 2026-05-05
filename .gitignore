@@ -1,0 +1,91 @@
+# ─── Dependencies ────────────────────────────────────────────────
+node_modules/
+**/node_modules/
+.pnp
+.pnp.js
+.pnp.cjs
+.yarn/install-state.gz
+
+# ─── Build outputs ───────────────────────────────────────────────
+dist/
+dist-ssr/
+build/
+out/
+**/dist/
+**/build/
+
+# ─── Tauri / Rust ────────────────────────────────────────────────
+target/
+**/target/
+src-tauri/target/
+src-tauri/gen/
+**/Cargo.lock.bak
+
+# ─── Python sidecar ──────────────────────────────────────────────
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ─── Models, weights, runtime data (NEVER commit) ────────────────
+models/
+weights/
+*.gguf
+*.safetensors
+*.ckpt
+*.bin
+*.onnx
+runtime/
+embedded-python/
+embedded-node/
+
+# ─── User data ───────────────────────────────────────────────────
+xianxia.db
+xianxia.db-journal
+xianxia.db-wal
+xianxia.db-shm
+secrets/
+.env
+.env.local
+.env.*.local
+youtube-credentials.json
+*.token
+
+# ─── Editor / OS ─────────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Cloud-sync staging files (Drive/OneDrive/Dropbox temp) ────────────────────────
+.tmp.drivedownload/
+.tmp.driveupload/
+
+# ─── Logs ────────────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── Test outputs ────────────────────────────────────────────────
+coverage/
+.nyc_output/
+*.lcov
+
+# ─── Temporary ───────────────────────────────────────────────────
+*.tmp
+*.bak
+.cache/
