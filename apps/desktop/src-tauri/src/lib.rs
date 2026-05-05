@@ -34,6 +34,7 @@ pub fn run() {
             commands::list_projects,
             commands::create_project,
             commands::start_generation,
+            commands::list_voices,
             hardware::detect_hardware,
             hardware::safe_llm_alternative,
             installer::runner::run_install,

@@ -126,12 +126,46 @@ CREATE INDEX IF NOT EXISTS idx_assets_project_kind ON assets(project_id, kind);
 CREATE INDEX IF NOT EXISTS idx_scheduled_at ON scheduled_uploads(scheduled_at, status);
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts);
 
--- Seed default voice profiles for Qwen3-TTS
+-- Seed Qwen3-TTS voice catalog: 9 preset voices × 10 supported languages
+-- (Chinese, English, Japanese, Korean, German, French, Russian, Portuguese,
+--  Spanish, Italian). Each voice carries the same speaker timbre across
+-- languages thanks to Qwen3-TTS multilingual training; we mark the
+-- linguistically-strongest voice per language as default.
 INSERT OR IGNORE INTO voice_profiles (id, name, language, kind, description, is_default) VALUES
-    ('preset-vivian-en',    'Vivian',    'en', 'preset', 'Female narrator, warm', 1),
-    ('preset-serena-en',    'Serena',    'en', 'preset', 'Female narrator, calm', 0),
-    ('preset-eric-en',      'Eric',      'en', 'preset', 'Male narrator, deep',   0),
-    ('preset-dylan-en',     'Dylan',     'en', 'preset', 'Male narrator, bright', 0),
-    ('preset-vivian-zh',    'Vivian',    'zh', 'preset', 'Female narrator, warm', 1),
-    ('preset-uncle-fu-zh',  'Uncle Fu',  'zh', 'preset', 'Elder male, sage tone', 0),
-    ('preset-vivian-es',    'Vivian',    'es', 'preset', 'Female narrator, warm', 1);
+    -- English
+    ('preset-vivian-en',     'Vivian',     'en', 'preset', 'Female narrator, warm cinematic', 1),
+    ('preset-serena-en',     'Serena',     'en', 'preset', 'Female narrator, calm meditative', 0),
+    ('preset-eric-en',       'Eric',       'en', 'preset', 'Male narrator, deep authoritative', 0),
+    ('preset-dylan-en',      'Dylan',      'en', 'preset', 'Male narrator, bright youthful', 0),
+    ('preset-aiden-en',      'Aiden',      'en', 'preset', 'Male narrator, mellow storyteller', 0),
+    ('preset-ryan-en',       'Ryan',       'en', 'preset', 'Male narrator, theatrical', 0),
+    -- Spanish
+    ('preset-vivian-es',     'Vivian',     'es', 'preset', 'Female narrator, multilingual', 1),
+    ('preset-serena-es',     'Serena',     'es', 'preset', 'Female narrator, soft', 0),
+    ('preset-eric-es',       'Eric',       'es', 'preset', 'Male narrator, deep', 0),
+    ('preset-aiden-es',      'Aiden',      'es', 'preset', 'Male narrator, warm', 0),
+    -- Chinese (Mandarin)
+    ('preset-vivian-zh',     'Vivian',     'zh', 'preset', 'Female narrator, multilingual',   0),
+    ('preset-uncle-fu-zh',   'Uncle Fu',   'zh', 'preset', 'Elder male, native Mandarin sage', 1),
+    ('preset-eric-zh',       'Eric',       'zh', 'preset', 'Male narrator, deep',              0),
+    -- Japanese
+    ('preset-ono-anna-ja',   'Ono Anna',   'ja', 'preset', 'Female narrator, native Japanese', 1),
+    ('preset-vivian-ja',     'Vivian',     'ja', 'preset', 'Female narrator, multilingual',    0),
+    -- Korean
+    ('preset-sohee-ko',      'Sohee',      'ko', 'preset', 'Female narrator, native Korean',   1),
+    ('preset-vivian-ko',     'Vivian',     'ko', 'preset', 'Female narrator, multilingual',    0),
+    -- German
+    ('preset-serena-de',     'Serena',     'de', 'preset', 'Female narrator, clear',          1),
+    ('preset-eric-de',       'Eric',       'de', 'preset', 'Male narrator, deep',             0),
+    -- French
+    ('preset-vivian-fr',     'Vivian',     'fr', 'preset', 'Female narrator',                 1),
+    ('preset-aiden-fr',      'Aiden',      'fr', 'preset', 'Male narrator',                   0),
+    -- Italian
+    ('preset-vivian-it',     'Vivian',     'it', 'preset', 'Female narrator',                 1),
+    ('preset-eric-it',       'Eric',       'it', 'preset', 'Male narrator',                   0),
+    -- Portuguese
+    ('preset-vivian-pt',     'Vivian',     'pt', 'preset', 'Female narrator',                 1),
+    ('preset-aiden-pt',      'Aiden',      'pt', 'preset', 'Male narrator',                   0),
+    -- Russian
+    ('preset-vivian-ru',     'Vivian',     'ru', 'preset', 'Female narrator',                 1),
+    ('preset-eric-ru',       'Eric',       'ru', 'preset', 'Male narrator',                   0);

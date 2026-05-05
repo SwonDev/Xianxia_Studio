@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tauri::AppHandle;
 
 use crate::db::projects::{self, NewProject, Project};
+use crate::db::voices::{self, VoiceProfile};
 use crate::db::DbPool;
 use crate::pipeline::{self, GenerateRequest};
 
@@ -63,4 +64,15 @@ pub async fn start_generation(
     pipeline::start(app, pool.inner().clone(), args)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_voices(
+    pool: tauri::State<'_, Arc<DbPool>>,
+    language: Option<String>,
+) -> Result<Vec<VoiceProfile>, String> {
+    match language {
+        Some(l) => voices::list_for_language(&pool, &l).await.map_err(|e| e.to_string()),
+        None => voices::list_all(&pool).await.map_err(|e| e.to_string()),
+    }
 }

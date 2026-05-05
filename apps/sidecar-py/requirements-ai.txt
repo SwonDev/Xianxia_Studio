@@ -9,7 +9,9 @@ qwen-tts>=0.1
 faster-whisper>=1.1
 moviepy>=2.1
 audiocraft>=1.3
-scenedetect[opencv]>=0.6
+scenedetect>=0.7
 mediapipe>=0.10
-ultralytics>=8.3
 opencv-python>=4.10
+# ultralytics (YOLOv8) — only needed if you want full-body subject tracking
+# instead of MediaPipe Face. Uncomment to enable:
+# ultralytics>=8.3

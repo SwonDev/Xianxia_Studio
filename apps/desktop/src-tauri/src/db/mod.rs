@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 pub mod projects;
 pub mod settings;
+pub mod voices;
 
 pub type DbPool = Pool<Sqlite>;
 
