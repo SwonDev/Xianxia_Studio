@@ -25,7 +25,10 @@ class ImageRequest(BaseModel):
     width: int = 1344
     height: int = 768
     seed: int | None = None
-    steps: int = 9
+    # Z-Image-Turbo native step count. Some diffusers dev revisions over-iterate
+    # and crash with "index out of bounds" at step 10; 8 is the safe canonical
+    # value (the model performs 8 DiT forwards regardless).
+    steps: int = 8
     out_dir: str | None = None
     style_preset: bool = True
 
