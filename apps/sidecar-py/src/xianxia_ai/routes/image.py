@@ -37,6 +37,20 @@ class ImageResponse(BaseModel):
 
 @router.post("", response_model=ImageResponse)
 def generate(req: ImageRequest) -> ImageResponse:
+    prompt = f"{req.prompt}, {XIANXIA_STYLE}" if req.style_preset else req.prompt
+
+    # ComfyUI path (preferred when running): submit the workflow and wait.
+    if os.environ.get("XIANXIA_USE_COMFYUI") == "1":
+        from ..models import comfyui_client
+        if comfyui_client.is_running():
+            wf = comfyui_client.xianxia_workflow(
+                prompt, width=req.width, height=req.height, seed=req.seed or 42,
+            )
+            pid = comfyui_client.queue_prompt(wf)
+            out_path_comfy = comfyui_client.wait_for_image(pid)
+            return ImageResponse(image_path=str(out_path_comfy), seed=req.seed or 42)
+
+    # Diffusers path (default + fallback)
     try:
         pipe = image_model.load()
     except Exception as e:
@@ -44,8 +58,7 @@ def generate(req: ImageRequest) -> ImageResponse:
 
     import torch
 
-    prompt = f"{req.prompt}, {XIANXIA_STYLE}" if req.style_preset else req.prompt
-    seed = req.seed or torch.seed()
+    seed = req.seed if req.seed is not None else int(torch.seed() % (2**31))
 
     image = pipe(
         prompt=prompt,

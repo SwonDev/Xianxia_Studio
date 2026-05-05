@@ -27,6 +27,20 @@ pub struct DetectionReport {
     pub ffmpeg: DetectedTool,
     pub ollama: DetectedTool,
     pub git: DetectedTool,
+    pub gpu: GpuDetection,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GpuDetection {
+    pub available: bool,
+    pub vendor: String,
+    pub name: String,
+    pub vram_gb: f64,
+    pub cuda_runtime: Option<String>,
+    pub torch_index: String,    // pytorch wheel index URL (cu121, cu124, cpu)
+    pub torch_extras: Vec<String>, // ["torch==2.5.1+cu121", ...]
+    pub low_vram_mode: bool,    // <12 GB → enable sequential_cpu_offload in pipeline
+    pub recommendation: String, // human-readable summary
 }
 
 #[tauri::command]
@@ -37,6 +51,103 @@ pub fn detect_installed_tools() -> DetectionReport {
         ffmpeg: detect_ffmpeg(),
         ollama: detect_ollama(),
         git: detect_git(),
+        gpu: detect_gpu_for_torch(),
+    }
+}
+
+fn detect_gpu_for_torch() -> GpuDetection {
+    let hw = crate::hardware::detect_hardware();
+    if let Some(gpu) = hw.gpu {
+        let vram = gpu.vram_gb.unwrap_or(0.0);
+        let is_nvidia = gpu.vendor.eq_ignore_ascii_case("NVIDIA");
+        let is_apple = gpu.vendor.eq_ignore_ascii_case("Apple");
+
+        if is_nvidia {
+            // Probe nvidia-smi for the CUDA runtime version (system-installed)
+            let cuda = std::process::Command::new("nvidia-smi")
+                .output()
+                .ok()
+                .and_then(|o| {
+                    let s = String::from_utf8_lossy(&o.stdout).to_string();
+                    s.lines()
+                        .find(|l| l.contains("CUDA Version"))
+                        .and_then(|l| l.split("CUDA Version:").nth(1))
+                        .map(|v| v.split('|').next().unwrap_or("").trim().to_string())
+                });
+            // Choose pytorch index. The cu121 wheels work with any CUDA runtime
+            // ≥ 12.1 thanks to backwards compat. cu124 is faster on Blackwell+.
+            let major: u32 = cuda
+                .as_deref()
+                .and_then(|s| s.split('.').next())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(12);
+            let (idx, suffix) = if major >= 13 {
+                ("https://download.pytorch.org/whl/cu124", "cu124")
+            } else if major >= 12 {
+                ("https://download.pytorch.org/whl/cu121", "cu121")
+            } else {
+                ("https://download.pytorch.org/whl/cu118", "cu118")
+            };
+            let extras = vec![
+                format!("torch==2.5.1+{suffix}"),
+                format!("torchvision==0.20.1+{suffix}"),
+                format!("torchaudio==2.5.1+{suffix}"),
+            ];
+            let low_vram = vram < 12.0;
+            return GpuDetection {
+                available: true,
+                vendor: gpu.vendor,
+                name: gpu.name,
+                vram_gb: vram,
+                cuda_runtime: cuda,
+                torch_index: idx.to_string(),
+                torch_extras: extras,
+                low_vram_mode: low_vram,
+                recommendation: if low_vram {
+                    format!(
+                        "GPU NVIDIA con {:.1} GB VRAM — torch+{} con sequential_cpu_offload",
+                        vram, suffix
+                    )
+                } else {
+                    format!("GPU NVIDIA con {:.1} GB VRAM — torch+{}", vram, suffix)
+                },
+            };
+        }
+
+        if is_apple {
+            return GpuDetection {
+                available: true,
+                vendor: gpu.vendor,
+                name: gpu.name,
+                vram_gb: vram,
+                cuda_runtime: None,
+                torch_index: "https://download.pytorch.org/whl/cpu".to_string(),
+                torch_extras: vec![
+                    "torch==2.5.1".into(),
+                    "torchvision==0.20.1".into(),
+                    "torchaudio==2.5.1".into(),
+                ],
+                low_vram_mode: false,
+                recommendation: format!("Apple Silicon — torch nativo MPS, {:.1} GB shared", vram),
+            };
+        }
+    }
+
+    // CPU fallback
+    GpuDetection {
+        available: false,
+        vendor: "CPU".into(),
+        name: "Sin GPU dedicada".into(),
+        vram_gb: 0.0,
+        cuda_runtime: None,
+        torch_index: "https://download.pytorch.org/whl/cpu".to_string(),
+        torch_extras: vec![
+            "torch==2.5.1".into(),
+            "torchvision==0.20.1".into(),
+            "torchaudio==2.5.1".into(),
+        ],
+        low_vram_mode: true,
+        recommendation: "Sin GPU CUDA — torch CPU + low_vram_mode (será lento)".into(),
     }
 }
 
