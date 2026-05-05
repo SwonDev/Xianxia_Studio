@@ -42,6 +42,7 @@ function GeneratorWizard() {
   const [experimental, setExperimental] = useState(false);
   const [useMusicgen, setUseMusicgen] = useState(false);
   const [voice, setVoice] = useState('Vivian');
+  const [vertical, setVertical] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [phaseState, setPhaseState] = useState<Record<number, PhaseUpdate>>({});
   const [error, setError] = useState<string | null>(null);
@@ -72,6 +73,8 @@ function GeneratorWizard() {
       languages,
       target_minutes: minutes,
       experimental_llm: experimental,
+      vertical,
+      voice,
     };
     try {
       const id = await tauri.startGeneration(req);
@@ -110,6 +113,7 @@ function GeneratorWizard() {
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               placeholder="El ascenso del Inmortal del Trueno…"
+              data-testid="topic-input"
               className="w-full bg-obsidian-800 border border-border/50 rounded-md px-3 py-2 text-paper-100 placeholder:text-paper-400 focus:outline-none focus:border-gold-500 focus:ring-2 focus:ring-gold-500/20"
             />
             <div className="flex flex-wrap gap-1.5 mt-2">
@@ -129,11 +133,12 @@ function GeneratorWizard() {
             <div className="flex items-center gap-3">
               <input
                 type="range"
-                min={5}
+                min={1}
                 max={25}
                 step={1}
                 value={minutes}
                 onChange={(e) => setMinutes(Number(e.target.value))}
+                data-testid="minutes-slider"
                 className="flex-1 accent-gold-500"
               />
               <span className="font-mono text-sm tabular-nums w-12 text-right">{minutes} min</span>
@@ -147,6 +152,7 @@ function GeneratorWizard() {
                 return (
                   <button
                     key={l}
+                    data-testid={`lang-${l}`}
                     onClick={() =>
                       setLanguages((prev) =>
                         active ? prev.filter((x) => x !== l) : [...prev, l],
@@ -187,6 +193,35 @@ function GeneratorWizard() {
             </div>
           </Field>
 
+          <Field label="Formato">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setVertical(false)}
+                data-testid="aspect-horizontal"
+                className={cn(
+                  'px-3 py-1.5 rounded-md text-sm border transition-all',
+                  !vertical
+                    ? 'bg-gold-500/20 border-gold-500 text-gold-300'
+                    : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-gold-500/40',
+                )}
+              >
+                Horizontal 1920×1080
+              </button>
+              <button
+                onClick={() => setVertical(true)}
+                data-testid="aspect-vertical"
+                className={cn(
+                  'px-3 py-1.5 rounded-md text-sm border transition-all',
+                  vertical
+                    ? 'bg-gold-500/20 border-gold-500 text-gold-300'
+                    : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-gold-500/40',
+                )}
+              >
+                Vertical 1080×1920
+              </button>
+            </div>
+          </Field>
+
           <Toggle
             label="Modo experimental (modelo abliterated)"
             description="Sin filtros de seguridad. Útil para xianxia oscuro. Bajo tu responsabilidad."
@@ -204,6 +239,7 @@ function GeneratorWizard() {
 
           <button
             onClick={handleStart}
+            data-testid="start-generation"
             disabled={!topic.trim() || activeProjectId !== null}
             className={cn(
               'mt-6 w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-md font-medium text-sm transition-colors',
@@ -220,7 +256,7 @@ function GeneratorWizard() {
         {/* Right: pipeline progress */}
         <aside className="rounded-xl border border-border/50 bg-card/60 backdrop-blur p-6">
           <h2 className="font-display text-xl mb-5">Pipeline</h2>
-          <ol className="space-y-2">
+          <ol className="space-y-2" data-testid="pipeline-list">
             {PHASES.map((p) => {
               const update = phaseState[p.phase];
               const status = update?.status ?? 'pending';
@@ -228,6 +264,9 @@ function GeneratorWizard() {
               return (
                 <li
                   key={p.phase}
+                  data-testid={`phase-${p.phase}`}
+                  data-status={status}
+                  data-message={update?.message ?? ''}
                   className={cn(
                     'p-3 rounded-md border flex items-center gap-3 transition-colors',
                     status === 'done'
@@ -257,7 +296,7 @@ function GeneratorWizard() {
           </ol>
 
           {error && (
-            <div className="mt-4 p-3 rounded-md bg-crimson-500/15 border border-crimson-500/40 text-xs text-paper-100 flex items-start gap-2">
+            <div data-testid="pipeline-error" className="mt-4 p-3 rounded-md bg-crimson-500/15 border border-crimson-500/40 text-xs text-paper-100 flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-crimson-400 shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>

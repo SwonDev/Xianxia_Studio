@@ -12,6 +12,25 @@ use crate::installer::paths;
 const PY_SIDECAR: &str = "http://127.0.0.1:8731";
 const NODE_SIDECAR: &str = "http://127.0.0.1:8732";
 
+/// Best-effort VRAM unload between phases. Never fails the pipeline.
+async fn unload(client: &reqwest::Client, target: &str) {
+    let _ = client
+        .post(format!("{}/unload?target={}", PY_SIDECAR, target))
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await;
+}
+
+async fn node_alive(client: &reqwest::Client) -> bool {
+    client
+        .get(format!("{}/health", NODE_SIDECAR))
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GenerateRequest {
     pub topic: String,
@@ -106,6 +125,8 @@ async fn run(
     let markers = script_resp["markers"].clone();
     persist_step(pool, pid, 1, "done", &script_resp).await?;
     emit(app, pid, 1, "done", 100.0, "Guion listo");
+    // Free Ollama VRAM before TTS loads (~3 GB recovered).
+    unload(&client, "ollama").await;
 
     // ─── Phase 2: Metadata ───────────────────────────────────────────
     emit(app, pid, 2, "running", 0.0, "Metadatos…");
@@ -139,6 +160,8 @@ async fn run(
     let narration_audio = tts["audio_path"].as_str().unwrap_or("").to_string();
     persist_step(pool, pid, 3, "done", &tts).await?;
     emit(app, pid, 3, "done", 100.0, "Voz lista");
+    // Free Qwen3-TTS VRAM before Z-Image loads (~4-5 GB recovered).
+    unload(&client, "tts").await;
 
     // ─── Phase 4: Images (one per IMAGE marker) ──────────────────────
     emit(app, pid, 4, "running", 0.0, "Generando imágenes…");
@@ -173,6 +196,53 @@ async fn run(
     persist_step(pool, pid, 4, "done", &serde_json::json!({"beats": beats})).await?;
     emit(app, pid, 4, "done", 100.0, "Imágenes listas");
 
+    // Sequential VRAM swap: free Z-Image (ComfyUI) before depth/render/whisper.
+    unload(&client, "comfyui").await;
+    unload(&client, "image").await;
+
+    // ─── Phase 4b: Depth segmentation (rembg) for parallax 2.5D layers ──
+    // Best effort: if rembg/onnxruntime aren't installed or any image errors,
+    // we fall through to the FFmpeg-fast render which doesn't need layers.
+    emit(app, pid, 4, "running", 80.0, "Segmentando capas de profundidad…");
+    let img_paths: Vec<String> = beats
+        .iter()
+        .map(|b| b["path"].as_str().unwrap_or("").to_string())
+        .collect();
+    let mut all_layered = false;
+    if !img_paths.is_empty() {
+        let depth_call = client
+            .post(format!("{}/depth/batch", PY_SIDECAR))
+            .timeout(std::time::Duration::from_secs(10 * 60))
+            .json(&serde_json::json!({
+                "images": img_paths,
+                "model": "u2net",
+                "inpaint_radius": 12,
+                "feather_pixels": 4,
+            }))
+            .send()
+            .await;
+        if let Ok(resp) = depth_call {
+            if resp.status().is_success() {
+                if let Ok(depth_resp) = resp.json::<serde_json::Value>().await {
+                    if let Some(results) = depth_resp["results"].as_array() {
+                        if results.len() == beats.len() {
+                            for (i, r) in results.iter().enumerate() {
+                                if let (Some(bg), Some(fg)) =
+                                    (r["bg_path"].as_str(), r["fg_path"].as_str())
+                                {
+                                    beats[i]["path"] = serde_json::json!(bg);
+                                    beats[i]["foreground_path"] = serde_json::json!(fg);
+                                }
+                            }
+                            all_layered = true;
+                            emit(app, pid, 4, "done", 100.0, "Imágenes + capas 2.5D");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ─── Phase 5: Music selector ─────────────────────────────────────
     emit(app, pid, 5, "running", 0.0, "Seleccionando música…");
     let music: serde_json::Value = client
@@ -189,25 +259,72 @@ async fn run(
     persist_step(pool, pid, 5, "done", &music).await?;
     emit(app, pid, 5, "done", 100.0, "Música lista");
 
-    // ─── Phase 6: Render via HyperFrames (Node sidecar) ──────────────
-    emit(app, pid, 6, "running", 0.0, "Renderizando vídeo…");
+    // ─── Phase 6: Render ─────────────────────────────────────────────
+    // Mode selection:
+    //   - HyperFrames (Node sidecar) when ALL beats have depth layers AND
+    //     Node sidecar is up: full effects pack (parallax 2.5D, atmospheric
+    //     particles, cinematic transitions). Slower (~5-10× realtime).
+    //   - FFmpeg-fast (Python sidecar /render): zoompan + xfade + cinematic
+    //     stack + NVENC. ~1× realtime, no parallax/particles but full grade.
     let video_out = format!("{}/video.mp4", out_dir);
-    let render: serde_json::Value = client
-        .post(format!("{}/render/narrative", NODE_SIDECAR))
-        .json(&serde_json::json!({
-            "project_id": pid,
-            "title": req.topic,
-            "images": beats,
-            "narration_path": narration_audio,
-            "music_path": music["audio_path"],
-            "out_path": video_out,
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let use_hyperframes = all_layered && node_alive(&client).await;
+    emit(
+        app, pid, 6, "running", 0.0,
+        if use_hyperframes {
+            "Renderizando con HyperFrames (parallax 2.5D + atmospherics)…"
+        } else {
+            "Renderizando con FFmpeg (zoompan + xfade + cinematic + NVENC)…"
+        },
+    );
+    let render: serde_json::Value = if use_hyperframes {
+        client
+            .post(format!("{}/render/narrative", NODE_SIDECAR))
+            .timeout(std::time::Duration::from_secs(45 * 60))
+            .json(&serde_json::json!({
+                "project_id": pid,
+                "title": req.topic,
+                "images": beats,
+                "narration_path": narration_audio,
+                "music_path": music["audio_path"],
+                "out_path": video_out,
+                "cinematic": "full",
+                "music_ducking": true,
+            }))
+            .send()
+            .await?
+            .json()
+            .await?
+    } else {
+        // Map beats → ImageBeat for /render
+        let images: Vec<serde_json::Value> = beats
+            .iter()
+            .map(|b| serde_json::json!({
+                "image_path": b["path"],
+                "start_seconds": b["start"],
+                "duration_seconds": b["duration"],
+            }))
+            .collect();
+        client
+            .post(format!("{}/render", PY_SIDECAR))
+            .timeout(std::time::Duration::from_secs(15 * 60))
+            .json(&serde_json::json!({
+                "images": images,
+                "narration_path": narration_audio,
+                "music_path": music["audio_path"],
+                "music_volume": 0.32,
+                "music_ducking": true,
+                "out_dir": out_dir,
+                "crossfade_seconds": 0.7,
+                "cinematic": "full",
+            }))
+            .send()
+            .await?
+            .json()
+            .await?
+    };
     persist_step(pool, pid, 6, "done", &render).await?;
-    emit(app, pid, 6, "done", 100.0, "Vídeo renderizado");
+    let render_mode = if use_hyperframes { "HyperFrames" } else { "FFmpeg" };
+    emit(app, pid, 6, "done", 100.0, &format!("Vídeo renderizado ({})", render_mode));
 
     // ─── Phase 7: Thumbnail ──────────────────────────────────────────
     emit(app, pid, 7, "running", 0.0, "Generando thumbnail…");

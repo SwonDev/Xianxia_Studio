@@ -1,5 +1,7 @@
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+// Routed through ./tauri-shim so the same UI works in both the Tauri webview
+// (real invoke/listen) and a regular browser (HTTP-mapped sidecar calls). See
+// tauri-shim.ts for the runtime detection and command-by-command mapping.
+import { invoke, listen, type UnlistenFn } from './tauri-shim';
 
 export interface AppVersion {
   version: string;
@@ -175,6 +177,10 @@ export interface GenerateRequest {
   languages: string[];
   target_minutes: number;
   experimental_llm: boolean;
+  /** When true, render at 1080x1920 (vertical/Shorts aspect). Defaults to false. */
+  vertical?: boolean;
+  /** Voice preset name for Qwen3-TTS. Defaults to 'Vivian'. */
+  voice?: string;
 }
 
 export interface PhaseUpdate {

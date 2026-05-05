@@ -187,7 +187,9 @@ async function runHyperFrames(
   const args = ['render', comp, '--output', out, '--fps', String(fps)];
   if (still) args.push('--still');
   try {
-    await execa('hyperframes', args, { stdio: 'inherit' });
+    // preferLocal: true lets execa find `hyperframes` from node_modules/.bin,
+    // so the package can be installed locally per-sidecar (autoinstallable).
+    await execa('hyperframes', args, { stdio: 'inherit', preferLocal: true });
   } catch (err) {
     logger.error({ err }, 'hyperframes render failed');
     throw err;

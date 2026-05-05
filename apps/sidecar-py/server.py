@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from xianxia_ai.routes import (
+    depth,
     health,
     image,
     install,
@@ -25,6 +26,7 @@ from xianxia_ai.routes import (
     subtitles,
     transcribe,
     tts,
+    unload,
 )
 
 logging.basicConfig(
@@ -64,6 +66,8 @@ app.include_router(transcribe.router, prefix="/transcribe", tags=["transcribe"])
 app.include_router(subtitles.router, prefix="/subtitles", tags=["subtitles"])
 app.include_router(render.router, prefix="/render", tags=["render"])
 app.include_router(shorts.router, prefix="/shorts", tags=["shorts"])
+app.include_router(depth.router, prefix="/depth", tags=["depth"])
+app.include_router(unload.router, prefix="/unload", tags=["unload"])
 
 
 if __name__ == "__main__":

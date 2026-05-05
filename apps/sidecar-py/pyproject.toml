@@ -30,6 +30,8 @@ ai = [
     "mediapipe>=0.10",
     "ultralytics>=8.3",
     "opencv-python>=4.10",
+    "rembg>=2.0.59",
+    "onnxruntime-gpu>=1.19; platform_system=='Windows'",
 ]
 dev = [
     "ruff>=0.8",

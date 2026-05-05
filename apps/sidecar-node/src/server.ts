@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import cors from '@fastify/cors';
 import {
   renderNarrative,
   renderShort,
@@ -12,6 +13,13 @@ import { logger } from './logger.js';
 // Fastify v5: use `loggerInstance` to pass a pre-built logger; `logger` only
 // accepts a config object.
 const app = Fastify({ loggerInstance: logger });
+
+// CORS for the browser-mode shim (Vite dev :1420) AND the Tauri webview.
+await app.register(cors, {
+  origin: ['http://localhost:1420', 'http://127.0.0.1:1420', 'tauri://localhost'],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  credentials: true,
+});
 
 app.get('/health', async () => ({
   ok: true,
