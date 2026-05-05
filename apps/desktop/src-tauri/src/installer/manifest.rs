@@ -57,6 +57,11 @@ pub enum AssetKind {
     OllamaStart,
     /// Run a smoke test against all sidecars + Ollama.
     SmokeTest,
+    /// `git clone` a repository into a target directory inside runtime/.
+    GitClone { repo_url: String, target: String },
+    /// Place a HuggingFace single file at a target path (used to drop the
+    /// Comfy-Org/z_image_turbo split files into ComfyUI's models/ directories).
+    HuggingfaceFileTo { repo: String, filename: String, target_path: String },
 }
 
 /// The full install plan, in dependency order. A consumer (the runner) walks
@@ -242,6 +247,108 @@ pub fn full_manifest() -> Vec<Component> {
             kind: AssetKind::HyperFramesInstall,
             required: true,
             depends_on: vec!["node-22".to_string()],
+        },
+
+        // ─── ComfyUI (optional UI for image generation) ──────────────
+        Component {
+            id: "comfyui-clone".to_string(),
+            label: "ComfyUI (clone)".to_string(),
+            category: Category::Tool,
+            size_bytes: 250 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::GitClone {
+                repo_url: "https://github.com/comfyanonymous/ComfyUI.git".to_string(),
+                target: "comfyui".to_string(),
+            },
+            required: false,
+            depends_on: vec!["python-3.11".to_string()],
+        },
+        Component {
+            id: "comfyui-deps".to_string(),
+            label: "ComfyUI deps".to_string(),
+            category: Category::Postinstall,
+            size_bytes: 200 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::PipInstall {
+                requirements: "../runtime/comfyui/requirements.txt".to_string(),
+            },
+            required: false,
+            depends_on: vec!["comfyui-clone".to_string(), "python-deps-ai".to_string()],
+        },
+        Component {
+            id: "comfyui-gguf-node".to_string(),
+            label: "ComfyUI-GGUF custom node".to_string(),
+            category: Category::Tool,
+            size_bytes: 5 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::GitClone {
+                repo_url: "https://github.com/city96/ComfyUI-GGUF.git".to_string(),
+                target: "comfyui/custom_nodes/ComfyUI-GGUF".to_string(),
+            },
+            required: false,
+            depends_on: vec!["comfyui-clone".to_string()],
+        },
+
+        // ─── Z-Image-Turbo single-files for ComfyUI native usage ─────
+        Component {
+            id: "z-image-comfy-unet".to_string(),
+            label: "Z-Image-Turbo BF16 (ComfyUI)".to_string(),
+            category: Category::Model,
+            size_bytes: (11_700u64) * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::HuggingfaceFileTo {
+                repo: "Comfy-Org/z_image_turbo".to_string(),
+                filename: "split_files/diffusion_models/z_image_turbo_bf16.safetensors".to_string(),
+                target_path: "comfyui/models/diffusion_models/z_image_turbo_bf16.safetensors".to_string(),
+            },
+            required: false,
+            depends_on: vec!["comfyui-clone".to_string(), "python-deps-core".to_string()],
+        },
+        Component {
+            id: "z-image-comfy-clip".to_string(),
+            label: "Qwen3-4B FP8 text encoder (ComfyUI)".to_string(),
+            category: Category::Model,
+            size_bytes: (5_400u64) * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::HuggingfaceFileTo {
+                repo: "Comfy-Org/z_image_turbo".to_string(),
+                filename: "split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors".to_string(),
+                target_path: "comfyui/models/text_encoders/qwen_3_4b_fp8_mixed.safetensors".to_string(),
+            },
+            required: false,
+            depends_on: vec!["comfyui-clone".to_string(), "python-deps-core".to_string()],
+        },
+        Component {
+            id: "z-image-comfy-vae".to_string(),
+            label: "Z-Image VAE (ComfyUI)".to_string(),
+            category: Category::Model,
+            size_bytes: 320 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::HuggingfaceFileTo {
+                repo: "Comfy-Org/z_image_turbo".to_string(),
+                filename: "split_files/vae/ae.safetensors".to_string(),
+                target_path: "comfyui/models/vae/ae.safetensors".to_string(),
+            },
+            required: false,
+            depends_on: vec!["comfyui-clone".to_string(), "python-deps-core".to_string()],
         },
 
         // ─── AI models (heavy, downloaded via huggingface_hub) ────────

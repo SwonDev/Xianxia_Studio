@@ -131,7 +131,91 @@ async fn install_one(app: &AppHandle, c: &Component, workspace: Option<&Path>) -
         AssetKind::SmokeTest => {
             smoke_test(app, c).await
         }
+        AssetKind::GitClone { repo_url, target } => {
+            git_clone(app, c, repo_url, target).await
+        }
+        AssetKind::HuggingfaceFileTo { repo, filename, target_path } => {
+            hf_file_to(app, c, repo, filename, target_path).await
+        }
     }
+}
+
+async fn git_clone(app: &AppHandle, c: &Component, repo_url: &str, target: &str) -> Result<()> {
+    emit(app, &c.id, ProgressStatus::Installing, 10.0, "Cloning…");
+    let dest = paths::runtime_dir()?.join(target);
+    if dest.join(".git").exists() {
+        emit(app, &c.id, ProgressStatus::Done, 100.0, "Already cloned, skipping");
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let git = which::which("git").map_err(|_| anyhow!("git not found in PATH"))?;
+    let status = tokio::process::Command::new(git)
+        .args(["clone", "--depth", "1", repo_url])
+        .arg(&dest)
+        .status()
+        .await
+        .context("git clone failed to spawn")?;
+    if !status.success() {
+        return Err(anyhow!("git clone {} failed (exit {})", repo_url, status));
+    }
+    Ok(())
+}
+
+async fn hf_file_to(
+    app: &AppHandle,
+    c: &Component,
+    repo: &str,
+    filename: &str,
+    target_rel: &str,
+) -> Result<()> {
+    emit(app, &c.id, ProgressStatus::Downloading, 5.0, "Esperando sidecar Python…");
+    let target_full = paths::runtime_dir()?.join(target_rel);
+    if target_full.exists() {
+        let sz = std::fs::metadata(&target_full).map(|m| m.len()).unwrap_or(0);
+        if sz > 1024 * 1024 {
+            emit(app, &c.id, ProgressStatus::Done, 100.0, "Ya descargado");
+            return Ok(());
+        }
+    }
+    if let Some(parent) = target_full.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    crate::sidecars::ensure_python_sidecar().await?;
+
+    // Stage download into hf-cache, then move into the precise path
+    let stage_dir = paths::paths()?.data_dir.join("hf-cache").join("comfy-staging");
+    std::fs::create_dir_all(&stage_dir)?;
+
+    emit(app, &c.id, ProgressStatus::Downloading, 10.0, "Descargando desde HuggingFace…");
+    let body = serde_json::json!({
+        "repo": repo,
+        "filename": filename,
+        "target_dir": stage_dir.to_string_lossy(),
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60 * 60 * 4))
+        .build()?;
+    let resp: serde_json::Value = client
+        .post("http://127.0.0.1:8731/install/hf-download")
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()
+        .context("hf download failed")?
+        .json()
+        .await?;
+    let downloaded = resp["path"].as_str().unwrap_or_default();
+    if downloaded.is_empty() {
+        return Err(anyhow!("hf-download returned no path"));
+    }
+
+    emit(app, &c.id, ProgressStatus::Installing, 90.0, "Moviendo a ComfyUI…");
+    std::fs::create_dir_all(target_full.parent().unwrap())?;
+    // Use copy (not rename) so cross-volume placement works
+    std::fs::copy(downloaded, &target_full)?;
+    Ok(())
 }
 
 async fn install_archive_component(app: &AppHandle, c: &Component) -> Result<()> {
@@ -422,11 +506,40 @@ async fn smoke_test(app: &AppHandle, c: &Component) -> Result<()> {
 
 fn should_skip_via_autodetect(c: &Component) -> bool {
     use super::detect;
-    match c.kind {
+    use super::paths;
+
+    match &c.kind {
         AssetKind::PythonEmbed => detect::detect_python().compatible,
         AssetKind::NodeEmbed => detect::detect_node().compatible,
         AssetKind::FfmpegBinary => detect::detect_ffmpeg().compatible,
         AssetKind::OllamaInstaller => detect::detect_ollama().installed,
+        AssetKind::GitClone { target, .. } => {
+            // Skip if the directory already has a .git folder (already cloned)
+            paths::runtime_dir()
+                .map(|p| p.join(target).join(".git").exists())
+                .unwrap_or(false)
+        }
+        AssetKind::HuggingfaceFileTo { target_path, .. } => {
+            // Skip if the file already exists with reasonable size
+            paths::runtime_dir()
+                .map(|p| {
+                    let f = p.join(target_path);
+                    std::fs::metadata(&f)
+                        .map(|m| m.len() > 1024 * 1024)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        }
+        AssetKind::HuggingfaceFile { target, filename, .. } => {
+            paths::paths()
+                .map(|p| p.data_dir.join(target).join(filename).exists())
+                .unwrap_or(false)
+        }
+        AssetKind::HuggingfaceSnapshot { target, .. } => {
+            paths::paths()
+                .map(|p| p.data_dir.join(target).exists())
+                .unwrap_or(false)
+        }
         _ => false,
     }
 }
