@@ -262,6 +262,7 @@ async fn spawn_python() -> Result<Child> {
     let log_err = log.try_clone()?;
 
     tracing::info!(server = %server.display(), "spawning python sidecar");
+    let comfy_dir = paths::paths()?.data_dir.join("runtime").join("comfyui");
     let child = Command::new(&py)
         .arg(&server)
         .current_dir(&cwd)
@@ -270,6 +271,11 @@ async fn spawn_python() -> Result<Child> {
         .env("XIANXIA_OUT_DIR", out_dir)
         .env("HF_HOME", paths::paths()?.data_dir.join("hf-cache"))
         .env("HF_HUB_ENABLE_HF_TRANSFER", "1")
+        // Always prefer the ComfyUI path (faster, supports GGUF auto-detection
+        // for 8 GB cards). The Python /image route falls back to diffusers
+        // automatically if ComfyUI isn't reachable on :8188.
+        .env("XIANXIA_USE_COMFYUI", "1")
+        .env("XIANXIA_COMFY_DIR", comfy_dir)
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
         .stdin(Stdio::null())
