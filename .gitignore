@@ -86,6 +86,15 @@ coverage/
 *.lcov
 test-results/
 playwright-report/
+tests/proof/
+tests/screenshots/
+
+# ─── TS / build incremental state ────────────────────────────────
+*.tsbuildinfo
+**/.tsbuildinfo-*/
+
+# ─── Claude Code runtime ─────────────────────────────────────────
+.claude/
 
 # ─── Temporary ───────────────────────────────────────────────────
 *.tmp
