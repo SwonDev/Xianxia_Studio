@@ -6,6 +6,40 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-05-06
+
+### Corregido
+
+- **Ventanas de terminal ya no parpadean**. Todos los `Command::new`
+  (sidecars, `nvidia-smi`, `ffmpeg`, `wmic`, `ollama serve`, `pip
+  install`, `npm install`, ComfyUI, etc.) se lanzan ahora con el flag
+  `CREATE_NO_WINDOW` en Windows, vía un nuevo trait `HideConsole` en
+  `process_ext.rs`. Antes la app spawneaba terminales constantemente
+  durante el arranque y la verificación de stack.
+- **Sidecars Python y Node ahora arrancan en el .exe instalado**. El
+  build pre-empaqueta `apps/sidecar-py/` (sin `__pycache__` ni venv)
+  y `apps/sidecar-node/` con sus `node_modules` reales (incluyendo
+  HyperFrames CLI y todas las deps materializadas vía npm) como
+  recursos del bundle. En el primer arranque (o tras una actualización)
+  Rust los extrae a `<data_dir>/runtime/sidecar-{py,node}/` y la
+  supervisión los spawnea como cualquier runtime instalado.
+- **Versión real en la sidebar**. Antes la cabecera mostraba `v0.1.0`
+  hardcodeado; ahora consume `get_app_version` y refleja la versión
+  publicada (`v0.1.3`, `v0.1.4`, …).
+- **HyperFrames CLI detectable en el .exe**. Al ir el binario dentro
+  del bundle de `node_modules/.bin/hyperframes`, el `verify_stack` lo
+  encuentra sin necesidad del workspace de desarrollo.
+
+### Cambios internos
+
+- Nuevo módulo `apps/desktop/src-tauri/src/process_ext.rs` con un
+  trait `HideConsole` cross-platform (no-op fuera de Windows).
+- Nuevo módulo `apps/desktop/src-tauri/src/sidecars/extract.rs` para
+  copiar recursos a `runtime/` con marker `.bundle-version`.
+- Nuevo script `scripts/prepare-sidecars.mjs` que sanea la estructura
+  para Tauri (excluye caches Python, materializa deps Node con npm).
+- `pnpm tauri:build` corre `pnpm sidecars:prepare` antes del bundle.
+
 ## [0.1.2] — 2026-05-06
 
 ### Corregido

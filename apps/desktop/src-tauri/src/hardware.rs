@@ -144,9 +144,11 @@ fn detect_apple_silicon() -> Option<GpuInfo> {
 
 #[cfg(target_os = "windows")]
 fn detect_windows_wmic() -> Option<GpuInfo> {
+    use crate::process_ext::HideConsole;
     use std::process::Command;
     let output = Command::new("wmic")
         .args(["path", "win32_VideoController", "get", "Name,AdapterRAM", "/format:csv"])
+        .hide_console()
         .output()
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);

@@ -8,6 +8,8 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::process_ext::HideConsole;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DetectedTool {
     pub id: String,
@@ -65,6 +67,7 @@ fn detect_gpu_for_torch() -> GpuDetection {
         if is_nvidia {
             // Probe nvidia-smi for the CUDA runtime version (system-installed)
             let cuda = std::process::Command::new("nvidia-smi")
+                .hide_console()
                 .output()
                 .ok()
                 .and_then(|o| {
@@ -317,7 +320,7 @@ fn detect_git() -> DetectedTool {
 
 fn run_version(bin: &str, args: &[&str]) -> Option<(String, String)> {
     let path = which::which(bin).ok()?;
-    let out = Command::new(&path).args(args).output().ok()?;
+    let out = Command::new(&path).args(args).hide_console().output().ok()?;
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     let combined = if stdout.is_empty() { stderr } else { stdout };

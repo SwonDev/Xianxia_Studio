@@ -3,6 +3,7 @@ mod db;
 mod hardware;
 mod installer;
 mod pipeline;
+mod process_ext;
 mod scheduler;
 mod sidecars;
 mod youtube;
@@ -75,6 +76,14 @@ pub fn run() {
 
             // Bootstrap music library (creates dir, seeds from workspace bundle).
             commands::music::bootstrap();
+
+            // Extract bundled sidecars (sidecar-py + sidecar-node) into the
+            // runtime dir on first launch / after upgrade. The supervisor
+            // resolves them from there, so the installed .exe doesn't depend
+            // on the dev workspace existing.
+            if let Err(e) = sidecars::extract_bundled_sidecars(app.handle()) {
+                tracing::warn!(error = %e, "sidecar extraction failed — falling back to dev workspace if available");
+            }
 
             // Bring up the sidecar supervisor IMMEDIATELY (independent of DB) so
             // the topbar dots and other service-level UI work even if the DB

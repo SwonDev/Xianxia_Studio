@@ -20,10 +20,14 @@ use std::sync::Arc;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+mod extract;
 mod hf_seed;
+
+pub use extract::extract_bundled_sidecars;
 
 use crate::installer::paths;
 use crate::installer::python_env;
+use crate::process_ext::HideConsole;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -459,6 +463,7 @@ async fn spawn_python() -> Result<Child> {
         .stderr(Stdio::from(log_err))
         .stdin(Stdio::null())
         .kill_on_drop(true)
+        .hide_console()
         .spawn()?;
     Ok(child)
 }
@@ -481,6 +486,7 @@ async fn spawn_node() -> Result<Child> {
         .stderr(Stdio::from(log_err))
         .stdin(Stdio::null())
         .kill_on_drop(true)
+        .hide_console()
         .spawn()?;
     Ok(child)
 }
@@ -516,6 +522,7 @@ async fn spawn_comfyui() -> Result<Child> {
         .stderr(Stdio::from(log_err))
         .stdin(Stdio::null())
         .kill_on_drop(true)
+        .hide_console()
         .spawn()?;
     Ok(child)
 }

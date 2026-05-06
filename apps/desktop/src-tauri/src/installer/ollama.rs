@@ -9,6 +9,7 @@ use std::process::Stdio;
 use tokio::process::Command;
 
 use super::paths;
+use crate::process_ext::HideConsole;
 
 /// Returns the ollama binary path if installed, else None.
 pub fn detect() -> Option<PathBuf> {
@@ -35,6 +36,7 @@ pub async fn ensure_running() -> Result<()> {
         .arg("serve")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .hide_console()
         .spawn()
         .context("failed to start ollama serve")?;
     // Poll for readiness
@@ -52,6 +54,7 @@ pub async fn pull(model_id: &str) -> Result<()> {
     let bin = detect().ok_or_else(|| anyhow::anyhow!("ollama not in PATH"))?;
     let status = Command::new(&bin)
         .args(["pull", model_id])
+        .hide_console()
         .status()
         .await
         .context("ollama pull failed to spawn")?;
@@ -67,6 +70,7 @@ pub async fn create_from_modelfile(model_name: &str, modelfile_path: &std::path:
     let bin = detect().ok_or_else(|| anyhow::anyhow!("ollama not in PATH"))?;
     let status = Command::new(&bin)
         .args(["create", model_name, "-f", modelfile_path.to_str().unwrap()])
+        .hide_console()
         .status()
         .await
         .context("ollama create failed to spawn")?;

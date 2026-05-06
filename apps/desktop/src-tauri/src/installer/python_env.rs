@@ -4,6 +4,7 @@ use std::process::Stdio;
 use tokio::process::Command;
 
 use super::paths;
+use crate::process_ext::HideConsole;
 
 /// Python interpreter binary inside the embedded Python tree.
 pub fn python_exe() -> Result<PathBuf> {
@@ -34,6 +35,7 @@ pub async fn ensure_pip(py: &Path) -> Result<()> {
         .args(["-m", "ensurepip", "--upgrade"])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
+        .hide_console()
         .status()
         .await
         .context("failed to invoke ensurepip")?;
@@ -54,6 +56,7 @@ pub async fn pip_install(py: &Path, requirements: &Path) -> Result<()> {
             "-r",
             requirements.to_str().unwrap(),
         ])
+        .hide_console()
         .status()
         .await
         .context("pip install failed to spawn")?;

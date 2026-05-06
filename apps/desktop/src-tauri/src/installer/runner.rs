@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use super::manifest::{full_manifest, with_llm_for_tier, AssetKind, Component};
 use super::paths;
 use super::{InstallProgress, ProgressStatus};
+use crate::process_ext::HideConsole;
 
 #[derive(Default, Clone, Serialize)]
 pub struct InstallReport {
@@ -218,6 +219,7 @@ async fn git_clone(app: &AppHandle, c: &Component, repo_url: &str, target: &str)
     let status = tokio::process::Command::new(git)
         .args(["clone", "--depth", "1", repo_url])
         .arg(&dest)
+        .hide_console()
         .status()
         .await
         .context("git clone failed to spawn")?;
@@ -336,14 +338,14 @@ async fn install_archive_component(app: &AppHandle, c: &Component) -> Result<()>
         AssetKind::OllamaInstaller => {
             #[cfg(target_os = "windows")]
             {
-                let status = std::process::Command::new(&temp).arg("/SILENT").status()?;
+                let status = std::process::Command::new(&temp).arg("/SILENT").hide_console().status()?;
                 if !status.success() {
                     return Err(anyhow!("ollama installer exit {}", status));
                 }
             }
             #[cfg(target_os = "linux")]
             {
-                let status = std::process::Command::new("sh").arg(&temp).status()?;
+                let status = std::process::Command::new("sh").arg(&temp).hide_console().status()?;
                 if !status.success() {
                     return Err(anyhow!("ollama install.sh exit {}", status));
                 }
@@ -423,6 +425,7 @@ async fn npm_install(app: &AppHandle, c: &Component, workdir: &str) -> Result<()
         .current_dir(&cwd)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
+        .hide_console()
         .status()
         .await
         .context("npm install failed to spawn")?;
@@ -445,6 +448,7 @@ async fn hyperframes_install(app: &AppHandle, c: &Component) -> Result<()> {
         .args(["--no-audit", "--no-fund"])
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
+        .hide_console()
         .status()
         .await
         .context("npm install -g hyperframes failed")?;
@@ -465,6 +469,7 @@ async fn build_sidecar_node(app: &AppHandle, c: &Component) -> Result<()> {
         .current_dir(&cwd)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
+        .hide_console()
         .status()
         .await?;
     if !status.success() {
@@ -694,6 +699,7 @@ fn extract_tar_xz_or_gz(archive: &Path, target: &Path) -> Result<()> {
     // Fallback to system tar for xz (xz2 crate skipped to keep deps light)
     let status = std::process::Command::new("tar")
         .args(["-xf", archive.to_str().unwrap(), "-C", target.to_str().unwrap()])
+        .hide_console()
         .status()?;
     if !status.success() {
         return Err(anyhow!("tar extraction failed for {}", archive.display()));

@@ -109,6 +109,10 @@ PROJECT_JOURNAL.md
 # ─── Installer asset previews (regen via pnpm installer:assets) ──
 assets/installer/*.preview.png
 
+# ─── Sidecar bundle staging (regen via pnpm sidecars:prepare) ────
+apps/desktop/src-tauri/sidecars/sidecar-py/
+apps/desktop/src-tauri/sidecars/sidecar-node/
+
 # ─── User-supplied music library (kept local, never committed) ───
 assets/music/
 

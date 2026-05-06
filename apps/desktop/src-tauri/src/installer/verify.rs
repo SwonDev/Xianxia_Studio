@@ -13,6 +13,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 use super::{detect, paths};
+use crate::process_ext::HideConsole;
 
 #[derive(Serialize, Clone)]
 pub struct CheckItem {
@@ -360,6 +361,7 @@ fn check_hyperframes() -> Option<PathBuf> {
     // 2) Global npm install
     if let Ok(out) = std::process::Command::new("hyperframes")
         .arg("--version")
+        .hide_console()
         .output()
     {
         if out.status.success() {
@@ -379,6 +381,7 @@ async fn check_python_pkg(pkg: &str) -> (bool, String) {
     let probe = format!("import {}; print(getattr({}, '__version__', 'ok'))", pkg, pkg);
     let out = match std::process::Command::new(&py)
         .args(["-c", &probe])
+        .hide_console()
         .output()
     {
         Ok(o) => o,
@@ -411,6 +414,7 @@ async fn ollama_has_model(name: &str) -> bool {
 fn probe_nvenc() -> (bool, String) {
     let out = std::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-encoders"])
+        .hide_console()
         .output();
     let Ok(o) = out else { return (false, "ffmpeg no ejecutable".into()); };
     let stdout = String::from_utf8_lossy(&o.stdout);

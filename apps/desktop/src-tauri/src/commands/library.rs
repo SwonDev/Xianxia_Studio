@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::installer::paths;
+use crate::process_ext::HideConsole;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct LibraryVideo {
@@ -33,6 +34,7 @@ fn projects_dir() -> Result<PathBuf> {
 
 fn ffprobe_meta(mp4: &Path) -> (Option<f64>, Option<u32>, Option<u32>) {
     let out = Command::new("ffprobe")
+        .hide_console()
         .args([
             "-v", "error",
             "-select_streams", "v:0",
@@ -63,6 +65,7 @@ fn ensure_poster(mp4: &Path) -> Option<PathBuf> {
     let seek = dur.map(|d| d * 0.10).unwrap_or(2.0);
 
     let status = Command::new("ffmpeg")
+        .hide_console()
         .args([
             "-y",
             "-ss", &format!("{:.3}", seek),

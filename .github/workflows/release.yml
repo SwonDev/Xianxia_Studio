@@ -69,6 +69,9 @@ jobs:
       - name: Regenerate branding assets
         run: pnpm branding
 
+      - name: Prepare sidecars (Python + Node) for bundle
+        run: pnpm sidecars:prepare
+
       - name: Build Tauri bundles + create release
         uses: tauri-apps/tauri-action@v0
         env:

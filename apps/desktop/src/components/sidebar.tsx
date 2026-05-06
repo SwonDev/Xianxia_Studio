@@ -1,4 +1,5 @@
 import { Link, useRouterState } from '@tanstack/react-router';
+import { useQuery } from '@tanstack/react-query';
 import {
   LayoutDashboard,
   Sparkles,
@@ -10,6 +11,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { tauri } from '@/lib/tauri';
 
 interface NavItem {
   to: string;
@@ -55,6 +57,11 @@ const NAV_GROUPS: NavGroup[] = [
 
 export function Sidebar() {
   const { location } = useRouterState();
+  const { data: appVersion } = useQuery({
+    queryKey: ['app-version'],
+    queryFn: tauri.getAppVersion,
+    staleTime: Infinity,
+  });
 
   return (
     <aside className="w-60 shrink-0 border-r border-border/50 bg-sidebar relative overflow-hidden">
@@ -69,7 +76,9 @@ export function Sidebar() {
               <span className="font-display text-lg leading-tight text-shimmer-gold font-semibold">
                 Xianxia Studio
               </span>
-              <span className="text-xs text-muted-foreground tracking-wide">v0.1.0</span>
+              <span className="text-xs text-muted-foreground tracking-wide">
+                v{appVersion?.version ?? '…'}
+              </span>
             </div>
           </div>
         </div>
