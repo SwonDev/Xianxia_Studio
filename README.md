@@ -6,8 +6,8 @@
 <br/>
 
 [![License](https://img.shields.io/badge/license-Apache_2.0-c9a961?style=for-the-badge&labelColor=0a0a0f)](LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/SwonDev/Xianxia_Studio?style=for-the-badge&color=c9a961&labelColor=0a0a0f&label=release)](https://github.com/SwonDev/Xianxia_Studio/releases/latest)
-[![Stars](https://img.shields.io/github/stars/SwonDev/Xianxia_Studio?style=for-the-badge&color=c9a961&labelColor=0a0a0f&logo=github&logoColor=c9a961)](https://github.com/SwonDev/Xianxia_Studio/stargazers)
+[![Latest release](https://img.shields.io/github/v/release/SwonDev/Xianxia_Studio?style=for-the-badge&color=c9a961&labelColor=0a0a0f&label=release&cacheSeconds=300)](https://github.com/SwonDev/Xianxia_Studio/releases/latest)
+[![Stars](https://img.shields.io/github/stars/SwonDev/Xianxia_Studio?style=for-the-badge&color=c9a961&labelColor=0a0a0f&logo=github&logoColor=c9a961&cacheSeconds=300)](https://github.com/SwonDev/Xianxia_Studio/stargazers)
 [![Ko-Fi](https://img.shields.io/badge/apoya_el_proyecto-Ko--Fi-52b788?style=for-the-badge&labelColor=0a0a0f&logo=ko-fi&logoColor=white)](https://ko-fi.com/swonproject)
 
 ### **Studio cinematográfico de IA local · 100 % offline · Apache 2.0**
