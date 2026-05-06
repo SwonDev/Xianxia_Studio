@@ -62,12 +62,20 @@ def generate(req: ImageRequest) -> ImageResponse:
     if os.environ.get("XIANXIA_USE_COMFYUI") == "1":
         from ..models import comfyui_client
         if comfyui_client.is_running():
+            # Generate a fresh random seed when the caller didn't pin one.
+            # Using a fixed default (e.g. 42) makes ComfyUI cache the workflow:
+            # identical prompt + identical seed = ComfyUI returns the cached
+            # nodes and the /history endpoint emits `outputs: {}`, which then
+            # makes wait_for_image() poll forever. A unique seed per request
+            # forces ComfyUI to actually run the sampler.
+            import secrets as _secrets
+            effective_seed = req.seed if req.seed is not None else _secrets.randbelow(2**31)
             wf = comfyui_client.xianxia_workflow(
-                prompt, width=req.width, height=req.height, seed=req.seed or 42,
+                prompt, width=req.width, height=req.height, seed=effective_seed,
             )
             pid = comfyui_client.queue_prompt(wf)
             out_path_comfy = comfyui_client.wait_for_image(pid)
-            return ImageResponse(image_path=str(out_path_comfy), seed=req.seed or 42)
+            return ImageResponse(image_path=str(out_path_comfy), seed=effective_seed)
 
     # Diffusers path (default + fallback)
     try:

@@ -6,6 +6,29 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-05-06
+
+### Corregido — ComfyUI cache-hit infinito
+
+Generaciones reales con v0.1.8 expusieron un bug que se manifestaba
+como pipeline colgado en Phase 4 imagen 2:
+
+- `image.py` invocaba `xianxia_workflow(..., seed=req.seed or 42)`. Si
+  el cliente Rust no pasaba `seed` (caso por defecto), TODAS las
+  imágenes usaban `seed=42`. ComfyUI considera workflow + seed
+  + prompt como clave de cache; si dos prompts colisionan o son
+  idénticos en algún sub-paso, ComfyUI marca todos los nodos como
+  `execution_cached` y devuelve `outputs: {}` con `status_str=success`.
+  El sidecar entraba a poll eternal en /history porque nunca veía
+  outputs y eventualmente disparaba el timeout 1800s.
+- Fix: `secrets.randbelow(2**31)` genera seed nuevo por request si el
+  cliente no lo fija. Imposible cache-hit por colisión de seed.
+- Fix de robustez complementario: `comfyui_client.wait_for_image`
+  detecta el caso `status=success + outputs={}` (cache-hit residual
+  por cualquier otro motivo) y recupera el output buscando la última
+  `xianxia_*.png` modificada en el output dir. Si tampoco encuentra
+  nada, lanza `RuntimeError` explícito en vez de colgar.
+
 ## [0.1.8] — 2026-05-06
 
 ### Corregido — pipeline ahora completa de extremo a extremo

@@ -53,13 +53,21 @@ def queue_prompt(workflow: dict) -> str:
 
 
 def wait_for_image(prompt_id: str, timeout: float = 1800.0) -> Path:
-    # 30 min default. Z-Image on a clean 8 GB VRAM card runs ~7-8 s/step
-    # (~60 s per image), but if the previous phase left the GPU primed
-    # with other models, ComfyUI starts swapping VRAM↔RAM and steps balloon
-    # to 90+ s. The thumbnail job is the most affected because it runs
-    # after rembg/depth + ACE-Step have warmed memory.
     """Poll ComfyUI's history endpoint until the prompt finishes; return the
-    output image path on disk."""
+    output image path on disk.
+
+    30 min default. Z-Image on a clean 8 GB VRAM card runs ~7-8 s/step
+    (~60 s per image), but if the previous phase left the GPU primed with
+    other models, ComfyUI starts swapping VRAM↔RAM and steps balloon to
+    90+ s. The thumbnail job is the most affected because it runs after
+    rembg/depth + ACE-Step have warmed memory.
+
+    Cache-hit handling: if ComfyUI receives a prompt identical to a recent
+    one (same seed + same prompt + same workflow), it marks every node as
+    `execution_cached` and returns `outputs: {}`. The status string still
+    says `success`. We detect this case explicitly and recover the output
+    path from the SaveImage node's filename_prefix scan of the output dir.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -70,12 +78,33 @@ def wait_for_image(prompt_id: str, timeout: float = 1800.0) -> Path:
         if prompt_id not in history:
             time.sleep(1)
             continue
-        outputs = history[prompt_id].get("outputs", {})
+        entry = history[prompt_id]
+        outputs = entry.get("outputs", {})
         for _, node_out in outputs.items():
             for img in node_out.get("images", []):
-                # ComfyUI saves to its own output dir; return that path
                 from .. import _comfy_root
                 return _comfy_root() / "output" / img["subfolder"] / img["filename"]
+        # Cache-hit case: status=success but outputs is empty. ComfyUI ate
+        # the workflow as duplicate. Try to recover by finding the most
+        # recently modified xianxia_*.png in the output dir.
+        status = entry.get("status", {})
+        if status.get("status_str") == "success" and not outputs:
+            from .. import _comfy_root
+            output_root = _comfy_root() / "output"
+            try:
+                cached = max(
+                    output_root.glob("xianxia_*.png"),
+                    key=lambda p: p.stat().st_mtime,
+                    default=None,
+                )
+                if cached is not None:
+                    return cached
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"ComfyUI prompt {prompt_id} returned status=success with empty "
+                f"outputs (cache-hit) and no recoverable file in {output_root}"
+            )
         time.sleep(1)
     raise TimeoutError(f"ComfyUI prompt {prompt_id} did not finish in {timeout}s")
 
