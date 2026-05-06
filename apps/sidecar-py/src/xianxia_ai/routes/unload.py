@@ -93,10 +93,20 @@ def _unload_ollama(model: str = "xianxia-llm", timeout_s: float = 20.0) -> tuple
     """
     import time as _t
     try:
+        # Empty prompt is silently ignored by Ollama — keep_alive=0 only
+        # applies after a real request is processed. Send a 1-token dummy
+        # request so Ollama actually evaluates keep_alive and queues the
+        # unload. `num_predict=1` keeps the latency minimal (~50 ms).
         r = httpx.post(
             f"{OLLAMA_URL}/api/generate",
-            json={"model": model, "keep_alive": 0, "prompt": ""},
-            timeout=10,
+            json={
+                "model": model,
+                "keep_alive": 0,
+                "prompt": ".",
+                "stream": False,
+                "options": {"num_predict": 1},
+            },
+            timeout=15,
         )
         if r.status_code not in (200, 204):
             return (False, f"ollama keep_alive=0 → {r.status_code}")
