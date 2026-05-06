@@ -1,0 +1,40 @@
+name: ✨ Feature request
+description: Propón una nueva funcionalidad
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por la sugerencia. Antes de pedir un PR grande, abre primero el issue para alinear el approach.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema que resuelve
+      description: ¿Qué necesidad cubre? ¿Quién la necesita?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Propuesta concreta
+      description: Cómo lo implementarías. Si es una integración nueva, indica qué modelo/lib y cuánto pesa.
+    validations:
+      required: true
+  - type: checkboxes
+    id: auto-laws
+    attributes:
+      label: Filosofía AUTO (las 3 leyes)
+      description: Toda feature debe cumplirlas. Marca las que tu propuesta puede satisfacer.
+      options:
+        - label: Autoinstalable (entra al manifest del installer; cero pip/npm en docs)
+        - label: Autodetectable (verify_stack la detecta y la UI se adapta)
+        - label: Autoconfigurable (defaults sensatos sin que el usuario toque nada)
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas consideradas
+  - type: textarea
+    id: extra
+    attributes:
+      label: Contexto adicional

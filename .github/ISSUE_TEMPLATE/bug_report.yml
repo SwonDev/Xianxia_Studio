@@ -1,0 +1,63 @@
+name: 🐛 Bug report
+description: Algo no funciona como debería
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por reportar el bug. Por favor rellena los campos para que podamos reproducirlo rápido.
+  - type: input
+    id: version
+    attributes:
+      label: Versión de la app
+      description: Ajustes → Actualizaciones (o el .exe del installer que descargaste)
+      placeholder: v0.1.1
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Sistema operativo
+      options:
+        - Windows 11
+        - Windows 10
+        - Otro (especificar abajo)
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU / VRAM
+      placeholder: RTX 4060 Laptop · 8 GB
+    validations:
+      required: false
+  - type: textarea
+    id: repro
+    attributes:
+      label: Pasos para reproducir
+      description: Sé lo más explícito posible.
+      placeholder: |
+        1. Abrir Generator
+        2. Escribir "tema X"
+        3. Pulsar "Generar vídeo"
+        4. Phase 4 falla con error Y
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportamiento esperado vs observado
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs relevantes
+      description: Ajustes → Servicios → "Ver logs". Pega solo la parte relevante.
+      render: shell
+  - type: textarea
+    id: extra
+    attributes:
+      label: Notas adicionales
+      description: Capturas, configuración inusual, modelos opcionales instalados, etc.

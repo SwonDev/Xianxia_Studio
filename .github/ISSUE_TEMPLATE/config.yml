@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Vulnerabilidad de seguridad
+    url: https://github.com/SwonDev/Xianxia_Studio/security/advisories/new
+    about: Reporta vulnerabilidades de forma privada (NO abras un issue público)
+  - name: 💬 Discusión
+    url: https://github.com/SwonDev/Xianxia_Studio/discussions
+    about: Ideas, dudas, ayuda con el setup. Para algo concreto y reproducible, abre un issue.
