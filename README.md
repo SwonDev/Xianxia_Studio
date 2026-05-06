@@ -28,7 +28,7 @@ Escribes un tema, y la app entrega:
 2. **Voz narradora** (Qwen3-TTS, 9 voces nativas + clonación de tu propia voz)
 3. **Imágenes cinemáticas** (Z-Image-Turbo Q4 GGUF en ComfyUI)
 4. **Banda sonora** (ACE-Step v1.5 o MusicGen)
-5. **Vídeo** (FFmpeg con Steadicam sway, NVENC, 60 fps, parallax 2.5D)
+5. **Vídeo autoeditado con HyperFrames** — composición HTML/CSS/GSAP renderizada a MP4 con parallax 2.5D, atmospherics (mist · embers · snow · dust motes · clouds), transiciones cinemáticas (cross · flash · whip · ink-wash), light rays direccionales y post-pass FFmpeg con grade cinemático + sidechain ducking. FFmpeg-fast con Steadicam sway + NVENC actúa como fallback rápido si el Node sidecar no está disponible.
 6. **Subtítulos word-level** quemados en 5 estilos (xianxia, hormozi, mrbeast, minimal, neon)
 7. **Thumbnail** dedicado
 8. **Análisis de engagement** con TRIBE v2 (modelo fMRI in-silico de Meta) que detecta valles aburridos y los corrige
@@ -50,7 +50,7 @@ Pensada para creadores que producen contenido sobre mitología china, *xianxia* 
 | 🧠 **Engagement con neurociencia** | Phase 11 con TRIBE v2 predice respuestas fMRI por segundo, mapea a redes Yeo (Salience/FPN/DMN/Visual/Auditory), genera score 0-100 y auto-corrige valles. |
 | 🎙️ **Voice cloning nativo** | Sube 5-10 segundos de audio y Qwen3-TTS genera narración con tu voz. Multi-idioma (ES/EN/ZH + 7 más). |
 | 🎨 **5 caption styles** | xianxia · hormozi · mrbeast · minimal · neon. Karaoke word-level con safe zones TikTok. |
-| 🎥 **4 animation presets** | cinematic · dynamic · minimal · dramatic. Steadicam sway sinusoidal, parallax 2.5D, NVENC p7. |
+| 🎥 **4 animation presets** | cinematic · dynamic · minimal · dramatic. Renderizados con **HyperFrames** (HTML/CSS/GSAP → MP4) que aplica parallax 2.5D, atmospherics y transiciones cinemáticas declaradas en los templates. |
 | 📤 **9 export presets** | YouTube Shorts/1080p/4K · IG Reels/4:5/1:1 · TikTok · X · FB Reels con LUFS específicos. |
 | ☁️ **Subida YouTube programada** | OAuth RFC 8252, resumable upload, captions ES/EN/ZH, thumbnail + #Shorts hashtag automático. |
 | 🔌 **Componentes opcionales** | TRIBE v2 (~12 GB) · ACE-Step + MusicGen (~6 GB) · Vision stack. Instálalos cuando los necesites desde Ajustes con un clic. |
@@ -88,17 +88,20 @@ El stack está optimizado para **8 GB VRAM** mediante GGUF Q4 + offload secuenci
 | Capa | Tecnología |
 |---|---|
 | Desktop shell | Tauri 2.11 · Rust · React 19 · Vite 6 · Tailwind 4 · TanStack Router |
-| LLM | Ollama 0.23 + Gemma 4 abliterated GGUF |
-| TTS | Qwen3-TTS-12Hz-1.7B-CustomVoice (9 voces + cloning) |
-| ASR | faster-whisper-large-v3 (word-level timestamps) |
-| Imagen | ComfyUI + Z-Image-Turbo Q4_K_M GGUF (sampler dpmpp_sde + beta) |
-| Música | ACE-Step v1.5 (preferido) · MusicGen-medium (fallback) |
-| Vídeo | FFmpeg · NVENC h264 p7 · 60 fps · 2× canvas + lanczos |
-| Engagement | Meta TRIBE v2 (fMRI prediction) + Yeo 7-network atlas mapping |
-| Subtítulos | ASS karaoke con 5 estilos · safe zones TikTok |
-| Subida | YouTube Data v3 + OAuth RFC 8252 (loopback) |
-| Orquestación | Tauri Supervisor (Rust) · Python sidecar (FastAPI :8731) · Node sidecar (Fastify :8732) |
-| Persistencia | SQLite vía sqlx |
+| LLM | Ollama 0.23 + `xianxia-llm` (Gemma 4 abliterated GGUF Q4_K_M, 5.3 GB) |
+| TTS | Qwen3-TTS-12Hz-1.7B-CustomVoice (9 voces nativas multilenguaje + cloning con muestra 5-10 s) |
+| ASR | faster-whisper-large-v3 (word-level timestamps para el karaoke) |
+| Imagen | ComfyUI + custom nodes `ComfyUI-GGUF` + `rgthree-comfy` · Z-Image-Turbo Q4_K_M GGUF (sampler dpmpp_sde + beta, 720×1280 / 1280×720 nativo a 8 GB VRAM) |
+| Visión 2.5D | `rembg` + `onnxruntime-gpu` (segmentación foreground) · `MediaPipe` + `YOLO11n-pose` (subject tracking para reframe Shorts vertical) |
+| Música | ACE-Step v1.5 (preferido si está instalado) · MusicGen-medium (fallback) · pre-master FFmpeg con EQ + compresor + loudnorm |
+| Vídeo · motor primario | **[HyperFrames](https://github.com/heygen-com/hyperframes)** — render HTML/CSS/GSAP a MP4. Templates `narrative.html` / `short.html` / `thumbnail.html` con parallax 2.5D, atmospherics (mist/embers/snow/dust_motes/clouds), transiciones cinemáticas (cross/flash/whip/inkwash), light rays direccionales |
+| Vídeo · post-pass | FFmpeg 8 cinematic grade (eq + colorbalance teal-orange + unsharp + vignette + film grain) + narration mix con sidechain ducking + NVENC h264 |
+| Vídeo · fallback rápido | FFmpeg directo cuando el Node sidecar no responde — zoompan + xfade + Steadicam sway sinusoidal + 60 fps + 2× canvas + lanczos · loudnorm -14 LUFS |
+| Engagement | Meta TRIBE v2 (predicción fMRI in-silico) + Yeo 7-network atlas mapping |
+| Subtítulos | ASS karaoke con 5 estilos (xianxia / hormozi / mrbeast / minimal / neon) · safe zones TikTok |
+| Subida | YouTube Data v3 + OAuth RFC 8252 (loopback localhost) · resumable + thumbnail + captions multi-idioma |
+| Orquestación | Tauri Supervisor (Rust) · Python sidecar FastAPI (`:8731`) · Node sidecar HyperFrames Fastify (`:8732`) |
+| Persistencia | SQLite vía sqlx + migrations |
 
 ---
 
