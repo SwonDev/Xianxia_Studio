@@ -39,12 +39,45 @@ pub struct SidecarState {
     pub python: SidecarStatus,
     pub node: SidecarStatus,
     pub ollama: SidecarStatus,
+    #[serde(default = "default_status")]
+    pub comfyui: SidecarStatus,
+}
+
+fn default_status() -> SidecarStatus { SidecarStatus::Stopped }
+
+/// Tracks recent spawn failures so we don't spam-respawn a sidecar that keeps
+/// crashing (e.g. port already bound by an orphaned process). After N failures
+/// in M seconds we wait `cooldown` before trying again.
+#[derive(Default)]
+struct SpawnGuard {
+    last_attempt: Option<std::time::Instant>,
+    consecutive_fails: u32,
+}
+
+impl SpawnGuard {
+    fn should_skip(&self) -> bool {
+        let Some(last) = self.last_attempt else { return false; };
+        let cooldown = std::time::Duration::from_secs(match self.consecutive_fails {
+            0 => 0,
+            1..=2 => 5,
+            3..=5 => 15,
+            _ => 30,
+        });
+        last.elapsed() < cooldown
+    }
+    fn record_attempt(&mut self) { self.last_attempt = Some(std::time::Instant::now()); }
+    fn record_failure(&mut self) { self.consecutive_fails = self.consecutive_fails.saturating_add(1); }
+    fn record_success(&mut self) { self.consecutive_fails = 0; }
 }
 
 pub struct Supervisor {
     state: Arc<Mutex<SidecarState>>,
     python_child: Arc<Mutex<Option<Child>>>,
     node_child: Arc<Mutex<Option<Child>>>,
+    comfy_child: Arc<Mutex<Option<Child>>>,
+    python_guard: Arc<Mutex<SpawnGuard>>,
+    node_guard: Arc<Mutex<SpawnGuard>>,
+    comfy_guard: Arc<Mutex<SpawnGuard>>,
 }
 
 impl Supervisor {
@@ -54,9 +87,14 @@ impl Supervisor {
                 python: SidecarStatus::Stopped,
                 node: SidecarStatus::Stopped,
                 ollama: SidecarStatus::Stopped,
+                comfyui: SidecarStatus::Stopped,
             })),
             python_child: Arc::new(Mutex::new(None)),
             node_child: Arc::new(Mutex::new(None)),
+            comfy_child: Arc::new(Mutex::new(None)),
+            python_guard: Arc::new(Mutex::new(SpawnGuard::default())),
+            node_guard: Arc::new(Mutex::new(SpawnGuard::default())),
+            comfy_guard: Arc::new(Mutex::new(SpawnGuard::default())),
         }
     }
 
@@ -71,53 +109,126 @@ impl Supervisor {
         let py_ok = probe_python().await;
         let node_ok = probe_node().await;
         let ollama_ok = crate::installer::ollama::is_running().await;
+        let comfy_ok = probe_comfyui().await;
+        // Same tolerance logic as the health loop: child alive + port bound = Running.
+        let py_alive = self.python_child.lock().await.is_some() && port_is_bound("127.0.0.1:8731").await;
+        let node_alive = self.node_child.lock().await.is_some() && port_is_bound("127.0.0.1:8732").await;
+        let comfy_alive = self.comfy_child.lock().await.is_some() && port_is_bound("127.0.0.1:8188").await;
         let mut s = self.state.lock().await;
-        if py_ok { s.python = SidecarStatus::Running; }
-        if node_ok { s.node = SidecarStatus::Running; }
+        if py_ok || py_alive { s.python = SidecarStatus::Running; }
+        if node_ok || node_alive { s.node = SidecarStatus::Running; }
         if ollama_ok { s.ollama = SidecarStatus::Running; }
+        if comfy_ok || comfy_alive { s.comfyui = SidecarStatus::Running; }
         s.clone()
     }
 
-    /// Kick off both sidecars in the background. Best-effort.
+    /// Kick off all sidecars in the background. Best-effort.
     pub async fn start_all(&self) -> Result<()> {
         let _ = self.spawn_python_if_needed().await;
         let _ = self.spawn_node_if_needed().await;
         let _ = crate::installer::ollama::ensure_running().await;
+        let _ = self.spawn_comfyui_if_needed().await;
         Ok(())
     }
 
     /// Probe → if up, mark running. If not but a child handle exists, take and kill it.
-    /// Then spawn fresh and remember the handle.
+    /// Then spawn fresh and remember the handle. Backoff on consecutive failures
+    /// so we don't fork-bomb when something keeps crashing.
     async fn spawn_python_if_needed(&self) -> Result<()> {
         if probe_python().await {
             self.state.lock().await.python = SidecarStatus::Running;
+            self.python_guard.lock().await.record_success();
             return Ok(());
         }
-        // Drop any stale child first
+        if self.python_guard.lock().await.should_skip() {
+            return Err(anyhow!("python sidecar in cooldown after repeated failures"));
+        }
+        self.python_guard.lock().await.record_attempt();
         self.kill_python_child().await;
-        // Don't fight an external listener
         if port_is_bound("127.0.0.1:8731").await {
+            self.python_guard.lock().await.record_failure();
             return Err(anyhow!(":8731 already bound by another process"));
         }
-        let child = spawn_python().await?;
-        *self.python_child.lock().await = Some(child);
-        self.state.lock().await.python = SidecarStatus::Starting;
-        Ok(())
+        match spawn_python().await {
+            Ok(child) => {
+                *self.python_child.lock().await = Some(child);
+                self.state.lock().await.python = SidecarStatus::Starting;
+                Ok(())
+            }
+            Err(e) => {
+                self.python_guard.lock().await.record_failure();
+                Err(e)
+            }
+        }
     }
 
     async fn spawn_node_if_needed(&self) -> Result<()> {
         if probe_node().await {
             self.state.lock().await.node = SidecarStatus::Running;
+            self.node_guard.lock().await.record_success();
             return Ok(());
         }
+        if self.node_guard.lock().await.should_skip() {
+            return Err(anyhow!("node sidecar in cooldown"));
+        }
+        self.node_guard.lock().await.record_attempt();
         self.kill_node_child().await;
         if port_is_bound("127.0.0.1:8732").await {
+            self.node_guard.lock().await.record_failure();
             return Err(anyhow!(":8732 already bound"));
         }
-        let child = spawn_node().await?;
-        *self.node_child.lock().await = Some(child);
-        self.state.lock().await.node = SidecarStatus::Starting;
-        Ok(())
+        match spawn_node().await {
+            Ok(child) => {
+                *self.node_child.lock().await = Some(child);
+                self.state.lock().await.node = SidecarStatus::Starting;
+                Ok(())
+            }
+            Err(e) => {
+                self.node_guard.lock().await.record_failure();
+                Err(e)
+            }
+        }
+    }
+
+    async fn spawn_comfyui_if_needed(&self) -> Result<()> {
+        if probe_comfyui().await {
+            self.state.lock().await.comfyui = SidecarStatus::Running;
+            self.comfy_guard.lock().await.record_success();
+            return Ok(());
+        }
+        if self.comfy_guard.lock().await.should_skip() {
+            return Err(anyhow!("comfyui in cooldown"));
+        }
+        self.comfy_guard.lock().await.record_attempt();
+        self.kill_comfy_child().await;
+        if port_is_bound("127.0.0.1:8188").await {
+            self.comfy_guard.lock().await.record_failure();
+            return Err(anyhow!(":8188 already bound"));
+        }
+        match spawn_comfyui().await {
+            Ok(child) => {
+                *self.comfy_child.lock().await = Some(child);
+                self.state.lock().await.comfyui = SidecarStatus::Starting;
+                Ok(())
+            }
+            Err(e) => {
+                self.comfy_guard.lock().await.record_failure();
+                Err(e)
+            }
+        }
+    }
+
+    /// Force-restart the Python sidecar — used after installing optional
+    /// components from Settings so the new pip package is importable without
+    /// the user having to relaunch the app.
+    pub async fn respawn_python(&self) {
+        // Reset cooldown so the next spawn isn't blocked by a stale fail count.
+        *self.python_guard.lock().await = SpawnGuard::default();
+        self.kill_python_child().await;
+        // Wait briefly for the kernel to release the port before the supervisor
+        // health loop respawns.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = self.spawn_python_if_needed().await;
     }
 
     async fn kill_python_child(&self) {
@@ -136,6 +247,14 @@ impl Supervisor {
         }
     }
 
+    async fn kill_comfy_child(&self) {
+        let mut guard = self.comfy_child.lock().await;
+        if let Some(mut child) = guard.take() {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
+    }
+
     pub async fn run_health_loop(self: Arc<Self>) {
         loop {
             // Probe FIRST so the very first iteration (within ~1s of app boot)
@@ -143,6 +262,7 @@ impl Supervisor {
             let py_ok = probe_python().await;
             let node_ok = probe_node().await;
             let ollama_ok = crate::installer::ollama::is_running().await;
+            let comfy_ok = probe_comfyui().await;
 
             // Reap dead children to avoid Zombies. If process exited, drop
             // the handle so the next spawn can start fresh.
@@ -156,6 +276,14 @@ impl Supervisor {
             }
             {
                 let mut g = self.node_child.lock().await;
+                if let Some(child) = g.as_mut() {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        *g = None;
+                    }
+                }
+            }
+            {
+                let mut g = self.comfy_child.lock().await;
                 if let Some(child) = g.as_mut() {
                     if let Ok(Some(_)) = child.try_wait() {
                         *g = None;
@@ -176,12 +304,42 @@ impl Supervisor {
                     let _ = self.spawn_node_if_needed().await;
                 }
             }
+            if !comfy_ok {
+                let has_live = self.comfy_child.lock().await.is_some();
+                if !has_live {
+                    let _ = self.spawn_comfyui_if_needed().await;
+                }
+            }
+
+            // A "busy" sidecar (e.g. Python mid-TTS torch.generate) may not respond
+            // to /health within the probe timeout, but it's still alive and serving.
+            // If the child handle is live AND the port is bound, treat it as Running
+            // so the UI doesn't flash STOPPED during heavy GPU work.
+            let py_child_alive = self.python_child.lock().await.is_some();
+            let node_child_alive = self.node_child.lock().await.is_some();
+            let comfy_child_alive = self.comfy_child.lock().await.is_some();
+            let py_port = port_is_bound("127.0.0.1:8731").await;
+            let node_port = port_is_bound("127.0.0.1:8732").await;
+            let comfy_port = port_is_bound("127.0.0.1:8188").await;
 
             {
                 let mut s = self.state.lock().await;
-                s.python = if py_ok { SidecarStatus::Running } else { SidecarStatus::Stopped };
-                s.node = if node_ok { SidecarStatus::Running } else { SidecarStatus::Stopped };
+                s.python = if py_ok || (py_child_alive && py_port) {
+                    SidecarStatus::Running
+                } else { SidecarStatus::Stopped };
+                s.node = if node_ok || (node_child_alive && node_port) {
+                    SidecarStatus::Running
+                } else { SidecarStatus::Stopped };
                 s.ollama = if ollama_ok { SidecarStatus::Running } else { SidecarStatus::Stopped };
+                // ComfyUI starts slowly (~30s). If we hold a live child but probe is
+                // still false, mark as Starting (not Stopped) so the UI doesn't flicker.
+                s.comfyui = if comfy_ok || (comfy_child_alive && comfy_port) {
+                    SidecarStatus::Running
+                } else if comfy_child_alive {
+                    SidecarStatus::Starting
+                } else {
+                    SidecarStatus::Stopped
+                };
             }
 
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -233,6 +391,16 @@ async fn probe_node() -> bool {
     reqwest::Client::new()
         .get("http://127.0.0.1:8732/health")
         .timeout(std::time::Duration::from_secs(1))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+async fn probe_comfyui() -> bool {
+    reqwest::Client::new()
+        .get("http://127.0.0.1:8188/system_stats")
+        .timeout(std::time::Duration::from_secs(2))
         .send()
         .await
         .map(|r| r.status().is_success())
@@ -306,6 +474,41 @@ async fn spawn_node() -> Result<Child> {
         .arg(&server)
         .current_dir(&cwd)
         .env("XIANXIA_NODE_PORT", "8732")
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    Ok(child)
+}
+
+async fn spawn_comfyui() -> Result<Child> {
+    let py = python_env::python_exe_resolved()?;
+    if !py.exists() {
+        return Err(anyhow!("python not installed: {}", py.display()));
+    }
+    let comfy_dir = paths::paths()?.data_dir.join("runtime").join("comfyui");
+    let main_py = comfy_dir.join("main.py");
+    if !main_py.exists() {
+        return Err(anyhow!(
+            "ComfyUI main.py missing at {}; run the installer wizard first",
+            main_py.display()
+        ));
+    }
+    let log = open_log("comfyui.log")?;
+    let log_err = log.try_clone()?;
+
+    tracing::info!(dir = %comfy_dir.display(), "spawning ComfyUI :8188");
+    let child = Command::new(&py)
+        .arg(&main_py)
+        .arg("--port").arg("8188")
+        .arg("--listen").arg("127.0.0.1")
+        .arg("--disable-auto-launch")
+        // Enable CORS so the browser-mode shim and our own UI can probe
+        // /system_stats from the Vite origin (http://localhost:1420). In Tauri
+        // webview there's no CORS gate, but we want dev parity.
+        .arg("--enable-cors-header").arg("*")
+        .current_dir(&comfy_dir)
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
         .stdin(Stdio::null())

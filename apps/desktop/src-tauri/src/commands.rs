@@ -1,4 +1,6 @@
+pub mod library;
 pub mod music;
+pub mod voice_clones;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

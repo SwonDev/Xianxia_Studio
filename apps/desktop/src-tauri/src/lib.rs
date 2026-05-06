@@ -28,6 +28,7 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::greet,
             commands::get_app_version,
@@ -40,10 +41,17 @@ pub fn run() {
             commands::music::music_remove_track,
             commands::music::music_open_folder,
             commands::music::music_get_dir,
+            commands::voice_clones::list_voice_clones,
+            commands::voice_clones::register_voice_clone,
+            commands::voice_clones::delete_voice_clone,
+            commands::library::library_list_videos,
+            commands::library::library_delete_video,
+            commands::library::library_open_video_folder,
             hardware::detect_hardware,
             hardware::safe_llm_alternative,
             installer::runner::run_install,
             installer::runner::get_install_manifest,
+            installer::runner::install_optional_component,
             installer::llm::install_llm,
             installer::verify::verify_stack,
             installer::detect::detect_installed_tools,

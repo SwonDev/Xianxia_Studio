@@ -5,7 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -47,6 +47,70 @@ pub fn get_install_manifest(options: InstallOptions) -> Vec<Component> {
         options.llm_abliterated,
         options.llm_size_bytes,
     )
+}
+
+/// Install ONE component by id (for "Optional features" cards in Settings).
+/// Pulls the component definition out of the full manifest, runs `install_one`,
+/// emits standard `install:progress` events, and returns success/failure.
+///
+/// After a successful install we ALSO bounce the Python sidecar via the
+/// supervisor so the new package is picked up without a manual restart.
+#[tauri::command]
+pub async fn install_optional_component(
+    app: AppHandle,
+    component_id: String,
+) -> Result<bool, String> {
+    do_install_optional(app, component_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn do_install_optional(app: AppHandle, component_id: String) -> Result<bool> {
+    let manifest = full_manifest();
+    let component = manifest
+        .iter()
+        .find(|c| c.id == component_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("component not found: {}", component_id))?;
+
+    let workspace = workspace_root_for_install();
+    let res = install_one(&app, &component, workspace.as_deref()).await;
+    match res {
+        Ok(()) => {
+            emit(&app, &component.id, ProgressStatus::Done, 100.0, "Listo");
+            // Restart Python sidecar so the new pip package is importable.
+            // The supervisor's health loop will respawn it within ~3 s.
+            if let Some(sup) = app.try_state::<std::sync::Arc<crate::sidecars::Supervisor>>() {
+                sup.respawn_python().await;
+            }
+            Ok(true)
+        }
+        Err(e) => {
+            emit(
+                &app,
+                &component.id,
+                ProgressStatus::Failed,
+                0.0,
+                &format!("Error: {}", e),
+            );
+            Err(e)
+        }
+    }
+}
+
+/// Best-effort workspace discovery for in-app component installs (without
+/// the wizard's `InstallOptions` passing it explicitly).
+fn workspace_root_for_install() -> Option<std::path::PathBuf> {
+    if let Ok(cargo_root) = std::env::var("CARGO_MANIFEST_DIR") {
+        let p = std::path::PathBuf::from(cargo_root);
+        // src-tauri → up 2 levels to repo root
+        if let Some(repo) = p.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            if repo.join("apps").exists() {
+                return Some(repo.to_path_buf());
+            }
+        }
+    }
+    None
 }
 
 async fn do_install(app: AppHandle, options: InstallOptions) -> Result<InstallReport> {

@@ -28,7 +28,17 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: data: https://fonts.gstatic.com; font-src 'self' https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' http://127.0.0.1:* http://localhost:* ipc: https://ipc.localhost; script-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: https://fonts.gstatic.com; media-src 'self' asset: http://asset.localhost; font-src 'self' https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' http://127.0.0.1:* http://localhost:* ipc: https://ipc.localhost; script-src 'self' 'unsafe-inline'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/**",
+          "$HOME/AppData/Roaming/xianxia/**",
+          "$HOME/Library/Application Support/xianxia/**",
+          "$HOME/.local/share/xianxia/**",
+          "$HOME/.config/xianxia/**"
+        ]
+      }
     }
   },
   "bundle": {

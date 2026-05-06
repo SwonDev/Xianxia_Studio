@@ -223,6 +223,48 @@ pub fn full_manifest() -> Vec<Component> {
             depends_on: vec!["python-deps-core".to_string()],
         },
 
+        // ─── Python deps (música — ACE-Step v1.5 preferred + MusicGen fallback) ──
+        // Optional: app falls back to local music library if neither backend
+        // is installed. ~5-8 GB total. ACE-Step downloads its checkpoint to
+        // ~/.cache/ace-step on first inference (≈3.5 GB Apache 2.0 weights).
+        Component {
+            id: "python-deps-music".to_string(),
+            label: "ACE-Step v1.5 + MusicGen-medium (música cinematográfica generada)".to_string(),
+            category: Category::Postinstall,
+            size_bytes: 6 * 1024 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::PipInstall {
+                requirements: "sidecar-py/requirements-music.txt".to_string(),
+            },
+            required: false,
+            depends_on: vec!["python-deps-core".to_string()],
+        },
+
+        // ─── Python deps (engagement — Meta TRIBE v2 in-silico neuroscience) ──
+        // Optional. CC-BY-NC-4.0 (non-commercial). ~12 GB pesos descargados
+        // a ~/.cache/tribev2/ en el primer inference (LLaMA-3.2-3B + V-JEPA2 +
+        // Wav2Vec-BERT). El runtime "light" salta el text encoder para 8 GB VRAM.
+        // Predice respuestas fMRI → mapeamos a redes funcionales (Yeo 7-net) →
+        // engagement score per second + boring-spot detection + auto-fix.
+        Component {
+            id: "python-deps-engagement".to_string(),
+            label: "TRIBE v2 (Meta · análisis de engagement con neurociencia in-silico)".to_string(),
+            category: Category::Postinstall,
+            size_bytes: 12 * 1024 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::PipInstall {
+                requirements: "sidecar-py/requirements-engagement.txt".to_string(),
+            },
+            required: false,
+            depends_on: vec!["python-deps-core".to_string()],
+        },
+
         // ─── Node deps for the HyperFrames sidecar ──────────────────
         Component {
             id: "node-deps".to_string(),
@@ -310,6 +352,25 @@ pub fn full_manifest() -> Vec<Component> {
             kind: AssetKind::GitClone {
                 repo_url: "https://github.com/city96/ComfyUI-GGUF.git".to_string(),
                 target: "comfyui/custom_nodes/ComfyUI-GGUF".to_string(),
+            },
+            required: false,
+            depends_on: vec!["comfyui-clone".to_string()],
+        },
+        // rgthree quality-of-life nodes (Context, Lora Stack, Bookmark, Fast Muter,
+        // progress bar). Used by the ComfyUI workflows when present; harmless if
+        // absent. Useful for dev. Tiny (<2 MB).
+        Component {
+            id: "comfyui-rgthree-node".to_string(),
+            label: "rgthree-comfy QoL nodes".to_string(),
+            category: Category::Tool,
+            size_bytes: 2 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::GitClone {
+                repo_url: "https://github.com/rgthree/rgthree-comfy.git".to_string(),
+                target: "comfyui/custom_nodes/rgthree-comfy".to_string(),
             },
             required: false,
             depends_on: vec!["comfyui-clone".to_string()],

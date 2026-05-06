@@ -44,6 +44,10 @@ pub struct StackSummary {
     pub hyperframes_installed: bool,
     pub rembg_installed: bool,
     pub mediapipe_installed: bool,
+    pub ultralytics_installed: bool,
+    pub acestep_installed: bool,
+    pub musicgen_installed: bool,
+    pub tribe_installed: bool,
     pub models_ready_count: usize,
     pub models_total: usize,
 }
@@ -255,6 +259,60 @@ pub async fn verify_stack() -> Result<StackReport, String> {
         ok: mediapipe,
         detail: mp_detail,
         group: "Herramientas".into(),
+    });
+
+    let (ultra, ultra_detail) = check_python_pkg("ultralytics").await;
+    s.ultralytics_installed = ultra;
+    checks.push(CheckItem {
+        id: "ultralytics".into(),
+        label: "ultralytics YOLO11 (Shorts subject tracking)".into(),
+        ok: ultra,
+        detail: ultra_detail,
+        group: "Herramientas".into(),
+    });
+
+    // ─── Group: Música (auto-detect ACE-Step + MusicGen) ─────────────
+    let (acestep, ace_detail) = check_python_pkg("acestep").await;
+    s.acestep_installed = acestep;
+    checks.push(CheckItem {
+        id: "acestep".into(),
+        label: "ACE-Step v1.5 (música cinematográfica · preferido)".into(),
+        ok: acestep,
+        detail: if acestep {
+            ace_detail
+        } else {
+            "no instalado — opcional. Instala con `pip install -r requirements-music.txt`".into()
+        },
+        group: "Música".into(),
+    });
+
+    let (audiocraft, ac_detail) = check_python_pkg("audiocraft").await;
+    s.musicgen_installed = audiocraft;
+    checks.push(CheckItem {
+        id: "musicgen".into(),
+        label: "MusicGen (audiocraft · fallback)".into(),
+        ok: audiocraft,
+        detail: if audiocraft {
+            ac_detail
+        } else {
+            "no instalado — opcional. Si no tienes ACE-Step, este es el fallback".into()
+        },
+        group: "Música".into(),
+    });
+
+    // ─── Group: Engagement (TRIBE v2 in-silico neuroscience) ─────────
+    let (tribe, tribe_detail) = check_python_pkg("tribev2").await;
+    s.tribe_installed = tribe;
+    checks.push(CheckItem {
+        id: "tribe".into(),
+        label: "TRIBE v2 (Meta · engagement neurociencia in-silico)".into(),
+        ok: tribe,
+        detail: if tribe {
+            format!("{} · CC-BY-NC-4.0", tribe_detail)
+        } else {
+            "no instalado — opcional. Predice valles aburridos y los corrige".into()
+        },
+        group: "Engagement".into(),
     });
 
     // ─── Group: Models ───────────────────────────────────────────────

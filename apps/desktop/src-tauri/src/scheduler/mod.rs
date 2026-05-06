@@ -24,11 +24,26 @@ async fn process_due(pool: &DbPool) -> anyhow::Result<()> {
     .await?;
     for (sched_id, video_id) in due {
         tracing::info!(sched = %sched_id, video = %video_id, "publish flip due");
-        // crate::youtube::publish_now(&video_id).await?;  // wired in M5
-        sqlx::query("UPDATE scheduled_uploads SET status = 'published' WHERE id = ?")
-            .bind(&sched_id)
-            .execute(pool)
-            .await?;
+        match crate::youtube::publish_now(&video_id).await {
+            Ok(()) => {
+                sqlx::query("UPDATE scheduled_uploads SET status = 'published' WHERE id = ?")
+                    .bind(&sched_id)
+                    .execute(pool)
+                    .await?;
+                tracing::info!(sched = %sched_id, video = %video_id, "publish flip OK");
+            }
+            Err(e) => {
+                // Don't mark as published. Leave for retry next tick. After a
+                // few failures the row stays stuck — admin should inspect logs.
+                tracing::warn!(sched = %sched_id, video = %video_id, error = %e, "publish flip failed; will retry");
+                sqlx::query("UPDATE scheduled_uploads SET last_error = ? WHERE id = ?")
+                    .bind(format!("{}", e))
+                    .bind(&sched_id)
+                    .execute(pool)
+                    .await
+                    .ok();  // optional column; ignore if missing
+            }
+        }
     }
     Ok(())
 }

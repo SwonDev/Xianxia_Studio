@@ -36,15 +36,58 @@ pub struct GenerateRequest {
     pub topic: String,
     pub languages: Vec<String>,
     pub target_minutes: u32,
+    #[serde(default)]
     pub experimental_llm: bool,
+    #[serde(default)]
     pub llm_model: Option<String>,
+    #[serde(default, alias = "voice")]
     pub voice_speaker: Option<String>,
+    #[serde(default)]
     pub use_musicgen: bool,
-    /// When true, render the source horizontal then call /reframe to produce
-    /// a 1080×1920 vertical via subject tracking + blur-extend fallback.
     #[serde(default)]
     pub vertical: bool,
+    /// When true, Phase 9 uploads to YouTube using stored OAuth credentials.
+    /// Default false: pipeline produces the MP4 + subs but doesn't publish.
+    #[serde(default)]
+    pub auto_upload: bool,
+    /// "private" | "unlisted" | "public" for the YouTube upload (Phase 9).
+    #[serde(default)]
+    pub publish_privacy: Option<String>,
+    /// Unix timestamp for scheduled publish; only honoured when privacy=private.
+    #[serde(default)]
+    pub publish_at: Option<i64>,
+    /// Phase 10: extract N Shorts automatically from the long-form video.
+    /// Only runs when vertical=false (it makes no sense for already-vertical videos).
+    #[serde(default)]
+    pub auto_shorts: bool,
+    #[serde(default)]
+    pub shorts_count: Option<u32>,
+    /// Phase 8: when false, skip the karaoke ASS burn-in pass — the SRT files
+    /// still get generated, but the final MP4 has no captions overlaid.
+    /// Default true (existing behaviour).
+    #[serde(default = "default_true")]
+    pub burn_subtitles: bool,
+    /// Animation preset that drives Ken Burns range, handheld sway, transition
+    /// kinds and cinematic profile. "cinematic" | "dynamic" | "minimal" | "dramatic".
+    #[serde(default)]
+    pub animation_preset: Option<String>,
+    /// Caption style preset for the ASS karaoke. "xianxia" (default) | "hormozi" |
+    /// "mrbeast" | "minimal" | "neon".
+    #[serde(default)]
+    pub caption_style: Option<String>,
+    /// Phase 11: TRIBE v2 in-silico neuroscience engagement analysis.
+    /// Default true — runs the analysis post-render and persists the score
+    /// + boring spots to the project DB. Adds ~30-90 s on RTX 4060 8 GB
+    /// (light mode: V-JEPA2 + Wav2Vec-BERT, sequential per modality).
+    #[serde(default = "default_true")]
+    pub analyze_engagement: bool,
+    /// When true, after analysis Phase 11 also auto-applies cuts and audio
+    /// swells to fix detected boring spots. Default false (user reviews first).
+    #[serde(default)]
+    pub auto_optimize_engagement: bool,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Serialize, Clone)]
 pub struct PhaseUpdate {
@@ -73,11 +116,20 @@ pub async fn start(
 
     let app_clone = app.clone();
     let pool_clone = pool.clone();
+    let topic_for_notify = req.topic.clone();
     tokio::spawn(async move {
+        use tauri_plugin_notification::NotificationExt;
         let result = run(&app_clone, &pool_clone, &project_id, &req).await;
         match result {
             Ok(_) => {
                 let _ = db::projects::set_status(&pool_clone, &project_id, "ready").await;
+                // Native OS notification — fires even when app is in background.
+                let _ = app_clone
+                    .notification()
+                    .builder()
+                    .title("Xianxia Studio")
+                    .body(&format!("Vídeo listo: {}", topic_for_notify))
+                    .show();
             }
             Err(e) => {
                 tracing::error!(project = %project_id, error = %e, "pipeline failed");
@@ -86,6 +138,12 @@ pub async fn start(
                     "pipeline:error",
                     serde_json::json!({ "project_id": project_id, "error": e.to_string() }),
                 );
+                let _ = app_clone
+                    .notification()
+                    .builder()
+                    .title("Xianxia Studio · error")
+                    .body(&format!("La generación falló: {}", e))
+                    .show();
             }
         }
     });
@@ -168,7 +226,11 @@ async fn run(
     unload(&client, "tts").await;
 
     // ─── Phase 4: Images (one per IMAGE marker) ──────────────────────
-    emit(app, pid, 4, "running", 0.0, "Generando imágenes…");
+    // Native aspect generation: vertical Shorts → 720x1280, horizontal video → 1280x720.
+    // Both fit comfortably in 8 GB VRAM (sweet spot per Z-Image-Turbo Q4 GGUF benchmarks)
+    // and avoid the offload cost of going to 768x1344 / 1344x768.
+    let (img_w, img_h) = if req.vertical { (720, 1280) } else { (1280, 720) };
+    emit(app, pid, 4, "running", 0.0, &format!("Generando imágenes {}x{}…", img_w, img_h));
     let mut beats: Vec<serde_json::Value> = Vec::new();
     if let Some(arr) = markers.as_array() {
         let image_markers: Vec<&serde_json::Value> =
@@ -183,18 +245,35 @@ async fn run(
                     "prompt": prompt,
                     "out_dir": out_dir,
                     "style_preset": true,
+                    "width": img_w,
+                    "height": img_h,
                 }))
                 .send()
                 .await?
                 .json()
                 .await?;
+            let img_path = img["image_path"].as_str().unwrap_or("").to_string();
             beats.push(serde_json::json!({
-                "path": img["image_path"],
+                "path": img_path.clone(),
                 "start": ts,
                 "duration": 8.0,
             }));
+            // Live preview: emit a per-image event so the wizard can show
+            // thumbnails as they finish rendering. UI subscribes to
+            // `pipeline:image_ready`. Best-effort; failure here doesn't break
+            // the pipeline.
+            let _ = app.emit(
+                "pipeline:image_ready",
+                serde_json::json!({
+                    "project_id": pid,
+                    "index": i,
+                    "total": total,
+                    "image_path": img_path,
+                    "prompt": prompt,
+                }),
+            );
             let pct = ((i + 1) as f64 / total as f64) * 100.0;
-            emit(app, pid, 4, "running", pct, &format!("{}/{}", i + 1, total));
+            emit(app, pid, 4, "running", pct, &format!("Imagen {}/{}", i + 1, total));
         }
     }
     persist_step(pool, pid, 4, "done", &serde_json::json!({"beats": beats})).await?;
@@ -318,26 +397,56 @@ async fn run(
                 o
             })
             .collect();
-        // For vertical output, render at horizontal first then /reframe so subject
-        // composition is preserved (avoids the 768×1344 lowvram bottleneck).
-        let render_w = if req.vertical { 1920 } else { 1920 };
-        let render_h = if req.vertical { 1080 } else { 1080 };
+        // Native-aspect render: vertical Shorts at 1080x1920, horizontal at 1920x1080.
+        // Source images already match aspect (720x1280 / 1280x720), so this is a 1.5x
+        // upscale done by FFmpeg's scale filter with lanczos — no /reframe needed.
+        let (render_w, render_h) = if req.vertical { (1080, 1920) } else { (1920, 1080) };
+        // Render timeout scales with beat count: ~90s per beat at 60fps NVENC p7.
+        // Floor 15 min for short videos, ceil 60 min for long-form (>30 beats).
+        let render_timeout = std::time::Duration::from_secs(
+            (15 * 60_u64).max((images.len() as u64) * 90).min(60 * 60),
+        );
+        emit(app, pid, 6, "running", 5.0, &format!("Componiendo {} escenas con FFmpeg…", images.len()));
+        // Animation preset → render parameters. Default "cinematic" matches the
+        // current Steadicam look; "dynamic" punches harder for Shorts; "minimal"
+        // is talking-head-style with subtle motion only; "dramatic" maxes everything.
+        let preset = req.animation_preset.as_deref().unwrap_or("cinematic");
+        let (kenburns_end, crossfade_s, sway_px, cinema_profile, transitions) = match preset {
+            "minimal"  => (1.04_f64, 0.5_f64, 12.0_f64, "light", "fade,fade,fade,fade,fade"),
+            "dynamic"  => (1.18, 0.4, 40.0, "full", "circleopen,wiperight,dissolve,fade,smoothleft"),
+            "dramatic" => (1.22, 1.1, 50.0, "full", "fadeblack,radial,circleopen,fadeblack,dissolve"),
+            _ /* cinematic */ => (1.12, 0.9, 30.0, "full", "fade,fadeblack,circleopen,dissolve,fade"),
+        };
+        // Apply per-beat transition kind round-robin from the preset list.
+        let trans: Vec<&str> = transitions.split(',').collect();
+        let mut images_with_trans = images.clone();
+        for (i, beat) in images_with_trans.iter_mut().enumerate() {
+            if let Some(o) = beat.as_object_mut() {
+                if !o.contains_key("transition") {
+                    o.insert(
+                        "transition".to_string(),
+                        serde_json::json!(trans[i % trans.len()]),
+                    );
+                }
+            }
+        }
         client
             .post(format!("{}/render", PY_SIDECAR))
-            .timeout(std::time::Duration::from_secs(15 * 60))
+            .timeout(render_timeout)
             .json(&serde_json::json!({
-                "images": images,
+                "images": images_with_trans,
                 "narration_path": narration_audio,
                 "music_path": music["audio_path"],
                 "music_volume": 0.32,
                 "music_ducking": true,
                 "out_dir": out_dir,
-                "crossfade_seconds": 0.9,
-                "cinematic": "full",
+                "crossfade_seconds": crossfade_s,
+                "cinematic": cinema_profile,
                 "width": render_w,
                 "height": render_h,
                 "kenburns_start": 1.00,
-                "kenburns_end": 1.10,
+                "kenburns_end": kenburns_end,
+                "handheld_sway_px": sway_px,
             }))
             .send()
             .await?
@@ -352,8 +461,11 @@ async fn run(
         .map(|s| s.to_string())
         .unwrap_or_else(|| video_out.clone());
 
-    // ─── Phase 6b: Smart vertical reframe (when vertical=true) ─────────
-    if req.vertical {
+    // ─── Phase 6b: Smart vertical reframe (only when source isn't already vertical) ─────────
+    // Vertical Shorts produced from native 720x1280 images don't need reframe — they're
+    // already correctly composed. /reframe stays available for users who feed horizontal
+    // sources via a future "import existing video" path.
+    if req.vertical && false {
         emit(app, pid, 6, "running", 60.0, "Reframe vertical 1080×1920…");
         let vert_path = format!("{}/video-vertical.mp4", out_dir);
         let reframe_resp: Result<serde_json::Value, _> = client
@@ -382,15 +494,25 @@ async fn run(
     if req.vertical { tag.push_str(" + reframe"); }
     emit(app, pid, 6, "done", 100.0, &format!("Vídeo renderizado ({})", tag));
 
-    // ─── Phase 7: Thumbnail ──────────────────────────────────────────
+    // ─── Phase 7: Thumbnail (dedicated Z-Image gen + Node text overlay) ──
     emit(app, pid, 7, "running", 0.0, "Generando thumbnail…");
+    // Native aspect for the thumbnail too: vertical Shorts → 720x1280,
+    // horizontal long-form → 1280x720. Same VRAM-friendly resolutions as Phase 4.
+    let (thumb_w, thumb_h) = if req.vertical { (720, 1280) } else { (1280, 720) };
     let bg: serde_json::Value = client
         .post(format!("{}/image", PY_SIDECAR))
         .json(&serde_json::json!({
-            "prompt": format!("dramatic xianxia thumbnail, {}, hero pose, qi explosion", req.topic),
-            "width": 1344,
-            "height": 768,
+            "prompt": format!(
+                "dramatic xianxia thumbnail of {}, hero in mid-action with qi aura, \
+                 anamorphic 2.39:1 cinematic framing, volumetric god rays, \
+                 high-contrast teal-and-orange grade, sharp focus on subject, \
+                 epic scale composition rule of thirds, no text overlay",
+                req.topic
+            ),
+            "width": thumb_w,
+            "height": thumb_h,
             "out_dir": out_dir,
+            "style_preset": false,  // own prompt is already cinematic
         }))
         .send()
         .await?
@@ -409,6 +531,11 @@ async fn run(
         .await?
         .json()
         .await?;
+    let thumbnail_path = if std::path::Path::new(&thumb_out).exists() {
+        Some(thumb_out.clone())
+    } else {
+        None
+    };
     emit(app, pid, 7, "done", 100.0, "Thumbnail listo");
 
     // ─── Phase 8: Subtitles (Whisper word-level + ASS karaoke + burn-in) ─
@@ -425,7 +552,9 @@ async fn run(
             "audio_path": narration_audio,
             "source_language": primary_lang,
             "target_languages": req.languages,
+            "vertical": req.vertical,
             "out_dir": out_dir,
+            "style": req.caption_style.clone().unwrap_or_else(|| "xianxia".to_string()),
         }))
         .send()
         .await?
@@ -444,7 +573,12 @@ async fn run(
         .map(|s| s.to_string());
 
     let mut final_video = produced_video.clone();
-    if let Some(ass) = ass_path {
+    if !req.burn_subtitles {
+        // User explicitly disabled subtitle burn-in. SRT files are still saved
+        // and uploaded to YouTube as caption tracks; they're just not visually
+        // overlaid on the master MP4.
+        emit(app, pid, 8, "skipped", 100.0, "Subtítulos generados (sin quemar en MP4)");
+    } else if let Some(ass) = ass_path {
         emit(app, pid, 8, "running", 60.0, "Quemando karaoke en NVENC…");
         let burn_out = produced_video.replace(".mp4", ".subs.mp4");
         let burn_resp: serde_json::Value = client
@@ -471,11 +605,181 @@ async fn run(
     persist_step(pool, pid, 8, "done", &serde_json::json!({"video": final_video, "subs": subs})).await?;
     emit(app, pid, 8, "done", 100.0, "Subtítulos karaoke listos");
 
-    // ─── Phase 9: YouTube upload (M5 wires this) ─────────────────────
-    emit(app, pid, 9, "pending", 0.0, "Pendiente de upload (M5)");
+    // ─── Phase 9: YouTube upload (only if user has connected YouTube) ──
+    let yt_connected = crate::youtube::oauth::load_credentials().ok().flatten().is_some();
+    if !yt_connected {
+        emit(app, pid, 9, "skipped", 0.0, "YouTube no conectado · skip");
+    } else if !req.auto_upload {
+        emit(app, pid, 9, "skipped", 0.0, "Auto-upload desactivado · skip");
+    } else {
+        emit(app, pid, 9, "running", 0.0, "Subiendo a YouTube…");
+        let title = meta["title"].as_str().unwrap_or(&req.topic).to_string();
+        let description = meta["description"].as_str().unwrap_or("").to_string();
+        let tags: Vec<String> = meta["tags"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
 
-    // ─── Phase 10: Schedule + Shorts (M6 wires this) ─────────────────
-    emit(app, pid, 10, "pending", 0.0, "Pendiente de programación (M6)");
+        // Captions: convert ASS → SRT for upload (YouTube only accepts SRT/SBV/SCC).
+        let mut captions: Vec<crate::youtube::upload::CaptionTrack> = Vec::new();
+        if let Some(arr) = subs["subtitles"].as_array() {
+            for s in arr {
+                if let (Some(lang), Some(srt)) = (s["language"].as_str(), s["srt_path"].as_str()) {
+                    captions.push(crate::youtube::upload::CaptionTrack {
+                        language: lang.to_string(),
+                        name: format!("{} ({})", lang, primary_lang),
+                        srt_path: srt.to_string(),
+                    });
+                }
+            }
+        }
+
+        // Vertical Shorts get the `#Shorts` hashtag in the description and a 24
+        // category id; long-form goes into 24 (Entertainment) too but no tag.
+        let mut full_description = description.clone();
+        if req.vertical && !full_description.contains("#Shorts") {
+            full_description.push_str("\n\n#Shorts");
+        }
+
+        let upload_req = crate::youtube::upload::UploadRequest {
+            project_id: pid.to_string(),
+            video_path: final_video.clone(),
+            thumbnail_path: thumbnail_path.clone(),
+            title,
+            description: full_description,
+            tags,
+            category_id: "24".to_string(),
+            privacy_status: req.publish_privacy.clone().unwrap_or_else(|| "private".to_string()),
+            publish_at: req.publish_at,
+            captions,
+            contains_synthetic_media: true,
+        };
+        match crate::youtube::upload::upload(upload_req).await {
+            Ok(resp) => {
+                emit(app, pid, 9, "done", 100.0, &format!("Subido: youtube.com/watch?v={}", resp.video_id));
+                persist_step(pool, pid, 9, "done", &serde_json::json!({"video_id": resp.video_id})).await?;
+            }
+            Err(e) => {
+                emit(app, pid, 9, "failed", 0.0, &format!("Upload falló: {}", e));
+            }
+        }
+    }
+
+    // ─── Phase 10: Auto-Shorts extraction (skipped for vertical/short content) ──
+    if !req.vertical && req.auto_shorts {
+        emit(app, pid, 10, "running", 0.0, "Extrayendo Shorts virales…");
+        // Use the words from Whisper (already collected for subtitles in phase 8).
+        // The /subtitles response embeds them — fetch from the source ASS instead
+        // by re-asking /transcribe quickly (cheap, words already cached).
+        let words: Vec<serde_json::Value> = subs["subtitles"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|s| s.get("words").and_then(|v| v.as_array()))
+            .cloned()
+            .unwrap_or_default();
+        if words.is_empty() {
+            emit(app, pid, 10, "skipped", 0.0, "Sin words timestamps · skip Shorts");
+        } else {
+            let auto_resp = client
+                .post(format!("{}/shorts/auto", PY_SIDECAR))
+                .timeout(std::time::Duration::from_secs(20 * 60))
+                .json(&serde_json::json!({
+                    "video_path": final_video,
+                    "words": words,
+                    "out_dir": out_dir,
+                    "n_shorts": req.shorts_count.unwrap_or(3),
+                    "primary_language": primary_lang,
+                }))
+                .send()
+                .await;
+            match auto_resp {
+                Ok(r) if r.status().is_success() => {
+                    let out: serde_json::Value = r.json().await.unwrap_or_default();
+                    let n = out["shorts"].as_array().map(|a| a.len()).unwrap_or(0);
+                    persist_step(pool, pid, 10, "done", &out).await?;
+                    emit(app, pid, 10, "done", 100.0, &format!("{} Shorts extraídos", n));
+                }
+                _ => {
+                    emit(app, pid, 10, "failed", 0.0, "Auto-Shorts falló");
+                }
+            }
+        }
+    } else if req.vertical {
+        emit(app, pid, 10, "skipped", 0.0, "Vídeo vertical · sin Shorts adicionales");
+    } else {
+        emit(app, pid, 10, "skipped", 0.0, "Auto-Shorts desactivado · skip");
+    }
+
+    // ─── Phase 11: Engagement analysis (TRIBE v2 · in-silico fMRI) ──
+    if req.analyze_engagement {
+        emit(app, pid, 11, "running", 0.0, "Analizando engagement con TRIBE v2…");
+        // Best-effort: 503 (TRIBE not installed) → skip gracefully
+        let analyze_resp: Option<serde_json::Value> = match client
+            .post(format!("{}/engagement/analyze", PY_SIDECAR))
+            .timeout(std::time::Duration::from_secs(20 * 60))
+            .json(&serde_json::json!({
+                "video_path": final_video,
+                "mode": "light",
+                "out_dir": out_dir,
+                "boring_threshold": 0.40,
+                "valley_min_seconds": 4.0,
+            }))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r.json().await.ok(),
+            _ => None,
+        };
+
+        match analyze_resp {
+            Some(report) if report.get("overall_score").is_some() => {
+                let score = report["overall_score"].as_f64().unwrap_or(0.0);
+                let n_valleys = report["boring_spots"].as_array().map(|a| a.len()).unwrap_or(0);
+                persist_step(pool, pid, 11, "done", &report).await?;
+
+                // Auto-optimize: re-render with cuts + audio swells if user opted in.
+                if req.auto_optimize_engagement && n_valleys > 0 {
+                    emit(app, pid, 11, "running", 70.0,
+                         &format!("Optimizando {} valles aburridos…", n_valleys));
+                    let opt_resp: Option<serde_json::Value> = match client
+                        .post(format!("{}/engagement/optimize", PY_SIDECAR))
+                        .timeout(std::time::Duration::from_secs(15 * 60))
+                        .json(&serde_json::json!({
+                            "video_path": final_video,
+                            "boring_spots": report["boring_spots"],
+                            "out_dir": out_dir,
+                            "allow_cut": true,
+                            "allow_audio_swell": true,
+                            "allow_broll": false,
+                        }))
+                        .send()
+                        .await
+                    {
+                        Ok(r) if r.status().is_success() => r.json().await.ok(),
+                        _ => None,
+                    };
+                    if let Some(opt) = opt_resp {
+                        if let Some(p) = opt["out_path"].as_str() {
+                            final_video = p.to_string();
+                            let fixed = opt["spots_fixed"].as_u64().unwrap_or(0);
+                            emit(app, pid, 11, "done", 100.0,
+                                 &format!("Engagement {:.1}/100 · {} valles arreglados", score, fixed));
+                        }
+                    } else {
+                        emit(app, pid, 11, "done", 100.0,
+                             &format!("Engagement {:.1}/100 · auto-optimize falló", score));
+                    }
+                } else {
+                    emit(app, pid, 11, "done", 100.0,
+                         &format!("Engagement {:.1}/100 · {} valles detectados", score, n_valleys));
+                }
+            }
+            _ => {
+                emit(app, pid, 11, "skipped", 0.0, "TRIBE v2 no instalado · skip análisis");
+            }
+        }
+    } else {
+        emit(app, pid, 11, "skipped", 0.0, "Análisis engagement desactivado · skip");
+    }
 
     Ok(())
 }
@@ -518,4 +822,53 @@ fn emit(app: &AppHandle, pid: &str, phase: u8, status: &str, progress: f64, msg:
             message: msg.to_string(),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GenerateRequest;
+
+    #[test]
+    fn deserializes_minimal_payload_from_frontend() {
+        let json = r#"{
+            "topic": "Jade Emperor",
+            "languages": ["en", "es"],
+            "target_minutes": 14,
+            "experimental_llm": false
+        }"#;
+        let req: GenerateRequest = serde_json::from_str(json).expect("must accept minimal payload");
+        assert_eq!(req.topic, "Jade Emperor");
+        assert!(!req.use_musicgen);
+        assert!(!req.vertical);
+    }
+
+    #[test]
+    fn accepts_voice_legacy_alias() {
+        let json = r#"{
+            "topic": "x",
+            "languages": ["en"],
+            "target_minutes": 5,
+            "experimental_llm": false,
+            "voice": "Vivian"
+        }"#;
+        let req: GenerateRequest = serde_json::from_str(json).expect("voice alias must work");
+        assert_eq!(req.voice_speaker.as_deref(), Some("Vivian"));
+    }
+
+    #[test]
+    fn accepts_canonical_voice_speaker() {
+        let json = r#"{
+            "topic": "x",
+            "languages": ["en"],
+            "target_minutes": 5,
+            "experimental_llm": false,
+            "voice_speaker": "Cherry",
+            "use_musicgen": true,
+            "vertical": true
+        }"#;
+        let req: GenerateRequest = serde_json::from_str(json).expect("canonical payload");
+        assert_eq!(req.voice_speaker.as_deref(), Some("Cherry"));
+        assert!(req.use_musicgen);
+        assert!(req.vertical);
+    }
 }
