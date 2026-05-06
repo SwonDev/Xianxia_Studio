@@ -341,8 +341,9 @@ async fn run(
     let markers = script_resp["markers"].clone();
     persist_step(pool, pid, 1, "done", &script_resp).await?;
     emit(app, pid, 1, "done", 100.0, "Guion listo");
-    // Free Ollama VRAM before TTS loads (~3 GB recovered).
-    unload(&client, "ollama").await;
+    // Phase 2 also uses Ollama (Gemma 4) — keeping the model loaded between
+    // phases avoids paying the ~3 GB load cost twice. We unload AFTER
+    // metadata, not between Script and Metadata.
 
     // ─── Phase 2: Metadata ───────────────────────────────────────────
     emit(app, pid, 2, "running", 0.0, "Metadatos…");
@@ -358,6 +359,9 @@ async fn run(
         .await?;
     persist_step(pool, pid, 2, "done", &meta).await?;
     emit(app, pid, 2, "done", 100.0, "Metadatos listos");
+    // NOW free Ollama (~3 GB recovered) before TTS loads its own model.
+    // The unload helper polls /api/ps until xianxia-llm is fully evicted.
+    unload(&client, "ollama").await;
 
     // ─── Phase 3: TTS ────────────────────────────────────────────────
     emit(app, pid, 3, "running", 0.0, "Sintetizando voz…");
@@ -479,6 +483,10 @@ async fn run(
             }
         }
     }
+    // Free rembg sessions + RMBG-2.0 weights cached for the depth pass.
+    // Without this they linger in VRAM (~177 MB u2net, up to 1.4 GB
+    // RMBG-2.0) competing with the next phases.
+    unload(&client, "depth").await;
 
     // ─── Phase 5: Music selector ─────────────────────────────────────
     emit(app, pid, 5, "running", 0.0, "Seleccionando música…");
@@ -495,6 +503,10 @@ async fn run(
         .await?;
     persist_step(pool, pid, 5, "done", &music).await?;
     emit(app, pid, 5, "done", 100.0, "Música lista");
+    // Release MusicGen / ACE-Step PyTorch tensors (~2-4 GB) before render.
+    // Phase 6 doesn't need GPU compute (HyperFrames uses Chromium + ffmpeg
+    // NVENC) so this is the cheapest phase to leave VRAM clean for.
+    unload(&client, "music").await;
 
     // ─── Phase 6: Render ─────────────────────────────────────────────
     // HyperFrames is the project's primary auto-edit engine: HTML/CSS/GSAP

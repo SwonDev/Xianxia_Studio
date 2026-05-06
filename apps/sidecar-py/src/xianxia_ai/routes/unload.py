@@ -1,20 +1,27 @@
 """VRAM unload routes — sequential model swapping for 8 GB cards.
 
-The Xianxia Studio pipeline runs five GPU-resident models:
-  - Ollama xianxia-llm    (Phase 1+2: script + metadata)
-  - Qwen3-TTS-12Hz-1.7B   (Phase 3: TTS)
-  - Z-Image-Turbo BF16    (Phase 4: image generation, via ComfyUI)
-  - faster-whisper        (Phase 8: transcription)
+The Xianxia Studio pipeline runs SEVEN GPU-resident model families:
+  - Ollama xianxia-llm    (Phase 1+2: script + metadata, ~3 GB)
+  - Qwen3-TTS-12Hz-1.7B   (Phase 3: TTS, ~3 GB)
+  - Z-Image-Turbo + GGUF text encoder (Phase 4 + Phase 7, via ComfyUI, ~7 GB)
+  - rembg u2net / RMBG-2.0 (Phase 4b: depth/parallax, ~200 MB - 1.5 GB)
+  - ACE-Step / MusicGen   (Phase 5: music, ~2-4 GB)
+  - faster-whisper        (Phase 8: transcription, ~1 GB)
 
-On an 8 GB card these cannot co-reside. Each phase calls /unload with the
-appropriate target before the next phase loads its model. Idempotent.
+On an 8 GB card these cannot co-reside. The pipeline calls /unload with
+the appropriate target after each phase to evict that family BEFORE the
+next phase loads its own model. Idempotent.
 
 Targets (`POST /unload?target=<name>`):
   - "tts"     → unload Qwen3-TTS
   - "whisper" → unload faster-whisper
   - "image"   → unload diffusers ZImagePipeline (no-op if ComfyUI path is used)
+  - "depth"   → drop rembg sessions + RMBG-2.0 weights
+  - "music"   → release MusicGen / ACE-Step PyTorch tensors
   - "ollama"  → asks Ollama to unload via keep_alive=0 on `xianxia-llm`
+                AND polls /api/ps until the model is gone from VRAM
   - "comfyui" → asks ComfyUI to free GPU memory via /free
+                AND polls /system_stats until vram_free ≥ 5 GB
   - "all"     → all of the above
 """
 
@@ -171,6 +178,40 @@ def _unload_comfyui(min_free_gb: float = 5.0, timeout_s: float = 30.0) -> tuple[
     )
 
 
+def _unload_depth() -> tuple[bool, str]:
+    """Drops cached rembg sessions and the RMBG-2.0 transformer weights.
+
+    rembg's `new_session("u2net")` keeps the ONNX runtime + model in
+    VRAM for batch reuse (~177 MB for u2net, ~1.4 GB for RMBG-2.0).
+    Without this, depth/parallax leaks VRAM permanently after Phase 4b.
+    """
+    try:
+        from . import depth as _depth_mod  # local import to avoid cycle at boot
+    except Exception as e:
+        return (False, f"depth module unreachable: {e}")
+    n_sessions = len(getattr(_depth_mod, "_REMBG_SESSIONS", {}) or {})
+    try:
+        if hasattr(_depth_mod, "_REMBG_SESSIONS"):
+            _depth_mod._REMBG_SESSIONS.clear()  # type: ignore[attr-defined]
+        if hasattr(_depth_mod, "_BRIAAI_MODEL"):
+            _depth_mod._BRIAAI_MODEL = None  # type: ignore[attr-defined]
+    except Exception as e:
+        return (False, f"depth unload error: {e}")
+    return (True, f"depth cleared ({n_sessions} rembg session(s) + briaai)")
+
+
+def _unload_music() -> tuple[bool, str]:
+    """ACE-Step / MusicGen models are loaded as locals inside the route
+    handlers; once the request returns Python releases the references but
+    PyTorch keeps the GPU memory in its allocator pool. Forcing the cache
+    free here returns the bytes to the OS so the next phase can use them.
+    """
+    # The actual unload work happens in _free_torch_caches() below; this
+    # function exists for symmetry and future explicit ACE-Step model
+    # caches we may add.
+    return (True, "music caches scheduled for torch empty_cache")
+
+
 @router.post("", response_model=UnloadResponse)
 def unload(target: str = "all") -> UnloadResponse:
     target = target.lower().strip()
@@ -189,6 +230,16 @@ def unload(target: str = "all") -> UnloadResponse:
         if image_model.unload():
             detail_parts.append("image")
             any_unloaded = True
+    if target in ("depth", "all"):
+        ok, msg = _unload_depth()
+        if ok:
+            any_unloaded = True
+        detail_parts.append(msg)
+    if target in ("music", "all"):
+        ok, msg = _unload_music()
+        if ok:
+            any_unloaded = True
+        detail_parts.append(msg)
     if target in ("ollama", "all"):
         ok, msg = _unload_ollama()
         if ok:
