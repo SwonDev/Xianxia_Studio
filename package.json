@@ -17,6 +17,7 @@
     "icons": "node scripts/gen-icons.mjs",
     "installer:assets": "node scripts/gen-installer-assets.mjs",
     "branding": "pnpm icons && pnpm installer:assets",
+    "version:bump": "node scripts/bump-version.mjs",
     "design:lint": "npx @google/design.md lint DESIGN.md",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",

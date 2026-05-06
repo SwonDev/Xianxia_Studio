@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.1.1). If empty, uses current ref.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    name: Build Windows installer (NSIS + MSI)
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve version from tag
+        id: ver
+        shell: bash
+        run: |
+          REF="${{ github.event.inputs.tag || github.ref_name }}"
+          # Strip refs/tags/ prefix if present
+          TAG="${REF##*/}"
+          # Strip leading v
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
+          echo "Building $TAG (version $VERSION)"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.2
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Regenerate branding assets
+        run: pnpm branding
+
+      - name: Build Tauri bundles + create release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing — set in Fase 3. Empty values mean no
+          # signature is added; the bundle still installs but the
+          # in-app updater plugin will refuse to apply it.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ steps.ver.outputs.tag }}
+          releaseName: 'Xianxia Studio ${{ steps.ver.outputs.tag }}'
+          releaseBody: |
+            ## Xianxia Studio ${{ steps.ver.outputs.tag }}
+
+            App de escritorio para producción automatizada de contenido
+            cinematográfico de YouTube con IA 100 % local.
+
+            ### Descarga
+
+            - **Windows · Installer NSIS** (recomendado, per-user, ~60 MB) — `.exe`
+            - **Windows · MSI** (instalación silenciosa / Group Policy) — `.msi`
+
+            La primera vez que abras la app pasarás por el wizard de
+            instalación que descarga modelos y runtimes (~25 GB total
+            para el stack completo). El stack base obligatorio cabe en
+            ≈10 GB; el resto son componentes opcionales que puedes
+            instalar luego desde **Ajustes → Componentes opcionales**.
+
+            ### Cambios
+
+            Ver el [CHANGELOG](https://github.com/SwonDev/Xianxia_Studio/blob/main/CHANGELOG.md)
+            o el log completo desde el último tag.
+
+            ---
+            Hecho con Tauri 2 + React 19 + Python embebido + ComfyUI.
+            Apache 2.0.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonKeepUniversal: false
+          args: --verbose
+
+      - name: List bundles built
+        if: always()
+        shell: bash
+        run: |
+          echo "─── NSIS (.exe) ───"
+          find apps/desktop/src-tauri/target/release/bundle/nsis -type f -name "*.exe" 2>/dev/null || true
+          echo "─── MSI ───"
+          find apps/desktop/src-tauri/target/release/bundle/msi -type f -name "*.msi" 2>/dev/null || true
+          echo "─── Updater bundles (.zip / .sig) ───"
+          find apps/desktop/src-tauri/target/release/bundle -type f \( -name "*.zip" -o -name "*.sig" \) 2>/dev/null || true
