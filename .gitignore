@@ -69,7 +69,7 @@ youtube-credentials.json
 Thumbs.db
 desktop.ini
 
-# ─── Cloud-sync staging files (Drive/OneDrive/Dropbox temp) ────────────────────────
+# ─── Cloud-sync staging files (Drive/OneDrive/Dropbox temp) ──────
 .tmp.drivedownload/
 .tmp.driveupload/
 
