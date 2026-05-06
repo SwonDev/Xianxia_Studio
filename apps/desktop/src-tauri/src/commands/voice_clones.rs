@@ -103,6 +103,7 @@ pub async fn delete_voice_clone(id: String) -> Result<(), String> {
 /// on first run. The presets ship as small WAV files (≤200 KB each, free CC-0
 /// recordings) under apps/desktop/src-tauri/resources/voice_presets/. If the
 /// directory doesn't exist (production build without presets), this is a no-op.
+#[allow(dead_code)]
 pub fn bootstrap() {
     let _ = anyhow::Result::<()>::Ok(());
     // Best-effort. Presets are seeded by registering through the Python API

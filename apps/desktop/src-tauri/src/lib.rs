@@ -1,7 +1,3 @@
-// `dead_code` warnings during ramp-up: many modules expose APIs that are wired
-// to UI commands incrementally per milestone. Suppress until M7 ships.
-#![allow(dead_code)]
-
 mod commands;
 mod db;
 mod hardware;

@@ -31,6 +31,7 @@ pub enum SidecarStatus {
     Stopped,
     Starting,
     Running,
+    #[allow(dead_code)] // surfaced by future health failure paths
     Failed,
 }
 
@@ -43,6 +44,7 @@ pub struct SidecarState {
     pub comfyui: SidecarStatus,
 }
 
+#[allow(dead_code)] // serde default — reachable when older state JSONs deserialize
 fn default_status() -> SidecarStatus { SidecarStatus::Stopped }
 
 /// Tracks recent spawn failures so we don't spam-respawn a sidecar that keeps
@@ -98,6 +100,7 @@ impl Supervisor {
         }
     }
 
+    #[allow(dead_code)] // public API — kept for tracing / future debug snapshots
     pub async fn snapshot(&self) -> SidecarState {
         self.state.lock().await.clone()
     }

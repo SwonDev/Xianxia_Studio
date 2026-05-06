@@ -1,3 +1,8 @@
+// Ollama install helpers. The pull/modelfile flow is invoked by the
+// installer wizard's LLM step; not all paths are exercised in every
+// run (e.g. write_xianxia_modelfile only runs on first-time install).
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::Stdio;

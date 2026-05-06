@@ -1,3 +1,7 @@
+// KV store for app-level preferences. Public API; not all keys are wired
+// from the UI yet (e.g. updater channel, telemetry opt-in, default voice).
+#![allow(dead_code)]
+
 use anyhow::Result;
 
 use super::{now_unix, DbPool};

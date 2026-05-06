@@ -49,6 +49,7 @@ interface Ctx {
 
 const ToastCtx = createContext<Ctx | null>(null);
 
+// eslint-disable-next-line react-refresh/only-export-components -- hook + provider live together intentionally
 export function useToast(): Ctx {
   const ctx = useContext(ToastCtx);
   if (!ctx) throw new Error('useToast must be used inside <ToastProvider>');

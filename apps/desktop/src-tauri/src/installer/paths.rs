@@ -46,6 +46,7 @@ pub fn temp_dir() -> Result<PathBuf> {
     Ok(p)
 }
 
+#[allow(dead_code)] // used by ollama::write_xianxia_modelfile path
 pub fn ollama_modelfiles_dir() -> Result<PathBuf> {
     let p = paths()?.data_dir.join("ollama-modelfiles");
     std::fs::create_dir_all(&p)?;

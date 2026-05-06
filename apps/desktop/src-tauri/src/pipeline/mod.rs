@@ -763,14 +763,31 @@ async fn run(
                             let fixed = opt["spots_fixed"].as_u64().unwrap_or(0);
                             emit(app, pid, 11, "done", 100.0,
                                  &format!("Engagement {:.1}/100 · {} valles arreglados", score, fixed));
+                            persist_step(pool, pid, 11, "done", &serde_json::json!({
+                                "video": final_video,
+                                "engagement_score": score,
+                                "valleys_detected": n_valleys,
+                                "valleys_fixed": fixed,
+                            })).await?;
                         }
                     } else {
                         emit(app, pid, 11, "done", 100.0,
                              &format!("Engagement {:.1}/100 · auto-optimize falló", score));
+                        persist_step(pool, pid, 11, "done", &serde_json::json!({
+                            "video": final_video,
+                            "engagement_score": score,
+                            "valleys_detected": n_valleys,
+                            "auto_optimize_failed": true,
+                        })).await?;
                     }
                 } else {
                     emit(app, pid, 11, "done", 100.0,
                          &format!("Engagement {:.1}/100 · {} valles detectados", score, n_valleys));
+                    persist_step(pool, pid, 11, "done", &serde_json::json!({
+                        "video": final_video,
+                        "engagement_score": score,
+                        "valleys_detected": n_valleys,
+                    })).await?;
                 }
             }
             _ => {

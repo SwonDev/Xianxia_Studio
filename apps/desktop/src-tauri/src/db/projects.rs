@@ -65,6 +65,7 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Project>> {
     Ok(rows)
 }
 
+#[allow(dead_code)] // public API — used by Library detail view (M8)
 pub async fn get(pool: &DbPool, id: &str) -> Result<Option<Project>> {
     let row = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")
         .bind(id)

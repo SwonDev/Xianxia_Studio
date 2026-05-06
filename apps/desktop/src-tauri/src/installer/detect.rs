@@ -364,6 +364,7 @@ pub fn resolved_node() -> Option<PathBuf> {
     }
 }
 
+#[allow(dead_code)] // helper consumed by render fallback when sidecar offline
 pub fn resolved_ffmpeg() -> Option<PathBuf> {
     let f = detect_ffmpeg();
     if f.compatible {
