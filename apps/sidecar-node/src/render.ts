@@ -412,12 +412,17 @@ async function postProcessCinematic(opts: {
   ];
 
   logger.info({ encoder, profile }, 'ffmpeg cinematic post-pass');
-  await execa('ffmpeg', cmd, { stdio: 'inherit' });
+  // preferLocal: true lets execa find `ffmpeg` from sidecar-node/node_modules/
+  // .bin/ when the system PATH inherited from Tauri does not include it
+  // (Windows users running ffmpeg via WinGet hit this case). Without this
+  // the cinematic post-pass fails silently and the Rust pipeline falls back
+  // to the FFmpeg-direct Python render, losing parallax 2.5D + atmospherics.
+  await execa('ffmpeg', cmd, { stdio: 'inherit', preferLocal: true });
 }
 
 async function pickEncoder(): Promise<'h264_nvenc' | 'h264_qsv' | 'h264_amf' | 'libx264'> {
   try {
-    const { stdout } = await execa('ffmpeg', ['-hide_banner', '-encoders']);
+    const { stdout } = await execa('ffmpeg', ['-hide_banner', '-encoders'], { preferLocal: true });
     if (stdout.includes('h264_nvenc')) return 'h264_nvenc';
     if (stdout.includes('h264_qsv')) return 'h264_qsv';
     if (stdout.includes('h264_amf')) return 'h264_amf';

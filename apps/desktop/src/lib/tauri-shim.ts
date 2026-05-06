@@ -644,6 +644,12 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
       return proj.id as unknown as T;
     }
 
+    case 'abort_generation': {
+      // Browser-mode shim: pipelines aren't actually cancellable here, but
+      // we return false so the UI can render the button without crashing.
+      return false as unknown as T;
+    }
+
     case 'list_voices':
       return [
         { id: 'preset-vivian-en', name: 'Vivian', language: 'en', kind: 'preset', description: 'Female narrator', is_default: 1 },

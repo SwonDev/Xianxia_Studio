@@ -84,7 +84,7 @@ function GeneratorWizard() {
   const [vertical, setVertical] = useState(draft?.vertical ?? false);
   const [suggesting, setSuggesting] = useState(false);
   const [topicIdeas, setTopicIdeas] = useState<{ title: string; hook: string }[] | null>(null);
-  const { toast } = useToast();
+  const { toast, confirmDialog } = useToast();
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [phaseState, setPhaseState] = useState<Record<number, PhaseUpdate>>({});
   const [error, setError] = useState<string | null>(null);
@@ -556,20 +556,49 @@ function GeneratorWizard() {
             </div>
           </details>
 
-          <button
-            onClick={handleStart}
-            data-testid="start-generation"
-            disabled={!topic.trim() || activeProjectId !== null}
-            className={cn(
-              'mt-6 w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-md font-medium text-sm transition-colors',
-              activeProjectId
-                ? 'bg-obsidian-800 text-paper-300 cursor-not-allowed'
-                : 'bg-gold-500 text-obsidian-950 hover:bg-gold-300 shadow-glow-gold',
+          <div className="mt-6 grid gap-2" style={{ gridTemplateColumns: activeProjectId ? '1fr auto' : '1fr' }}>
+            <button
+              onClick={handleStart}
+              data-testid="start-generation"
+              disabled={!topic.trim() || activeProjectId !== null}
+              className={cn(
+                'w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-md font-medium text-sm transition-colors',
+                activeProjectId
+                  ? 'bg-obsidian-800 text-paper-300 cursor-not-allowed'
+                  : 'bg-gold-500 text-obsidian-950 hover:bg-gold-300 shadow-glow-gold',
+              )}
+            >
+              <Sparkles className="w-4 h-4" />
+              {activeProjectId ? 'Generación en curso…' : 'Iniciar generación'}
+            </button>
+            {activeProjectId && (
+              <button
+                onClick={async () => {
+                  if (!activeProjectId) return;
+                  const ok = await confirmDialog({
+                    title: 'Cancelar generación',
+                    body: 'Se interrumpirá la generación en curso. Los modelos cargados en VRAM permanecerán activos para tu próximo intento.',
+                    confirmLabel: 'Cancelar generación',
+                    cancelLabel: 'Continuar',
+                    danger: true,
+                  });
+                  if (!ok) return;
+                  try {
+                    await tauri.abortGeneration(activeProjectId);
+                    setActiveProjectId(null);
+                    toast.info('Generación cancelada');
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    toast.error('No se pudo cancelar', msg);
+                  }
+                }}
+                className="px-4 py-3 rounded-md text-sm font-medium border border-crimson-500/50 bg-crimson-500/10 text-crimson-300 hover:bg-crimson-500/20 transition-colors"
+                title="Interrumpir la generación en curso"
+              >
+                Cancelar
+              </button>
             )}
-          >
-            <Sparkles className="w-4 h-4" />
-            {activeProjectId ? 'Generación en curso…' : 'Iniciar generación'}
-          </button>
+          </div>
         </section>
 
         {/* Right: pipeline progress */}

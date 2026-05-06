@@ -29,23 +29,69 @@ use crate::installer::paths;
 use crate::installer::python_env;
 use crate::process_ext::HideConsole;
 
+/// Builds a PATH for spawned sidecars that ALWAYS includes the locations
+/// where ffmpeg/ffprobe might live, in addition to the parent process's PATH.
+/// This is the cornerstone of the Auto principle for video tooling: the
+/// supervisor guarantees that any subprocess (HyperFrames, FFmpeg post-pass,
+/// burn-in, frame extraction, depth segmentation) finds ffmpeg without the
+/// user ever touching PATH on their machine.
+///
+/// Order (highest priority first):
+///   1. `<data_dir>/runtime/ffmpeg/bin`     — installer-managed ffmpeg
+///   2. `<data_dir>/runtime/sidecar-node/node_modules/.bin` — execa local
+///   3. `<data_dir>/runtime/python/python` — embedded Python dir (Windows
+///      DLL search order looks here for ffmpeg.exe co-located with python.exe)
+///   4. `<LOCALAPPDATA>/Microsoft/WinGet/Links` — typical WinGet ffmpeg
+///   5. Inherited PATH from the Tauri process (system PATH)
+fn augmented_path() -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = paths::paths() {
+        dirs.push(p.data_dir.join("runtime").join("ffmpeg").join("bin"));
+        dirs.push(p.data_dir.join("runtime").join("sidecar-node").join("node_modules").join(".bin"));
+        dirs.push(p.data_dir.join("runtime").join("python").join("python"));
+    }
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local_appdata).join("Microsoft").join("WinGet").join("Links"));
+    }
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let inherited_paths: Vec<PathBuf> = std::env::split_paths(&inherited).collect();
+    dirs.extend(inherited_paths);
+    // Deduplicate while preserving order, keeping only directories that exist
+    // OR could exist (some ffmpeg dirs are created post-spawn after install).
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let unique: Vec<PathBuf> = dirs
+        .into_iter()
+        .filter(|p| {
+            let key = p.to_string_lossy().to_lowercase();
+            seen.insert(key)
+        })
+        .collect();
+    std::env::join_paths(unique).unwrap_or(inherited)
+}
+
 /// Kills sidecar processes (python.exe / node.exe) inherited from a previous
-/// instance of the app. Critical after auto-updates: when v0.1.3 → v0.1.4
-/// applies, the OS replaces the .exe but the daemons spawned by v0.1.3
+/// instance of the app. Critical after auto-updates: when v0.1.X → v0.1.X+1
+/// applies, the OS replaces the .exe but the daemons spawned by v0.1.X
 /// keep running, holding port 8731 / 8732 / 8188 with stale code. The new
 /// supervisor would then see the port bound and back off forever, leaving
 /// the user with the previous version's bugs (e.g. stale CORS rules).
 ///
-/// Safety scope: we only kill processes whose executable lives inside our
-/// own `<data_dir>/runtime/` tree, so we never touch unrelated software.
+/// We match orphans through TWO criteria, since either alone misses cases:
+///   1. **Exe path under `<data_dir>/runtime/`** — catches the embedded
+///      Python interpreter spawned for the sidecar.
+///   2. **Cmdline references `<data_dir>/runtime/`** — catches a *system*
+///      Node (e.g. `C:\nvm4w\nodejs\node.exe`) running our
+///      `runtime/sidecar-node/dist/server.js`. Without this, the Node
+///      sidecar survived auto-updates because its exe lives outside our
+///      runtime tree, and the new supervisor saw :8732 already bound.
 pub fn kill_orphan_sidecars() {
     use sysinfo::{ProcessRefreshKind, RefreshKind, System};
     let runtime = match paths::runtime_dir() {
         Ok(p) => p,
         Err(_) => return,
     };
-    // Canonicalize once so prefix-matching is robust to /\ variations on Windows.
     let runtime = std::fs::canonicalize(&runtime).unwrap_or(runtime);
+    let runtime_str = runtime.to_string_lossy().to_lowercase();
 
     let mut sys = System::new_with_specifics(
         RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
@@ -54,13 +100,30 @@ pub fn kill_orphan_sidecars() {
 
     let mut killed = 0;
     for (pid, proc_) in sys.processes() {
-        let exe = match proc_.exe() {
-            Some(p) => p,
-            None => continue,
-        };
-        let exe_canon = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
-        if exe_canon.starts_with(&runtime) {
-            tracing::warn!(?pid, ?exe_canon, "killing orphan sidecar from previous app instance");
+        let exe_canon = proc_.exe().map(|p| {
+            std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+        });
+
+        // Criterion 1: executable inside our runtime tree.
+        let exe_inside_runtime = exe_canon
+            .as_ref()
+            .map(|p| p.starts_with(&runtime))
+            .unwrap_or(false);
+
+        // Criterion 2: any cmdline argument points inside our runtime tree.
+        // This catches system `node.exe` running our `runtime/sidecar-node/
+        // dist/server.js`, which would otherwise escape the filter.
+        let cmd_refs_runtime = proc_.cmd().iter().any(|arg| {
+            arg.to_string_lossy().to_lowercase().contains(&runtime_str)
+        });
+
+        if exe_inside_runtime || cmd_refs_runtime {
+            tracing::warn!(
+                ?pid,
+                exe = ?exe_canon,
+                cmd_refs_runtime,
+                "killing orphan sidecar from previous app instance",
+            );
             if proc_.kill() {
                 killed += 1;
             }
@@ -491,6 +554,7 @@ async fn spawn_python() -> Result<Child> {
     let child = Command::new(&py)
         .arg(&server)
         .current_dir(&cwd)
+        .env("PATH", augmented_path())
         .env("PYTHONPATH", cwd.join("src"))
         .env("XIANXIA_MUSIC_DIR", assets_music)
         .env("XIANXIA_OUT_DIR", out_dir)
@@ -523,6 +587,7 @@ async fn spawn_node() -> Result<Child> {
     let child = Command::new(&node)
         .arg(&server)
         .current_dir(&cwd)
+        .env("PATH", augmented_path())
         .env("XIANXIA_NODE_PORT", "8732")
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
@@ -560,6 +625,7 @@ async fn spawn_comfyui() -> Result<Child> {
         // webview there's no CORS gate, but we want dev parity.
         .arg("--enable-cors-header").arg("*")
         .current_dir(&comfy_dir)
+        .env("PATH", augmented_path())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
         .stdin(Stdio::null())

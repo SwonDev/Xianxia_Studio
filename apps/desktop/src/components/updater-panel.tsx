@@ -8,8 +8,8 @@
 import { useState } from 'react';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
-import { getVersion } from '@tauri-apps/api/app';
 import { useQuery } from '@tanstack/react-query';
+import { tauri } from '@/lib/tauri';
 import {
   CheckCircle2,
   Download,
@@ -34,11 +34,16 @@ export function UpdaterPanel() {
   const [state, setState] = useState<State>({ kind: 'idle' });
   const { toast } = useToast();
 
-  const { data: currentVersion } = useQuery({
+  // Use the same cache key + shape as the sidebar (tauri.getAppVersion
+  // returns { version: string, tauri: string }). Sharing the cache prevents
+  // the "v[object Object]" bug we used to see when the two components
+  // fetched the same key with different shapes (one string, one object).
+  const { data: appVersion } = useQuery({
     queryKey: ['app-version'],
-    queryFn: () => getVersion(),
+    queryFn: tauri.getAppVersion,
     staleTime: Infinity,
   });
+  const currentVersion = appVersion?.version;
 
   async function handleCheck() {
     setState({ kind: 'checking' });

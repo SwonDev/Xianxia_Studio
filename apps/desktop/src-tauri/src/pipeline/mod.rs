@@ -213,6 +213,13 @@ pub struct PhaseUpdate {
     pub message: String,
 }
 
+/// Tracks every running generation so the UI can abort it. Keyed by
+/// project_id; the value is the spawned task's AbortHandle. Entries are
+/// removed when the task finishes (Ok or Err).
+static ACTIVE_RUNS: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashMap<String, tokio::task::AbortHandle>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 pub async fn start(
     app: AppHandle,
     pool: Arc<DbPool>,
@@ -232,13 +239,17 @@ pub async fn start(
     let app_clone = app.clone();
     let pool_clone = pool.clone();
     let topic_for_notify = req.topic.clone();
-    tokio::spawn(async move {
+    let project_id_for_task = project_id.clone();
+    let handle = tokio::spawn(async move {
         use tauri_plugin_notification::NotificationExt;
-        let result = run(&app_clone, &pool_clone, &project_id, &req).await;
+        let result = run(&app_clone, &pool_clone, &project_id_for_task, &req).await;
+        // Remove ourselves from the registry whatever the outcome.
+        if let Ok(mut runs) = ACTIVE_RUNS.lock() {
+            runs.remove(&project_id_for_task);
+        }
         match result {
             Ok(_) => {
-                let _ = db::projects::set_status(&pool_clone, &project_id, "ready").await;
-                // Native OS notification — fires even when app is in background.
+                let _ = db::projects::set_status(&pool_clone, &project_id_for_task, "ready").await;
                 let _ = app_clone
                     .notification()
                     .builder()
@@ -247,11 +258,11 @@ pub async fn start(
                     .show();
             }
             Err(e) => {
-                tracing::error!(project = %project_id, error = %e, "pipeline failed");
-                let _ = db::projects::set_status(&pool_clone, &project_id, "failed").await;
+                tracing::error!(project = %project_id_for_task, error = %e, "pipeline failed");
+                let _ = db::projects::set_status(&pool_clone, &project_id_for_task, "failed").await;
                 let _ = app_clone.emit(
                     "pipeline:error",
-                    serde_json::json!({ "project_id": project_id, "error": e.to_string() }),
+                    serde_json::json!({ "project_id": project_id_for_task, "error": e.to_string() }),
                 );
                 let _ = app_clone
                     .notification()
@@ -262,8 +273,36 @@ pub async fn start(
             }
         }
     });
+    if let Ok(mut runs) = ACTIVE_RUNS.lock() {
+        runs.insert(project_id.clone(), handle.abort_handle());
+    }
 
     Ok(project.id)
+}
+
+/// Cancels an in-flight generation by aborting its spawned task. The pipeline
+/// does NOT clean up partial outputs (TTS WAVs, ComfyUI history); those are
+/// safe to leave on disk and will be ignored by the next run.
+#[tauri::command]
+pub async fn abort_generation(
+    pool: tauri::State<'_, Arc<DbPool>>,
+    project_id: String,
+) -> Result<bool, String> {
+    let aborted = if let Ok(mut runs) = ACTIVE_RUNS.lock() {
+        if let Some(handle) = runs.remove(&project_id) {
+            handle.abort();
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if aborted {
+        let _ = db::projects::set_status(pool.inner(), &project_id, "cancelled").await;
+        tracing::info!(project = %project_id, "generation aborted by user");
+    }
+    Ok(aborted)
 }
 
 async fn run(
@@ -499,14 +538,31 @@ async fn run(
         ).await {
             Ok(json) => {
                 // Verify the MP4 actually exists on disk. The Node sidecar
-                // could in theory return 200 with an unfilled out_path field;
-                // the existence check is the only reliable confirmation.
-                let out_path = json.get("out_path").and_then(|v| v.as_str()).unwrap_or(&video_out);
-                if std::path::Path::new(out_path).exists() {
+                // returns 200 once postProcessCinematic kicks off, but on slow
+                // disks (or while ffmpeg flushes buffers) the file may take a
+                // moment to materialize. Poll for up to 30 s before declaring
+                // failure — this eliminates the race that used to trigger a
+                // bogus fallback to FFmpeg even when HyperFrames had succeeded.
+                let out_path = json
+                    .get("out_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&video_out)
+                    .to_string();
+                let mut materialized = false;
+                for _ in 0..15 {
+                    if let Ok(meta) = std::fs::metadata(&out_path) {
+                        if meta.len() > 1024 {
+                            materialized = true;
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+                if materialized {
                     render = Some(json);
                     used_engine = "HyperFrames";
                 } else {
-                    tracing::warn!(out_path, "hyperframes returned 200 but no MP4 on disk — falling back to FFmpeg");
+                    tracing::warn!(out_path, "hyperframes returned 200 but no MP4 on disk after 30s — falling back to FFmpeg");
                     emit(app, pid, 6, "running", 5.0, "HyperFrames no produjo MP4 · cayendo a FFmpeg…");
                 }
             }
@@ -722,22 +778,47 @@ async fn run(
     } else if let Some(ass) = ass_path {
         emit(app, pid, 8, "running", 60.0, "Quemando karaoke en NVENC…");
         let burn_out = produced_video.replace(".mp4", ".subs.mp4");
-        let burn_resp: serde_json::Value = client
-            .post(format!("{}/subtitles/burn-in", PY_SIDECAR))
-            .timeout(std::time::Duration::from_secs(15 * 60))
-            .json(&serde_json::json!({
-                "video_path": produced_video,
-                "ass_path": ass,
-                "out_path": burn_out,
-                // Cinematic look already applied during render — burn-in just overlays subs.
-                "cinematic": "off",
-            }))
-            .send()
-            .await?
-            .json()
-            .await?;
-        if let Some(p) = burn_resp["out_path"].as_str() {
-            final_video = p.to_string();
+        // Burn-in is non-fatal. ffmpeg can return 0 with empty output on rare
+        // NVENC driver quirks; the Python endpoint now self-validates and
+        // returns 5xx in that case. Either way, we keep the un-burned video
+        // as the final asset and warn instead of aborting the pipeline.
+        let burn_attempt: anyhow::Result<serde_json::Value> = async {
+            let resp = client
+                .post(format!("{}/subtitles/burn-in", PY_SIDECAR))
+                .timeout(std::time::Duration::from_secs(15 * 60))
+                .json(&serde_json::json!({
+                    "video_path": produced_video,
+                    "ass_path": ass,
+                    "out_path": burn_out,
+                    // Cinematic look already applied during render — burn-in just overlays subs.
+                    "cinematic": "off",
+                }))
+                .send()
+                .await?;
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                anyhow::bail!("HTTP {} from burn-in: {}", status, body.chars().take(200).collect::<String>());
+            }
+            Ok(serde_json::from_str(&body)?)
+        }.await;
+
+        match burn_attempt {
+            Ok(json) => {
+                if let Some(p) = json["out_path"].as_str() {
+                    if std::fs::metadata(p).map(|m| m.len() > 1024).unwrap_or(false) {
+                        final_video = p.to_string();
+                    } else {
+                        tracing::warn!("burn-in returned out_path but file is empty/missing — keeping un-burned video");
+                        emit(app, pid, 8, "running", 90.0, "Burn-in vacío · usando vídeo sin subs");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "burn-in failed — keeping un-burned video as final asset");
+                emit(app, pid, 8, "running", 90.0, &format!("Burn-in falló · usando vídeo sin subs ({})",
+                    e.to_string().chars().take(60).collect::<String>()));
+            }
         }
     }
 

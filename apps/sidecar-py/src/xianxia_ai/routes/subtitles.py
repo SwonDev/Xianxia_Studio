@@ -302,6 +302,18 @@ def burn_in(req: BurnInRequest) -> BurnInResponse:
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd))
     if proc.returncode != 0:
         raise HTTPException(500, f"ffmpeg failed: {proc.stderr[-500:]}")
+    # Self-validation: ffmpeg can return 0 yet leave an empty/missing file
+    # (rare NVENC driver quirks, antivirus locking, transient disk errors).
+    # Surface the failure explicitly so the pipeline doesn't believe the
+    # burn-in succeeded silently. The Rust caller treats a 5xx here as
+    # non-fatal and ships the un-burned video as the final asset.
+    if not out_path.exists() or out_path.stat().st_size < 1024:
+        tail = (proc.stderr or "")[-500:]
+        raise HTTPException(
+            500,
+            f"ffmpeg burn-in produced empty/missing output ({out_path.name}); "
+            f"stderr tail: {tail}",
+        )
     return BurnInResponse(
         out_path=str(out_path),
         bytes=out_path.stat().st_size,
@@ -390,33 +402,49 @@ async def _translate_entries(entries, target: str, model: str):
         "notes, no explanation, no quotation marks."
     )
 
-    async def translate_one(client, start, end, body):
+    async def translate_one(client, start, end, body, attempt=0):
         async with sem:
             prompt = f'Translate this English text to {target}:\n\n"{body}"'
-            r = await client.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": model,
-                    "system": translator_system,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.3, "num_ctx": 1024, "num_predict": 256},
-                },
-            )
-            r.raise_for_status()
-            t = r.json().get("response", "").strip()
-            # Strip surrounding quotes (any flavour)
-            t = t.strip("\"'`“”‘’「」 ")
-            # Take first non-empty line
-            for line in t.split("\n"):
-                if line.strip():
-                    return start, end, line.strip().strip("\"'`“”‘’「」 ")
-            return start, end, t
+            try:
+                r = await client.post(
+                    f"{OLLAMA_URL}/api/generate",
+                    json={
+                        "model": model,
+                        "system": translator_system,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.3, "num_ctx": 1024, "num_predict": 256},
+                    },
+                )
+                r.raise_for_status()
+                t = r.json().get("response", "").strip()
+                t = t.strip("\"'`“”‘’「」 ")
+                for line in t.split("\n"):
+                    if line.strip():
+                        return start, end, line.strip().strip("\"'`“”‘’「」 ")
+                return start, end, t
+            except (httpx.HTTPStatusError, httpx.HTTPError, Exception) as e:
+                # Self-healing: Ollama 500 typically means the model couldn't
+                # load (VRAM not yet freed by ComfyUI). Wait + retry once,
+                # then fall back to the original English line so the SRT/ASS
+                # still gets produced and Phase 8 burn-in can proceed.
+                if attempt < 1:
+                    await asyncio.sleep(8.0 + attempt * 4.0)
+                    return await translate_one(client, start, end, body, attempt + 1)
+                return start, end, body  # graceful fallback: keep English
 
     async with httpx.AsyncClient(timeout=600.0) as client:
         coros = [translate_one(client, s, e, b) for s, e, b in entries]
-        results = await asyncio.gather(*coros)
-    return list(results)
+        results = await asyncio.gather(*coros, return_exceptions=True)
+    # Replace any exception slot with the original English entry so the
+    # caller never sees a partial-failure crash.
+    fixed: list = []
+    for orig, res in zip(entries, results):
+        if isinstance(res, BaseException):
+            fixed.append((orig[0], orig[1], orig[2]))  # English fallback
+        else:
+            fixed.append(res)
+    return fixed
 
 
 def _ass_header(font: str, size: int, vertical: bool = False, style: str = "xianxia") -> str:

@@ -9,7 +9,42 @@ so the bare server can boot even before they're installed.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from contextlib import asynccontextmanager
+
+# ─── Augment PATH so ffmpeg/ffprobe are reachable by subprocess.run ─────
+# Tauri spawns the sidecar with a minimal PATH that may NOT include the
+# user's ffmpeg install (e.g. WinGet `~/AppData/Local/Microsoft/WinGet/
+# Links/`). Without this, every call to `subprocess.run(["ffmpeg", ...])`
+# in the route handlers crashes with FileNotFoundError [WinError 2].
+#
+# Resolution order, prepended (highest priority first):
+#   1. <embedded-python>/  — where the supervisor extract step copies a
+#      portable ffmpeg/ffprobe pair as last-resort.
+#   2. <data_dir>/runtime/ffmpeg/bin  — installer-managed install.
+#   3. <data_dir>/runtime/sidecar-node/node_modules/.bin  — copied by
+#      the prepare step so HyperFrames CLI also finds them.
+#   4. Common system locations (WinGet Links, Program Files).
+def _augment_path_for_ffmpeg() -> None:
+    candidates: list[str] = []
+    emb_dir = os.path.dirname(sys.executable)
+    candidates.append(emb_dir)
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        runtime = os.path.join(appdata, "xianxia", "XianxiaStudio", "data", "runtime")
+        candidates.append(os.path.join(runtime, "ffmpeg", "bin"))
+        candidates.append(os.path.join(runtime, "sidecar-node", "node_modules", ".bin"))
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.append(os.path.join(local_appdata, "Microsoft", "WinGet", "Links"))
+    candidates.append(r"C:\\Program Files\\ffmpeg\\bin")
+    existing = os.environ.get("PATH", "")
+    extra = os.pathsep.join(c for c in candidates if c and os.path.isdir(c))
+    if extra:
+        os.environ["PATH"] = extra + os.pathsep + existing
+
+_augment_path_for_ffmpeg()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

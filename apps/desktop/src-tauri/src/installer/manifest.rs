@@ -419,18 +419,21 @@ pub fn full_manifest() -> Vec<Component> {
             depends_on: vec!["comfyui-clone".to_string(), "python-deps-core".to_string()],
         },
         Component {
+            // Qwen3-4B GGUF (~2.2 GB) instead of FP8 (~5.4 GB) — fits in
+            // 8 GB VRAM cards alongside Z-Image-Turbo Q4_K_M without VRAM
+            // thrashing. Loads via CLIPLoaderGGUF (ComfyUI-GGUF custom node).
             id: "z-image-comfy-clip".to_string(),
-            label: "Qwen3-4B FP8 text encoder (ComfyUI)".to_string(),
+            label: "Qwen3-4B IQ4_XS GGUF text encoder (8 GB VRAM friendly)".to_string(),
             category: Category::Model,
-            size_bytes: (5_400u64) * 1024 * 1024,
+            size_bytes: (2_270u64) * 1024 * 1024,
             url: String::new(),
             url_macos: None,
             url_linux: None,
             sha256: None,
             kind: AssetKind::HuggingfaceFileTo {
-                repo: "Comfy-Org/z_image_turbo".to_string(),
-                filename: "split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors".to_string(),
-                target_path: "comfyui/models/text_encoders/qwen_3_4b_fp8_mixed.safetensors".to_string(),
+                repo: "worstplayer/Z-Image_Qwen_3_4b_text_encoder_GGUF".to_string(),
+                filename: "Qwen_3_4b-imatrix-IQ4_XS.gguf".to_string(),
+                target_path: "comfyui/models/text_encoders/Qwen_3_4b-imatrix-IQ4_XS.gguf".to_string(),
             },
             required: false,
             depends_on: vec!["comfyui-clone".to_string(), "python-deps-core".to_string()],

@@ -270,6 +270,8 @@ export const tauri = {
     invoke<Project>('create_project', { args }),
   startGeneration: (args: GenerateRequest) =>
     invoke<string>('start_generation', { args }),
+  abortGeneration: (projectId: string) =>
+    invoke<boolean>('abort_generation', { projectId }),
   // Voice clones
   listVoiceClones: () => invoke<VoiceClone[]>('list_voice_clones'),
   registerVoiceClone: (args: {

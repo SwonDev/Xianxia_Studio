@@ -6,6 +6,89 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-05-06
+
+### Corregido — pipeline ahora completa de extremo a extremo
+
+Versión consolidada que corrige la cadena de fallos identificada en
+generaciones reales: ffmpeg fuera del PATH del sidecar, race condition
+HyperFrames vs fallback FFmpeg, traducción de subs abortando el
+pipeline, burn-in mudo, sidecar Node huérfano sobreviviendo a los
+auto-updates, y varios bugs UI.
+
+#### Las cuatro leyes Auto sobre ffmpeg
+
+- **Autoinstalable**: el manifest del wizard descarga ffmpeg-essentials
+  8.0 (gyan.dev) a `runtime/ffmpeg/bin/` cuando el sistema no lo tiene.
+- **Autodetectable**: `verify_stack` lo encuentra en runtime,
+  `node_modules/.bin/`, PATH del sistema, o WinGet Links — en ese
+  orden, devolviendo la primera ruta válida.
+- **Autoconfigurable**: el supervisor Rust calcula un PATH ampliado en
+  cada `spawn_python()`/`spawn_node()`/`spawn_comfyui()` que prepende
+  `runtime/ffmpeg/bin`, `runtime/sidecar-node/node_modules/.bin`,
+  `runtime/python/python` y `LOCALAPPDATA/Microsoft/WinGet/Links` al
+  PATH heredado, garantizando que cualquier `subprocess.run("ffmpeg")`
+  o `execa("ffmpeg")` funcione sin importar la instalación del usuario.
+- **Autorreparable**: el sidecar Python autoinyecta el PATH
+  (`server.py`) en su entorno como cinturón y tirantes; los endpoints
+  de render usan `execa({preferLocal:true})` para que HyperFrames
+  encuentre ffmpeg via `node_modules/.bin/`.
+
+#### HyperFrames como motor principal sin race
+
+`Phase 6` esperaba a que el archivo `out_path` apareciera con un único
+check. En discos lentos eso disparaba el fallback a FFmpeg directo
+incluso cuando HyperFrames había triunfado, perdiendo el parallax 2.5D
+y las atmospherics. Ahora `try_hyperframes_render` poll cada 2 s hasta
+30 s antes de declarar fallo, y el fallback FFmpeg solo se activa
+cuando realmente HyperFrames no produjo nada.
+
+#### Phase 8 subtitles autorreparable
+
+- `_translate_entries` ahora captura excepciones por entrada (Ollama
+  500 al traducir es típico cuando ComfyUI acaba de liberar VRAM) y
+  reintenta una vez tras 8 s. Si vuelve a fallar, devuelve la entrada
+  en inglés como fallback. El endpoint `/subtitles` ya nunca devuelve
+  500 por traducción rota.
+- `/subtitles/burn-in` valida que el MP4 generado existe y pesa más
+  de 1 KB. Antes ffmpeg podía retornar exit 0 con archivo vacío en
+  rare quirks NVENC y nadie se daba cuenta.
+- En el lado Rust, Phase 8 burn-in es non-fatal: si falla, deja el
+  vídeo sin subs como `final_video` con un toast informativo en vez
+  de abortar el pipeline.
+
+#### Workflow Z-Image-Turbo con text encoder GGUF
+
+- `z_image_turbo_gguf.json` carga el text encoder Qwen3-4B vía
+  `CLIPLoaderGGUF` (custom node ComfyUI-GGUF) usando
+  `Qwen_3_4b-imatrix-IQ4_XS.gguf` (~2.2 GB) en lugar del
+  `qwen_3_4b_fp8_mixed.safetensors` (~5.4 GB) anterior.
+- En tarjetas de 8 GB VRAM esto elimina el thrashing entre Z-Image
+  Turbo Q4_K_M y el text encoder: los step times bajan de ~95 s/step
+  a ~7-8 s/step (12× más rápido por imagen).
+- El manifest entry `z-image-comfy-clip` apunta al GGUF; el wizard lo
+  descarga automáticamente desde
+  `worstplayer/Z-Image_Qwen_3_4b_text_encoder_GGUF`.
+
+#### Más fixes
+
+- **`kill_orphan_sidecars`** ahora identifica orphans con criterio
+  dual: exe path bajo `<data_dir>/runtime/` O cmdline que apunte ahí.
+  El fix anterior dejaba viva una `node.exe` del sistema corriendo
+  `runtime/sidecar-node/dist/server.js` tras un auto-update.
+- **Botón "Cancelar generación"** en Generator + comando
+  `abort_generation` que cancela el JoinHandle del pipeline y marca
+  el proyecto como `cancelled`.
+- **Sidebar y updater-panel comparten cache de versión**
+  (`tauri.getAppVersion` con queryKey `app-version`), eliminando el
+  bug `v[object Object]` que aparecía cuando los dos componentes
+  fetcheaban la misma key con shapes distintos.
+- **`init_memory_pool`** ahora usa `sqlite:file::memory:?cache=shared`
+  para que las 4 conexiones del pool compartan el mismo schema.
+  Antes cada conexión tenía su propia DB y los `INSERT INTO
+  pipeline_steps` fallaban con "no such table" en mid-pipeline cuando
+  el setup caía al fallback en memoria.
+
 ## [0.1.7] — 2026-05-06
 
 ### Corregido

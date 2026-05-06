@@ -9,10 +9,10 @@
     }
   },
   "2": {
-    "class_type": "CLIPLoader",
-    "_meta": {"title": "Qwen3 4B (Z-Image text encoder, Lumina2 family)"},
+    "class_type": "CLIPLoaderGGUF",
+    "_meta": {"title": "Qwen3 4B GGUF IQ4_XS (Z-Image text encoder, Lumina2 family)"},
     "inputs": {
-      "clip_name": "qwen_3_4b_fp8_mixed.safetensors",
+      "clip_name": "Qwen_3_4b-imatrix-IQ4_XS.gguf",
       "type": "lumina2"
     }
   },

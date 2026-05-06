@@ -38,8 +38,14 @@ pub async fn init_pool() -> Result<DbPool> {
 /// can't be opened (corrupt file, locked by another process, FS permissions).
 /// The app still loads and the user can operate the services UI; project
 /// CRUD reverts to volatile state until the next launch fixes the on-disk DB.
+///
+/// IMPORTANT: SQLite `:memory:` URIs give every connection its OWN database.
+/// With `max_connections > 1`, migrations apply on the first connection and
+/// the rest stay empty, surfacing as "no such table" errors mid-pipeline.
+/// We use the `file::memory:?cache=shared` URI form so all connections share
+/// the same in-memory database (kept alive by the pool's reference count).
 pub async fn init_memory_pool() -> Result<DbPool> {
-    let options = SqliteConnectOptions::from_str("sqlite::memory:")?
+    let options = SqliteConnectOptions::from_str("sqlite:file::memory:?cache=shared")?
         .foreign_keys(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(4)

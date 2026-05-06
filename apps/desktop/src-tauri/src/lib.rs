@@ -34,6 +34,7 @@ pub fn run() {
             commands::list_projects,
             commands::create_project,
             commands::start_generation,
+            pipeline::abort_generation,
             commands::list_voices,
             commands::music::music_list_tracks,
             commands::music::music_add_tracks,
