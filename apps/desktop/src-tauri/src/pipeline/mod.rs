@@ -31,6 +31,121 @@ async fn node_alive(client: &reqwest::Client) -> bool {
         .unwrap_or(false)
 }
 
+/// Try the full thumbnail flow (Z-Image then Node text overlay). Returns Err
+/// on any HTTP failure so the caller can fall back to a frame-extract.
+async fn try_thumbnail(
+    client: &reqwest::Client,
+    topic: &str,
+    meta: &serde_json::Value,
+    width: u32,
+    height: u32,
+    out_dir: &str,
+    out_path: &str,
+) -> anyhow::Result<()> {
+    let bg = client
+        .post(format!("{}/image", PY_SIDECAR))
+        .timeout(std::time::Duration::from_secs(30 * 60))
+        .json(&serde_json::json!({
+            "prompt": format!(
+                "dramatic xianxia thumbnail of {}, hero in mid-action with qi aura, \
+                 anamorphic 2.39:1 cinematic framing, volumetric god rays, \
+                 high-contrast teal-and-orange grade, sharp focus on subject, \
+                 epic scale composition rule of thirds, no text overlay",
+                topic
+            ),
+            "width": width,
+            "height": height,
+            "out_dir": out_dir,
+            "style_preset": false,
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    let _thumb = client
+        .post(format!("{}/render/thumbnail", NODE_SIDECAR))
+        .timeout(std::time::Duration::from_secs(2 * 60))
+        .json(&serde_json::json!({
+            "title_en": meta["title_en"],
+            "title_zh": meta["title_zh"],
+            "background_path": bg["image_path"],
+            "out_path": out_path,
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    Ok(())
+}
+
+/// Last-resort thumbnail: pull a single frame from the rendered MP4 with
+/// FFmpeg. Picks ~10 % into the runtime so we avoid black frames at start.
+fn extract_frame_thumbnail(video_path: &str, out_path: &str) -> anyhow::Result<()> {
+    use crate::process_ext::HideConsole;
+    let status = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-ss", "5",
+            "-i", video_path,
+            "-frames:v", "1",
+            "-q:v", "2",
+            out_path,
+        ])
+        .hide_console()
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("ffmpeg frame extract exit {}", status);
+    }
+    Ok(())
+}
+
+/// Try HyperFrames render. Returns Err on any failure (network, HTTP error,
+/// JSON decode), so the caller can decide whether to fall back to FFmpeg.
+#[allow(clippy::too_many_arguments)]
+async fn try_hyperframes_render(
+    client: &reqwest::Client,
+    pid: &str,
+    title: &str,
+    beats: &[serde_json::Value],
+    narration_audio: &str,
+    music_audio: &serde_json::Value,
+    out_path: &str,
+    width: u32,
+    height: u32,
+) -> anyhow::Result<serde_json::Value> {
+    let resp = client
+        .post(format!("{}/render/narrative", NODE_SIDECAR))
+        .timeout(std::time::Duration::from_secs(45 * 60))
+        .json(&serde_json::json!({
+            "project_id": pid,
+            "title": title,
+            "images": beats,
+            "narration_path": narration_audio,
+            "music_path": music_audio,
+            "out_path": out_path,
+            "width": width,
+            "height": height,
+            "cinematic": "full",
+            "music_ducking": true,
+        }))
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("HTTP {} from /render/narrative — body head: {}",
+            status,
+            body.chars().take(160).collect::<String>(),
+        );
+    }
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("decode /render/narrative body: {} — head: {}",
+            e, body.chars().take(160).collect::<String>()))?;
+    Ok(json)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct GenerateRequest {
     pub topic: String,
@@ -361,43 +476,55 @@ async fn run(
     // ALL beats to be layered (`all_layered`) was an over-restriction.
     // We now use HyperFrames whenever the Node sidecar is up.
     let video_out = format!("{}/video.mp4", out_dir);
-    let use_hyperframes = node_alive(&client).await;
     let _ = all_layered; // depth presence informs the template, not the gating
 
-    emit(
-        app, pid, 6, "running", 0.0,
-        if use_hyperframes {
-            "Renderizando con HyperFrames (HTML/CSS/GSAP · parallax 2.5D · atmospherics · transiciones)…"
-        } else {
-            "Node sidecar no disponible · render directo con FFmpeg (zoompan + xfade + NVENC)…"
-        },
-    );
-    let render: serde_json::Value = if use_hyperframes {
-        // Pass explicit width/height so the same composition template works
-        // for both horizontal (1920×1080) and vertical (1080×1920) renders.
+    // We ALWAYS try HyperFrames first when the Node sidecar is up — it's
+    // the project's primary auto-edit engine. Only when it fails (HTTP
+    // error, body parse error, or it returns success without producing a
+    // valid MP4) do we fall back to the FFmpeg-direct path. The fallback
+    // is automatic: we don't ever abort the pipeline at Phase 6.
+    let want_hyperframes = node_alive(&client).await;
+    let mut render: Option<serde_json::Value> = None;
+    let mut used_engine = "FFmpeg";
+
+    if want_hyperframes {
+        emit(
+            app, pid, 6, "running", 0.0,
+            "Renderizando con HyperFrames (HTML/CSS/GSAP · parallax 2.5D · atmospherics · transiciones)…",
+        );
         let (width, height) = if req.vertical { (1080u32, 1920u32) } else { (1920u32, 1080u32) };
-        client
-            .post(format!("{}/render/narrative", NODE_SIDECAR))
-            .timeout(std::time::Duration::from_secs(45 * 60))
-            .json(&serde_json::json!({
-                "project_id": pid,
-                "title": req.topic,
-                "images": beats,
-                "narration_path": narration_audio,
-                "music_path": music["audio_path"],
-                "out_path": video_out,
-                "width": width,
-                "height": height,
-                "cinematic": "full",
-                "music_ducking": true,
-            }))
-            .send()
-            .await?
-            .json()
-            .await?
+        match try_hyperframes_render(
+            &client, pid, &req.topic, &beats, &narration_audio,
+            &music["audio_path"], &video_out, width, height,
+        ).await {
+            Ok(json) => {
+                // Verify the MP4 actually exists on disk. The Node sidecar
+                // could in theory return 200 with an unfilled out_path field;
+                // the existence check is the only reliable confirmation.
+                let out_path = json.get("out_path").and_then(|v| v.as_str()).unwrap_or(&video_out);
+                if std::path::Path::new(out_path).exists() {
+                    render = Some(json);
+                    used_engine = "HyperFrames";
+                } else {
+                    tracing::warn!(out_path, "hyperframes returned 200 but no MP4 on disk — falling back to FFmpeg");
+                    emit(app, pid, 6, "running", 5.0, "HyperFrames no produjo MP4 · cayendo a FFmpeg…");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "hyperframes failed — falling back to FFmpeg direct render");
+                emit(app, pid, 6, "running", 5.0, &format!("HyperFrames falló ({}) · cayendo a FFmpeg…",
+                    e.to_string().chars().take(60).collect::<String>()));
+            }
+        }
     } else {
-        // Map beats → ImageBeat for /render. Pass through foreground_path so the
-        // FFmpeg parallax 2.5D path activates when depth layers exist.
+        emit(
+            app, pid, 6, "running", 0.0,
+            "Node sidecar no disponible · render directo con FFmpeg (zoompan + xfade + NVENC)…",
+        );
+    }
+
+    if render.is_none() {
+        // FFmpeg-direct fallback. Map beats → ImageBeat for /render.
         let images: Vec<serde_json::Value> = beats
             .iter()
             .map(|b| {
@@ -415,19 +542,11 @@ async fn run(
                 o
             })
             .collect();
-        // Native-aspect render: vertical Shorts at 1080x1920, horizontal at 1920x1080.
-        // Source images already match aspect (720x1280 / 1280x720), so this is a 1.5x
-        // upscale done by FFmpeg's scale filter with lanczos — no /reframe needed.
         let (render_w, render_h) = if req.vertical { (1080, 1920) } else { (1920, 1080) };
-        // Render timeout scales with beat count: ~90s per beat at 60fps NVENC p7.
-        // Floor 15 min for short videos, ceil 60 min for long-form (>30 beats).
         let render_timeout = std::time::Duration::from_secs(
             (15 * 60_u64).max((images.len() as u64) * 90).min(60 * 60),
         );
         emit(app, pid, 6, "running", 5.0, &format!("Componiendo {} escenas con FFmpeg…", images.len()));
-        // Animation preset → render parameters. Default "cinematic" matches the
-        // current Steadicam look; "dynamic" punches harder for Shorts; "minimal"
-        // is talking-head-style with subtle motion only; "dramatic" maxes everything.
         let preset = req.animation_preset.as_deref().unwrap_or("cinematic");
         let (kenburns_end, crossfade_s, sway_px, cinema_profile, transitions) = match preset {
             "minimal"  => (1.04_f64, 0.5_f64, 12.0_f64, "light", "fade,fade,fade,fade,fade"),
@@ -435,7 +554,6 @@ async fn run(
             "dramatic" => (1.22, 1.1, 50.0, "full", "fadeblack,radial,circleopen,fadeblack,dissolve"),
             _ /* cinematic */ => (1.12, 0.9, 30.0, "full", "fade,fadeblack,circleopen,dissolve,fade"),
         };
-        // Apply per-beat transition kind round-robin from the preset list.
         let trans: Vec<&str> = transitions.split(',').collect();
         let mut images_with_trans = images.clone();
         for (i, beat) in images_with_trans.iter_mut().enumerate() {
@@ -448,7 +566,7 @@ async fn run(
                 }
             }
         }
-        client
+        let ff_resp = client
             .post(format!("{}/render", PY_SIDECAR))
             .timeout(render_timeout)
             .json(&serde_json::json!({
@@ -468,9 +586,12 @@ async fn run(
             }))
             .send()
             .await?
-            .json()
-            .await?
-    };
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await?;
+        render = Some(ff_resp);
+    }
+    let render = render.expect("render must be Some after HyperFrames or FFmpeg branch");
     // Resolve the produced video path (different keys for /render vs /render/narrative).
     let mut produced_video = render
         .get("video_path")
@@ -508,53 +629,55 @@ async fn run(
     }
 
     persist_step(pool, pid, 6, "done", &render).await?;
-    let mut tag = if use_hyperframes { "HyperFrames" } else { "FFmpeg" }.to_string();
+    let mut tag = used_engine.to_string();
     if req.vertical { tag.push_str(" + reframe"); }
     emit(app, pid, 6, "done", 100.0, &format!("Vídeo renderizado ({})", tag));
 
     // ─── Phase 7: Thumbnail (dedicated Z-Image gen + Node text overlay) ──
+    // Phase 7 is intentionally non-fatal. If Z-Image times out from VRAM
+    // thrashing or the Node renderer fails, we extract a frame from the MP4
+    // we just produced and use it as the thumbnail. Pipeline never blocks.
     emit(app, pid, 7, "running", 0.0, "Generando thumbnail…");
-    // Native aspect for the thumbnail too: vertical Shorts → 720x1280,
-    // horizontal long-form → 1280x720. Same VRAM-friendly resolutions as Phase 4.
+    // Free VRAM held by previous phases (TTS, music, narrative render)
+    // BEFORE we ask ComfyUI to load Z-Image again. This is what makes the
+    // thumbnail run finish in ~60 s instead of timing out at 12+ min.
+    unload(&client, "tts").await;
+    unload(&client, "music").await;
     let (thumb_w, thumb_h) = if req.vertical { (720, 1280) } else { (1280, 720) };
-    let bg: serde_json::Value = client
-        .post(format!("{}/image", PY_SIDECAR))
-        .json(&serde_json::json!({
-            "prompt": format!(
-                "dramatic xianxia thumbnail of {}, hero in mid-action with qi aura, \
-                 anamorphic 2.39:1 cinematic framing, volumetric god rays, \
-                 high-contrast teal-and-orange grade, sharp focus on subject, \
-                 epic scale composition rule of thirds, no text overlay",
-                req.topic
-            ),
-            "width": thumb_w,
-            "height": thumb_h,
-            "out_dir": out_dir,
-            "style_preset": false,  // own prompt is already cinematic
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
     let thumb_out = format!("{}/thumbnail.jpg", out_dir);
-    let _thumb: serde_json::Value = client
-        .post(format!("{}/render/thumbnail", NODE_SIDECAR))
-        .json(&serde_json::json!({
-            "title_en": meta["title_en"],
-            "title_zh": meta["title_zh"],
-            "background_path": bg["image_path"],
-            "out_path": thumb_out,
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let thumbnail_path = if std::path::Path::new(&thumb_out).exists() {
-        Some(thumb_out.clone())
-    } else {
-        None
+    let thumbnail_path: Option<String> = match try_thumbnail(
+        &client, &req.topic, &meta, thumb_w, thumb_h, &out_dir, &thumb_out,
+    ).await {
+        Ok(()) if std::path::Path::new(&thumb_out).exists() => {
+            emit(app, pid, 7, "done", 100.0, "Thumbnail listo (Z-Image + Node)");
+            Some(thumb_out.clone())
+        }
+        Ok(()) => {
+            // No error but file missing — fall through to frame extract.
+            tracing::warn!("thumbnail flow returned ok but no jpg on disk, extracting frame from video");
+            extract_frame_thumbnail(&produced_video, &thumb_out).ok();
+            if std::path::Path::new(&thumb_out).exists() {
+                emit(app, pid, 7, "done", 100.0, "Thumbnail (frame extraído del vídeo)");
+                Some(thumb_out.clone())
+            } else {
+                emit(app, pid, 7, "skipped", 100.0, "Thumbnail omitido (no se pudo generar)");
+                None
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "thumbnail generation failed, extracting frame from video");
+            emit(app, pid, 7, "running", 50.0, "Z-Image/Node falló · extrayendo frame del vídeo…");
+            extract_frame_thumbnail(&produced_video, &thumb_out).ok();
+            if std::path::Path::new(&thumb_out).exists() {
+                emit(app, pid, 7, "done", 100.0, "Thumbnail (frame extraído del vídeo)");
+                Some(thumb_out.clone())
+            } else {
+                emit(app, pid, 7, "skipped", 100.0, &format!("Thumbnail omitido ({})",
+                    e.to_string().chars().take(80).collect::<String>()));
+                None
+            }
+        }
     };
-    emit(app, pid, 7, "done", 100.0, "Thumbnail listo");
 
     // ─── Phase 8: Subtitles (Whisper word-level + ASS karaoke + burn-in) ─
     emit(app, pid, 8, "running", 0.0, "Transcribiendo + karaoke ASS…");

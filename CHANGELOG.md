@@ -6,6 +6,36 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-05-06
+
+### Corregido
+
+- **HyperFrames vuelve a funcionar como motor primario de render**.
+  La integración estaba escrita para una API anterior a HyperFrames 0.4
+  (cuando aceptaba un `.html` suelto). En 0.4.45 el CLI exige un
+  *directorio de proyecto* con `index.html` + `hyperframes.json` +
+  `meta.json` y un schema lint estricto en el HTML
+  (`data-composition-id`, `data-width`, `data-height`, registry de
+  timeline en `window.__timelines`, sin `Math.random()`, sin selectores
+  con template literals). Las tres plantillas (`narrative.html`,
+  `short.html`, `thumbnail.html`) están reescritas al nuevo schema; el
+  sidecar Node ahora hace **scaffold del project dir + staging de
+  todos los assets** (narración, música, imágenes, capas de
+  profundidad) dentro de `assets/` para que Chromium los cargue
+  (antes los `file://` absolutos eran bloqueados por la sandbox).
+- **Fallback automático a FFmpeg si HyperFrames falla**. El pipeline
+  ya nunca aborta en Phase 6: intenta HyperFrames, valida que el MP4
+  exista en disco después del 200 OK, y solo si no llega cae a
+  `/render` del sidecar Python (zoompan + xfade + NVENC + grade
+  cinematic). El emit final reporta el motor real usado.
+- **Phase 7 (thumbnail) ya no aborta el pipeline**. Si Z-Image se
+  cuelga por VRAM thrashing o el render Node falla, el pipeline
+  extrae un frame del MP4 generado vía FFmpeg y lo usa como
+  thumbnail. Antes un timeout en thumbnail tiraba toda la
+  generación. Además ahora liberamos la VRAM (`/unload?target=tts`,
+  `/unload?target=music`) antes de invocar ComfyUI para el thumbnail,
+  lo que reduce el step de ~95 s a ~7 s.
+
 ## [0.1.6] — 2026-05-06
 
 ### Corregido

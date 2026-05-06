@@ -52,7 +52,12 @@ def queue_prompt(workflow: dict) -> str:
     return r.json()["prompt_id"]
 
 
-def wait_for_image(prompt_id: str, timeout: float = 600.0) -> Path:
+def wait_for_image(prompt_id: str, timeout: float = 1800.0) -> Path:
+    # 30 min default. Z-Image on a clean 8 GB VRAM card runs ~7-8 s/step
+    # (~60 s per image), but if the previous phase left the GPU primed
+    # with other models, ComfyUI starts swapping VRAM↔RAM and steps balloon
+    # to 90+ s. The thumbnail job is the most affected because it runs
+    # after rembg/depth + ACE-Step have warmed memory.
     """Poll ComfyUI's history endpoint until the prompt finishes; return the
     output image path on disk."""
     deadline = time.time() + timeout

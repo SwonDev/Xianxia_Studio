@@ -1,339 +1,379 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>__TITLE__</title>
-  <style>
-    :root {
-      --bg: #0a0a0f;
-      --gold: #c9a84c;
-      --jade: #1b4332;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body {
-      background: var(--bg);
-      width: __WIDTH__px; height: __HEIGHT__px;
-      overflow: hidden;
-      font-family: 'EB Garamond', Georgia, serif;
-      color: #e8e8f0;
-    }
-    .stage {
-      position: relative; width: 100%; height: 100%;
-      perspective: 1400px;
-      perspective-origin: 50% 50%;
-    }
-
-    /* ── Parallax 2.5D layers ──────────────────────────────────────── */
-    .beat {
-      position: absolute; inset: 0; opacity: 0;
-      transform-style: preserve-3d;
-    }
-    .beat .layer {
-      position: absolute; inset: -8%;
-      background-position: center center;
-      background-size: cover;
-      will-change: transform, opacity;
-    }
-    /* Background layer (far): biggest displacement, softest, slight blur */
-    .beat .bg {
-      transform: translateZ(-220px) scale(1.20);
-      filter: brightness(0.92) contrast(1.04) blur(1.2px);
-    }
-    /* Mid layer (subject area, derived from depth-mask alpha) */
-    .beat .mid {
-      transform: translateZ(-40px) scale(1.06);
-      filter: brightness(0.96) contrast(1.06);
-    }
-    /* Foreground details (closest, sharpest) */
-    .beat .fg {
-      transform: translateZ(80px) scale(0.96);
-      filter: brightness(1.0) contrast(1.08) saturate(1.05);
-    }
-    /* Single-image fallback when no depth layers exist yet */
-    .beat .single {
-      width: 100%; height: 100%; object-fit: cover;
-      transform-origin: center;
-      filter: brightness(0.95) contrast(1.05);
-    }
-
-    /* ── Atmospheric overlays (canvas-driven; per-beat data-fx) ───── */
-    .atmos {
-      position: absolute; inset: 0; pointer-events: none;
-      mix-blend-mode: screen;
-      opacity: 0;
-    }
-
-    /* Light rays (god rays) — diagonal soft beams */
-    .rays {
-      position: absolute; inset: -10%;
-      background:
-        repeating-linear-gradient(
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=__WIDTH__, height=__HEIGHT__" />
+    <title>__TITLE__</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      :root {
+        --bg: #0a0a0f;
+        --gold: #c9a84c;
+        --jade: #1b4332;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body {
+        margin: 0;
+        width: __WIDTH__px;
+        height: __HEIGHT__px;
+        overflow: hidden;
+        background: var(--bg);
+        font-family: 'EB Garamond', Georgia, serif;
+        color: #e8e8f0;
+      }
+      .stage {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        perspective: 1400px;
+        perspective-origin: 50% 50%;
+      }
+      .beat {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        transform-style: preserve-3d;
+      }
+      .beat .layer {
+        position: absolute;
+        inset: -8%;
+        background-position: center center;
+        background-size: cover;
+        will-change: transform, opacity;
+      }
+      .beat .bg {
+        transform: translateZ(-220px) scale(1.20);
+        filter: brightness(0.92) contrast(1.04) blur(1.2px);
+      }
+      .beat .mid {
+        transform: translateZ(-40px) scale(1.06);
+        filter: brightness(0.96) contrast(1.06);
+      }
+      .beat .fg {
+        transform: translateZ(80px) scale(0.96);
+        filter: brightness(1.0) contrast(1.08) saturate(1.05);
+      }
+      .beat .single {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transform-origin: center;
+        filter: brightness(0.95) contrast(1.05);
+      }
+      .atmos {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        mix-blend-mode: screen;
+        opacity: 0;
+      }
+      .rays {
+        position: absolute;
+        inset: -10%;
+        background: repeating-linear-gradient(
           110deg,
           rgba(255, 220, 140, 0.0) 0px,
           rgba(255, 220, 140, 0.05) 40px,
           rgba(255, 220, 140, 0.0) 80px
         );
-      mix-blend-mode: screen;
-      opacity: 0;
-      transform: translateX(-10%);
-    }
-
-    /* Universal vignette — stacks under FFmpeg post-pass vignette */
-    .vignette {
-      position: absolute; inset: 0; pointer-events: none;
-      background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.55) 100%);
-      mix-blend-mode: multiply;
-    }
-
-    /* ── Transition flashes (light bloom between beats) ─────────────── */
-    .flash {
-      position: absolute; inset: 0; pointer-events: none;
-      background: radial-gradient(
-        ellipse at center,
-        rgba(255, 240, 200, 0.85) 0%,
-        rgba(255, 220, 140, 0.35) 35%,
-        rgba(0, 0, 0, 0) 70%
-      );
-      mix-blend-mode: screen;
-      opacity: 0;
-    }
-
-    /* Ink-wash transition: a black mask that wipes radially */
-    .inkwash {
-      position: absolute; inset: 0; pointer-events: none;
-      background: #000;
-      clip-path: circle(0% at 50% 50%);
-      opacity: 0;
-    }
-
-    /* Whip-pan motion blur applied to the outgoing beat */
-    .whip {
-      filter: blur(0px);
-    }
-  </style>
-  <meta name="hyperframes-fps" content="24" />
-  <audio data-track-index="0" data-volume="1.0" src="__NARRATION__"></audio>
-  <audio data-track-index="1" data-volume="0.32" src="__MUSIC__"></audio>
-</head>
-<body>
-  <div class="stage">
-    __BEATS__
-    <div class="vignette"></div>
-    <div class="flash" id="flash"></div>
-    <div class="inkwash" id="inkwash"></div>
-  </div>
-
-  <script>window.__BEAT_FX__ = __BEAT_FX_JSON__;</script>
-  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
-  <script>
-    // ── Parallax + Ken Burns + per-beat transition ───────────────────
-    const beats = document.querySelectorAll('.beat');
-    const flash = document.getElementById('flash');
-    const inkwash = document.getElementById('inkwash');
-
-    beats.forEach((el, idx) => {
-      const start = parseFloat(el.dataset.start);
-      const dur = parseFloat(el.dataset.duration);
-      // Per-beat transition kind for the *outgoing* edge of this beat:
-      //   'cross' (default), 'flash', 'whip', 'inkwash'
-      const transOut = el.dataset.trans || 'cross';
-      const fade = transOut === 'cross' ? 0.7
-                  : transOut === 'flash' ? 0.45
-                  : transOut === 'whip' ? 0.35
-                  : transOut === 'inkwash' ? 0.55
-                  : 0.7;
-
-      // Crossfade in (always smooth) / out depends on transition kind
-      gsap.set(el, { opacity: 0 });
-      gsap.to(el, { opacity: 1, duration: 0.7, delay: start, ease: 'power2.out' });
-      gsap.to(el, { opacity: 0, duration: fade, delay: start + dur - fade, ease: 'power2.in' });
-
-      // Trigger transition effects at the cut point (end of this beat)
-      const cut = start + dur - fade;
-      if (idx < beats.length - 1) {
-        if (transOut === 'flash') {
-          gsap.fromTo(flash,
-            { opacity: 0 },
-            { opacity: 1, duration: 0.18, delay: cut + fade * 0.4, ease: 'power3.out' });
-          gsap.to(flash,
-            { opacity: 0, duration: 0.35, delay: cut + fade * 0.4 + 0.18, ease: 'power2.in' });
-        } else if (transOut === 'whip') {
-          // Outgoing beat: motion-blur + slide off
-          gsap.to(el, { filter: 'blur(14px)', x: '+=80', duration: fade, delay: cut, ease: 'power2.in' });
-        } else if (transOut === 'inkwash') {
-          gsap.fromTo(inkwash,
-            { clipPath: 'circle(0% at 50% 50%)', opacity: 1 },
-            { clipPath: 'circle(140% at 50% 50%)', duration: fade, delay: cut, ease: 'power2.inOut' });
-          gsap.to(inkwash,
-            { opacity: 0, duration: 0.4, delay: cut + fade + 0.1, ease: 'power2.out' });
-        }
+        mix-blend-mode: screen;
+        opacity: 0;
+        transform: translateX(-10%);
       }
-
-      const bg = el.querySelector('.bg');
-      const mid = el.querySelector('.mid');
-      const fg = el.querySelector('.fg');
-      const single = el.querySelector('.single');
-
-      // Pan + zoom direction varies per beat for visual rhythm
-      const panX = (idx % 2 === 0) ? 1 : -1;
-      const panY = (idx % 3 === 0) ? -1 : 1;
-
-      if (bg && mid && fg) {
-        // 2.5D parallax: background moves least, foreground moves most
-        gsap.fromTo(bg,
-          { x: -25 * panX, y: -10 * panY },
-          { x: 25 * panX, y: 10 * panY, duration: dur, delay: start, ease: 'none' });
-        gsap.fromTo(mid,
-          { x: -55 * panX, y: -22 * panY },
-          { x: 55 * panX, y: 22 * panY, duration: dur, delay: start, ease: 'none' });
-        gsap.fromTo(fg,
-          { x: -90 * panX, y: -38 * panY, scale: 0.96 },
-          { x: 90 * panX, y: 38 * panY, scale: 1.02, duration: dur, delay: start, ease: 'none' });
-      } else if (single) {
-        // No depth layers → enhanced Ken Burns with directional pan
-        gsap.fromTo(single,
-          { scale: 1.05, x: -30 * panX, y: -12 * panY },
-          { scale: 1.18, x: 30 * panX, y: 12 * panY,
-            duration: dur, delay: start, ease: 'none' });
+      .vignette {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.55) 100%);
+        mix-blend-mode: multiply;
       }
-
-      // Atmospheric FX visibility (only during this beat)
-      const atmos = el.querySelector('.atmos');
-      const rays = el.querySelector('.rays');
-      if (atmos) {
-        gsap.to(atmos, { opacity: 1, duration: 0.8, delay: start, ease: 'power2.out' });
-        gsap.to(atmos, { opacity: 0, duration: 0.6, delay: start + dur - 0.6, ease: 'power2.in' });
+      .flash {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: radial-gradient(
+          ellipse at center,
+          rgba(255, 240, 200, 0.85) 0%,
+          rgba(255, 220, 140, 0.35) 35%,
+          rgba(0, 0, 0, 0) 70%
+        );
+        mix-blend-mode: screen;
+        opacity: 0;
       }
-      if (rays) {
-        gsap.to(rays, { opacity: 1, duration: 1.2, delay: start, ease: 'power2.out' });
-        gsap.to(rays, { x: '20%', duration: dur, delay: start, ease: 'none' });
-        gsap.to(rays, { opacity: 0, duration: 0.8, delay: start + dur - 0.8, ease: 'power2.in' });
+      .inkwash {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: #000;
+        clip-path: circle(0% at 50% 50%);
+        opacity: 0;
       }
-    });
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="narrative"
+      data-start="0"
+      data-duration="__DURATION__"
+      data-width="__WIDTH__"
+      data-height="__HEIGHT__"
+    >
+      <div class="stage" id="stage">
+        __BEATS__
+        <div class="vignette"></div>
+        <div class="flash clip" id="flash" data-start="0" data-duration="__DURATION__"></div>
+        <div class="inkwash clip" id="inkwash" data-start="0" data-duration="__DURATION__"></div>
+      </div>
+      <audio
+        id="narration-track"
+        class="clip"
+        data-track-index="0"
+        data-start="0"
+        data-duration="__DURATION__"
+        data-volume="1.0"
+        src="__NARRATION__"
+      ></audio>
+      __MUSIC_BLOCK__
+    </div>
 
-    // ── Canvas-based atmospheric particle systems per beat ───────────
-    // FX kinds: 'mist', 'embers', 'snow', 'dust_motes', 'clouds'
-    // Each is a continuous particle loop driven by requestAnimationFrame.
-    const fxData = window.__BEAT_FX__ || [];
-    fxData.forEach((fx, i) => {
-      const canvas = document.querySelector(`#atmos-${i} canvas`);
-      if (!canvas || !fx.kind) return;
-      const ctx = canvas.getContext('2d');
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-      runParticleSystem(ctx, canvas, fx.kind);
-    });
-
-    function runParticleSystem(ctx, canvas, kind) {
-      const W = canvas.width, H = canvas.height;
-      let particles = [];
-      const init = () => {
-        particles = [];
-        const counts = {
-          mist: 16, embers: 60, snow: 140, dust_motes: 80, clouds: 6,
+    <script>
+      // Seeded mulberry32 PRNG so renders are deterministic across frames/runs.
+      // HyperFrames lints reject Math.random() because it produces different
+      // values per frame and breaks visual reproducibility.
+      function makePrng(seed) {
+        var s = seed >>> 0;
+        return function () {
+          s = (s + 0x6D2B79F5) | 0;
+          var t = s;
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
         };
-        const n = counts[kind] || 40;
-        for (let k = 0; k < n; k++) particles.push(spawn(kind, W, H, true));
-      };
-      init();
-      const loop = () => {
-        ctx.clearRect(0, 0, W, H);
-        for (const p of particles) {
-          step(p, kind, W, H);
-          draw(ctx, p, kind);
+      }
+      var prng = makePrng(0xC9A84C);
+
+      var beats = document.querySelectorAll('.beat');
+      var flash = document.getElementById('flash');
+      var inkwash = document.getElementById('inkwash');
+
+      window.__timelines = window.__timelines || {};
+      var tl = gsap.timeline({ paused: true });
+
+      beats.forEach(function (el, idx) {
+        var start = parseFloat(el.dataset.start);
+        var dur = parseFloat(el.dataset.duration);
+        var transOut = el.dataset.trans || 'cross';
+        var fade =
+          transOut === 'cross' ? 0.7 :
+          transOut === 'flash' ? 0.45 :
+          transOut === 'whip' ? 0.35 :
+          transOut === 'inkwash' ? 0.55 : 0.7;
+
+        tl.fromTo(el,
+          { opacity: 0 },
+          { opacity: 1, duration: 0.7, ease: 'power2.out' },
+          start
+        );
+        tl.to(el,
+          { opacity: 0, duration: fade, ease: 'power2.in' },
+          start + dur - fade
+        );
+
+        var cut = start + dur - fade;
+        if (idx < beats.length - 1) {
+          if (transOut === 'flash') {
+            tl.fromTo(flash,
+              { opacity: 0 },
+              { opacity: 1, duration: 0.18, ease: 'power3.out' },
+              cut + fade * 0.4
+            );
+            tl.to(flash,
+              { opacity: 0, duration: 0.35, ease: 'power2.in' },
+              cut + fade * 0.4 + 0.18
+            );
+          } else if (transOut === 'whip') {
+            tl.to(el,
+              { filter: 'blur(14px)', x: '+=80', duration: fade, ease: 'power2.in' },
+              cut
+            );
+          } else if (transOut === 'inkwash') {
+            tl.fromTo(inkwash,
+              { clipPath: 'circle(0% at 50% 50%)', opacity: 1 },
+              { clipPath: 'circle(140% at 50% 50%)', duration: fade, ease: 'power2.inOut' },
+              cut
+            );
+            tl.to(inkwash,
+              { opacity: 0, duration: 0.4, ease: 'power2.out' },
+              cut + fade + 0.1
+            );
+          }
         }
-        requestAnimationFrame(loop);
-      };
-      loop();
-    }
 
-    function spawn(kind, W, H, anywhere) {
-      const r = Math.random();
-      const baseY = anywhere ? Math.random() * H : H + 20;
-      switch (kind) {
-        case 'embers':
-          return {
-            x: Math.random() * W, y: anywhere ? Math.random() * H : H + 10,
-            vx: (Math.random() - 0.5) * 0.3, vy: -0.4 - Math.random() * 0.7,
-            r: 1.2 + Math.random() * 1.6,
-            life: 0, maxLife: 280 + Math.random() * 220,
-            color: ['#ff8a3d', '#ffb159', '#ffd17a', '#c9a84c'][Math.floor(r * 4)],
-          };
-        case 'snow':
-          return {
-            x: Math.random() * W, y: anywhere ? Math.random() * H : -10,
-            vx: (Math.random() - 0.5) * 0.4, vy: 0.4 + Math.random() * 0.8,
-            r: 0.8 + Math.random() * 2.0,
-            sway: Math.random() * Math.PI * 2,
-            color: 'rgba(220,235,250,0.85)',
-          };
-        case 'dust_motes':
-          return {
-            x: Math.random() * W, y: Math.random() * H,
-            vx: (Math.random() - 0.5) * 0.15, vy: (Math.random() - 0.5) * 0.1,
-            r: 0.5 + Math.random() * 1.2,
-            color: 'rgba(255, 235, 180, 0.55)',
-          };
-        case 'mist':
-          return {
-            x: Math.random() * W, y: H * (0.55 + Math.random() * 0.45),
-            vx: 0.1 + Math.random() * 0.2, vy: -(0.04 + Math.random() * 0.08),
-            r: 90 + Math.random() * 140,
-            color: 'rgba(180, 200, 220, 0.07)',
-          };
-        case 'clouds':
-          return {
-            x: Math.random() * W, y: H * (0.05 + Math.random() * 0.35),
-            vx: 0.15 + Math.random() * 0.2, vy: 0,
-            r: 220 + Math.random() * 200,
-            color: 'rgba(220, 220, 235, 0.10)',
-          };
-      }
-    }
+        var bg = el.querySelector('.bg');
+        var mid = el.querySelector('.mid');
+        var fg = el.querySelector('.fg');
+        var single = el.querySelector('.single');
+        var panX = (idx % 2 === 0) ? 1 : -1;
+        var panY = (idx % 3 === 0) ? -1 : 1;
 
-    function step(p, kind, W, H) {
-      p.x += p.vx; p.y += p.vy;
-      if (kind === 'embers') {
-        p.life = (p.life || 0) + 1;
-        if (p.life > p.maxLife) Object.assign(p, spawn(kind, W, H, false));
-      }
-      if (kind === 'snow') {
-        p.sway += 0.02;
-        p.x += Math.sin(p.sway) * 0.4;
-        if (p.y > H + 10 || p.x < -10 || p.x > W + 10) Object.assign(p, spawn(kind, W, H, false));
-      }
-      if (kind === 'dust_motes') {
-        if (p.x < -10) p.x = W + 10;
-        if (p.x > W + 10) p.x = -10;
-        if (p.y < -10) p.y = H + 10;
-        if (p.y > H + 10) p.y = -10;
-      }
-      if (kind === 'mist' || kind === 'clouds') {
-        if (p.x - p.r > W) p.x = -p.r;
-      }
-    }
+        if (bg && mid && fg) {
+          tl.fromTo(bg,
+            { x: -25 * panX, y: -10 * panY },
+            { x: 25 * panX, y: 10 * panY, duration: dur, ease: 'none' },
+            start
+          );
+          tl.fromTo(mid,
+            { x: -55 * panX, y: -22 * panY },
+            { x: 55 * panX, y: 22 * panY, duration: dur, ease: 'none' },
+            start
+          );
+          tl.fromTo(fg,
+            { x: -90 * panX, y: -38 * panY, scale: 0.96 },
+            { x: 90 * panX, y: 38 * panY, scale: 1.02, duration: dur, ease: 'none' },
+            start
+          );
+        } else if (single) {
+          tl.fromTo(single,
+            { scale: 1.05, x: -30 * panX, y: -12 * panY },
+            { scale: 1.18, x: 30 * panX, y: 12 * panY, duration: dur, ease: 'none' },
+            start
+          );
+        }
 
-    function draw(ctx, p, kind) {
-      if (kind === 'embers') {
-        const t = 1 - (p.life / p.maxLife);
-        ctx.globalAlpha = Math.max(0, Math.min(1, t * 0.9));
-        ctx.shadowBlur = 8; ctx.shadowColor = p.color;
-        ctx.fillStyle = p.color;
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
-        ctx.shadowBlur = 0;
-      } else if (kind === 'mist' || kind === 'clouds') {
-        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
-        grad.addColorStop(0, p.color);
-        grad.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = grad;
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
-      } else {
-        ctx.globalAlpha = 0.85;
-        ctx.fillStyle = p.color;
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+        var atmos = el.querySelector('.atmos');
+        var rays = el.querySelector('.rays');
+        if (atmos) {
+          tl.to(atmos, { opacity: 1, duration: 0.8, ease: 'power2.out' }, start);
+          tl.to(atmos, { opacity: 0, duration: 0.6, ease: 'power2.in' }, start + dur - 0.6);
+        }
+        if (rays) {
+          tl.to(rays, { opacity: 1, duration: 1.2, ease: 'power2.out' }, start);
+          tl.to(rays, { x: '20%', duration: dur, ease: 'none' }, start);
+          tl.to(rays, { opacity: 0, duration: 0.8, ease: 'power2.in' }, start + dur - 0.8);
+        }
+      });
+
+      window.__timelines['narrative'] = tl;
+
+      // ── Atmospheric particle systems (deterministic via seeded PRNG) ──
+      var fxData = __BEAT_FX_JSON__;
+      fxData.forEach(function (fx, i) {
+        var atmosEl = document.getElementById('atmos-' + i);
+        if (!atmosEl || !fx.kind) return;
+        var canvas = atmosEl.querySelector('canvas');
+        if (!canvas) return;
+        var ctx = canvas.getContext('2d');
+        canvas.width = __WIDTH__;
+        canvas.height = __HEIGHT__;
+        runParticleSystem(ctx, canvas, fx.kind, i);
+      });
+
+      function runParticleSystem(ctx, canvas, kind, beatIndex) {
+        var W = canvas.width, H = canvas.height;
+        var rng = makePrng(0xBEEF + beatIndex * 31);
+        var particles = [];
+        var counts = { mist: 16, embers: 60, snow: 140, dust_motes: 80, clouds: 6 };
+        var n = counts[kind] || 40;
+        for (var k = 0; k < n; k++) particles.push(spawn(kind, W, H, true, rng));
+        function loop() {
+          ctx.clearRect(0, 0, W, H);
+          for (var idx = 0; idx < particles.length; idx++) {
+            step(particles[idx], kind, W, H, rng);
+            draw(ctx, particles[idx], kind);
+          }
+          requestAnimationFrame(loop);
+        }
+        loop();
       }
-      ctx.globalAlpha = 1;
-    }
-  </script>
-</body>
+
+      function spawn(kind, W, H, anywhere, rng) {
+        var r = rng();
+        switch (kind) {
+          case 'embers':
+            return {
+              x: rng() * W, y: anywhere ? rng() * H : H + 10,
+              vx: (rng() - 0.5) * 0.3, vy: -0.4 - rng() * 0.7,
+              r: 1.2 + rng() * 1.6,
+              life: 0, maxLife: 280 + rng() * 220,
+              color: ['#ff8a3d', '#ffb159', '#ffd17a', '#c9a84c'][Math.floor(r * 4)],
+            };
+          case 'snow':
+            return {
+              x: rng() * W, y: anywhere ? rng() * H : -10,
+              vx: (rng() - 0.5) * 0.4, vy: 0.4 + rng() * 0.8,
+              r: 0.8 + rng() * 2.0,
+              sway: rng() * Math.PI * 2,
+              color: 'rgba(220,235,250,0.85)',
+            };
+          case 'dust_motes':
+            return {
+              x: rng() * W, y: rng() * H,
+              vx: (rng() - 0.5) * 0.15, vy: (rng() - 0.5) * 0.1,
+              r: 0.5 + rng() * 1.2,
+              color: 'rgba(255, 235, 180, 0.55)',
+            };
+          case 'mist':
+            return {
+              x: rng() * W, y: H * (0.55 + rng() * 0.45),
+              vx: 0.1 + rng() * 0.2, vy: -(0.04 + rng() * 0.08),
+              r: 90 + rng() * 140,
+              color: 'rgba(180, 200, 220, 0.07)',
+            };
+          case 'clouds':
+            return {
+              x: rng() * W, y: H * (0.05 + rng() * 0.35),
+              vx: 0.15 + rng() * 0.2, vy: 0,
+              r: 220 + rng() * 200,
+              color: 'rgba(220, 220, 235, 0.10)',
+            };
+        }
+        return { x: 0, y: 0, vx: 0, vy: 0, r: 1, color: '#fff' };
+      }
+
+      function step(p, kind, W, H, rng) {
+        p.x += p.vx; p.y += p.vy;
+        if (kind === 'embers') {
+          p.life = (p.life || 0) + 1;
+          if (p.life > p.maxLife) Object.assign(p, spawn(kind, W, H, false, rng));
+        }
+        if (kind === 'snow') {
+          p.sway += 0.02;
+          p.x += Math.sin(p.sway) * 0.4;
+          if (p.y > H + 10 || p.x < -10 || p.x > W + 10) Object.assign(p, spawn(kind, W, H, false, rng));
+        }
+        if (kind === 'dust_motes') {
+          if (p.x < -10) p.x = W + 10;
+          if (p.x > W + 10) p.x = -10;
+          if (p.y < -10) p.y = H + 10;
+          if (p.y > H + 10) p.y = -10;
+        }
+        if (kind === 'mist' || kind === 'clouds') {
+          if (p.x - p.r > W) p.x = -p.r;
+        }
+      }
+
+      function draw(ctx, p, kind) {
+        if (kind === 'embers') {
+          var t = 1 - (p.life / p.maxLife);
+          ctx.globalAlpha = Math.max(0, Math.min(1, t * 0.9));
+          ctx.shadowBlur = 8; ctx.shadowColor = p.color;
+          ctx.fillStyle = p.color;
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+          ctx.shadowBlur = 0;
+        } else if (kind === 'mist' || kind === 'clouds') {
+          var grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
+          grad.addColorStop(0, p.color);
+          grad.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+        } else {
+          ctx.globalAlpha = 0.85;
+          ctx.fillStyle = p.color;
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+    </script>
+  </body>
 </html>
