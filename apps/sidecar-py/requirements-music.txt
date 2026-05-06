@@ -1,0 +1,18 @@
+# Music generation deps (optional, ~5-8 GB total).
+# Installed by the wizard's `python-deps-music` component.
+#
+# Two backends with auto-selection in /music endpoint:
+#   1. ACE-Step v1.5 — best cinematic quality, native long-form, oriental
+#      instruments (erhu, guzheng, taiko) significantly more realistic.
+#      8 GB VRAM friendly with --cpu_offload --overlapped_decode.
+#      Apache 2.0 license.
+#   2. MusicGen-medium (Meta, audiocraft) — fallback. 30s hard cap, fp16
+#      keeps it under 4 GB VRAM. Good general quality.
+
+# ACE-Step v1.5 — preferred (run with cpu_offload + overlapped_decode for 8 GB).
+# Repo doesn't tag releases; install from main (commits up to May 2026 contain
+# the v1.5 features: audio-to-audio, SDE-based generation, improved lyric align).
+acestep @ git+https://github.com/ace-step/ACE-Step.git@main
+
+# MusicGen fallback (Meta audiocraft).
+audiocraft>=1.3.0

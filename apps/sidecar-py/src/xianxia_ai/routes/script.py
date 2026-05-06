@@ -169,3 +169,117 @@ def parse_markers(script: str) -> tuple[str, list[Marker]]:
     narration = "".join(narration_parts).strip()
     narration = re.sub(r"\s{2,}", " ", narration)
     return narration, markers
+
+
+# ─── Topic suggestions + Hook tester (LLM-driven idea generation) ────
+
+class SuggestRequest(BaseModel):
+    niche: str = "xianxia"
+    count: int = 6
+    model: str = "xianxia-llm"
+    language: str = "en"
+
+
+class TopicIdea(BaseModel):
+    title: str
+    hook: str
+    estimated_minutes: int
+
+
+class SuggestResponse(BaseModel):
+    ideas: list[TopicIdea]
+
+
+@router.post("/suggest", response_model=SuggestResponse)
+async def suggest_topics(req: SuggestRequest) -> SuggestResponse:
+    """LLM-driven topic generator. Returns N ideas with title + 1-line hook."""
+    system = (
+        f"You are a viral YouTube/TikTok content strategist for the {req.niche} niche "
+        "(Chinese mythology, cultivation, wuxia, immortals). For each idea, output a "
+        "killer title + a 1-sentence hook that grabs attention in <3 seconds. "
+        "Output ONLY valid JSON: {\"ideas\": [{\"title\": \"...\", \"hook\": \"...\", "
+        "\"estimated_minutes\": 8-15}, ...]}. No preamble, no explanation."
+    )
+    prompt = (
+        f"Generate {req.count} fresh {req.niche} video ideas in {req.language}. "
+        "Mix epic battles, cultivation breakthroughs, demon lore, immortal romance, "
+        "ancient wisdom, and forbidden techniques. Avoid clichés. Be specific."
+    )
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            r = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": req.model,
+                    "system": system,
+                    "prompt": prompt,
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0.85, "num_predict": 800, "num_ctx": 2048},
+                },
+            )
+            r.raise_for_status()
+            raw = r.json().get("response", "{}")
+            data = json.loads(raw)
+            ideas = []
+            for item in (data.get("ideas") or [])[:req.count]:
+                ideas.append(TopicIdea(
+                    title=str(item.get("title", "")).strip(),
+                    hook=str(item.get("hook", "")).strip(),
+                    estimated_minutes=int(item.get("estimated_minutes") or 12),
+                ))
+            return SuggestResponse(ideas=ideas)
+    except Exception as e:
+        raise HTTPException(503, f"topic suggestion failed: {e}") from e
+
+
+class HookTestRequest(BaseModel):
+    topic: str
+    count: int = 3
+    model: str = "xianxia-llm"
+    language: str = "en"
+
+
+class Hook(BaseModel):
+    text: str
+    style: str  # "question" | "shock" | "promise"
+
+
+class HookTestResponse(BaseModel):
+    hooks: list[Hook]
+
+
+@router.post("/hooks", response_model=HookTestResponse)
+async def hook_tester(req: HookTestRequest) -> HookTestResponse:
+    """A/B hook generation — produces N alternative opening hooks for a topic
+    so the user can pick the highest-retention one before generating the full video.
+    """
+    system = (
+        "You are a YouTube retention specialist. Given a topic, generate alternative "
+        "opening hooks (≤15 words each) using three different psychological levers:\n"
+        "  - question: provocative open-ended question\n"
+        "  - shock:    surprising fact or counterintuitive claim\n"
+        "  - promise:  bold value proposition for what they'll learn\n"
+        f"Output ONLY JSON in {req.language}: {{\"hooks\": [{{\"text\": \"...\", "
+        "\"style\": \"question|shock|promise\"}}, ...]}}"
+    )
+    prompt = f"Topic: {req.topic}\nGenerate {req.count} hooks, one of each style."
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": req.model, "system": system, "prompt": prompt,
+                    "stream": False, "format": "json",
+                    "options": {"temperature": 0.9, "num_predict": 400, "num_ctx": 1024},
+                },
+            )
+            r.raise_for_status()
+            data = json.loads(r.json().get("response", "{}"))
+            hooks = [
+                Hook(text=str(h.get("text", "")).strip(), style=str(h.get("style", "promise")))
+                for h in (data.get("hooks") or [])[:req.count]
+            ]
+            return HookTestResponse(hooks=hooks)
+    except Exception as e:
+        raise HTTPException(503, f"hook test failed: {e}") from e

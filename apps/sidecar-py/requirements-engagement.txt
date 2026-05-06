@@ -1,0 +1,19 @@
+# Engagement analysis via Meta TRIBE v2.
+# Optional. Installed by the wizard's `python-deps-engagement` component.
+#
+# TRIBE v2 = foundation model of vision/audition/language for in-silico
+# neuroscience (predicts fMRI brain responses). We translate predictions →
+# engagement score per second by mapping cortical vertices onto the Yeo
+# 7-network functional atlas (Salience + FPN + Visual + Auditory − DMN).
+#
+# License: CC-BY-NC-4.0 (Meta) — non-commercial use only.
+# OK for: personal projects, OSS releases, generating videos to monetise on
+#         YouTube (the *output* is monetised, not the model itself).
+# NOT OK for: selling the application or its API access as a service.
+
+# TRIBE v2 main package
+tribev2 @ git+https://github.com/facebookresearch/tribev2.git@main
+
+# Atlas helpers (Yeo 7-network, fsaverage5 surface)
+nilearn>=0.10.4
+nibabel>=5.2.1

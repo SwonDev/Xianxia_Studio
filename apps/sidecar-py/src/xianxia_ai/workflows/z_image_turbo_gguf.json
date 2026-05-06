@@ -1,5 +1,5 @@
 {
-  "_comment": "ComfyUI workflow for Z-Image-Turbo Q4_K_M GGUF (~4.7 GB) via ComfyUI-GGUF custom node. Best for 8 GB VRAM cards: native vertical generation runs at ~2-4 s/step instead of 50 s/step (BF16 partial offload). Drop-in replacement: only the diffusion model loader changes (UnetLoaderGGUF instead of UNETLoader).",
+  "_comment": "Z-Image-Turbo Q4_K_M GGUF workflow optimised for 8 GB VRAM. Sampler dpmpp_sde + beta gives sharper detail and natural textures vs euler/simple (validated against MyAIForce 560-image study). Z-Image-Turbo is trained with guidance_scale=0.0, so negative prompts are IGNORED — we use ConditioningZeroOut. Default vertical 720x1280 keeps inference inside VRAM without offload.",
   "_placeholders": "{{prompt}} {{width}} {{height}} {{seed}}",
   "1": {
     "class_type": "UnetLoaderGGUF",
@@ -22,18 +22,17 @@
   },
   "4": {
     "class_type": "CLIPTextEncode",
-    "_meta": {"title": "Positive prompt"},
+    "_meta": {"title": "Positive prompt — cinematic, no SDXL-isms"},
     "inputs": {
-      "text": "{{prompt}}, cinematic xianxia, jade mountains, swirling qi mist, golden hour, ultra detailed, epic composition, photorealistic, 8k",
+      "text": "{{prompt}}, cinematic anamorphic 2.39:1 framing, volumetric god rays, Kodak Portra 400 film grade, teal-and-orange tones, jade mountains and silk hanfu in xianxia mood, sharp focus on subject, natural skin texture, ink-wash atmosphere",
       "clip": ["2", 0]
     }
   },
   "5": {
-    "class_type": "CLIPTextEncode",
-    "_meta": {"title": "Negative prompt"},
+    "class_type": "ConditioningZeroOut",
+    "_meta": {"title": "Negative (Turbo ignores it; zero-out is canonical)"},
     "inputs": {
-      "text": "low quality, blurry, distorted, watermark, text overlay",
-      "clip": ["2", 0]
+      "conditioning": ["4", 0]
     }
   },
   "6": {
@@ -47,13 +46,13 @@
   },
   "8": {
     "class_type": "KSampler",
-    "_meta": {"title": "Z-Image-Turbo (8 steps, cfg=1, euler/simple)"},
+    "_meta": {"title": "Z-Image-Turbo (8 steps, cfg=1, dpmpp_sde/beta)"},
     "inputs": {
       "seed": "{{seed}}",
       "steps": 8,
       "cfg": 1.0,
-      "sampler_name": "euler",
-      "scheduler": "simple",
+      "sampler_name": "dpmpp_sde",
+      "scheduler": "beta",
       "denoise": 1.0,
       "model": ["6", 0],
       "positive": ["4", 0],

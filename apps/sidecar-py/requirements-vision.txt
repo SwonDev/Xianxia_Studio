@@ -1,10 +1,12 @@
-# Vision deps for parallax 2.5D + smart vertical reframe.
+# Vision deps for parallax 2.5D + smart vertical reframe + Shorts subject tracking.
 # Installed by the wizard's `python-deps-vision` component.
 #
 # - rembg + onnxruntime-gpu power /depth/batch (background removal +
 #   inpaint to produce bg.jpg + fg.png pairs for 2.5D parallax overlay).
-# - mediapipe powers /reframe (face detection → pose nose fallback for
-#   subject tracking), with cv2 + opencv-contrib-python for video I/O.
+# - mediapipe powers /reframe Tasks API (modern replacement for the
+#   deprecated mp.solutions). Falls back to blur-extend when unavailable.
+# - ultralytics gives us YOLO11n-pose for fast, accurate subject tracking
+#   in Shorts auto-reframe. ~6 MB model, runs at 60-90 FPS on RTX 4060.
 
 rembg>=2.0.59
 onnxruntime-gpu>=1.19; sys_platform == "win32"
@@ -13,3 +15,4 @@ onnxruntime>=1.19; sys_platform == "darwin"
 opencv-python>=4.10
 opencv-contrib-python>=4.10
 mediapipe>=0.10.35
+ultralytics>=8.3.40

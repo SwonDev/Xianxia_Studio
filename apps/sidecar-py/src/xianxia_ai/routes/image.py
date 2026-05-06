@@ -1,4 +1,13 @@
-"""Image generation via Z-Image-Turbo (diffusers)."""
+"""Image generation via Z-Image-Turbo (ComfyUI primary, diffusers fallback).
+
+Defaults are tuned for 8 GB VRAM:
+- horizontal: 1280x720 (sweet spot, no offload, ~5-7 GB peak)
+- vertical:   720x1280 (sweet spot vertical, same VRAM budget)
+
+The XIANXIA_STYLE preset drops SDXL-isms ("8k", "masterpiece") that degrade
+Z-Image quality and uses cinematographer vocabulary the Lumina2 family was
+trained on.
+"""
 
 from __future__ import annotations
 
@@ -13,17 +22,24 @@ from ..models import image_model
 
 router = APIRouter()
 
+# Cinematic preset — tuned to Z-Image's training distribution.
+# Avoids SDXL trigger words that visibly degrade output on Lumina2 / DiT models.
 XIANXIA_STYLE = (
-    "cinematic xianxia, jade mountains, swirling qi mist, golden hour, "
-    "ultra detailed, epic composition, photorealistic, 8k"
+    "cinematic anamorphic 2.39:1 framing, volumetric god rays, "
+    "Kodak Portra 400 film grade, teal-and-orange tones, "
+    "jade mountains and silk hanfu in xianxia mood, "
+    "sharp focus on subject, natural skin texture, ink-wash atmosphere"
 )
 
 
 class ImageRequest(BaseModel):
     prompt: str
     negative_prompt: str | None = None
-    width: int = 1344
-    height: int = 768
+    # 8 GB VRAM sweet spot. For horizontal, callers usually pass 1280x720 explicitly.
+    # For vertical Shorts, callers should pass 720x1280 explicitly. The 1344x768
+    # default kept here is for legacy callers; production code passes explicit dims.
+    width: int = 1280
+    height: int = 720
     seed: int | None = None
     # Z-Image-Turbo native step count. Some diffusers dev revisions over-iterate
     # and crash with "index out of bounds" at step 10; 8 is the safe canonical
@@ -65,7 +81,10 @@ def generate(req: ImageRequest) -> ImageResponse:
 
     image = pipe(
         prompt=prompt,
-        negative_prompt=req.negative_prompt,
+        # Z-Image-Turbo is trained with guidance_scale=0.0 → negative prompts
+        # have no effect. We accept the field for API stability but pass None
+        # to skip the unnecessary forward pass.
+        negative_prompt=None,
         height=req.height,
         width=req.width,
         num_inference_steps=req.steps,

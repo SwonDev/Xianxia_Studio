@@ -43,6 +43,63 @@ GOLD_HIGHLIGHT = "&H006DC9E8"   # #e8c96d (active word during karaoke)
 JADE_OUTLINE = "&H001B4332"     # #324a1b → dark jade outline (we use jade-700)
 SHADOW = "&H80000000"           # 50% black soft shadow
 
+
+# Caption style presets — based on viral 2026 caption schools (Hormozi/Beast/Submagic).
+# Each entry returns (primary, secondary, outline, back, outline_size, shadow_size, bold).
+def _style_palette(style: str) -> dict:
+    """Return ASS color overrides + sizing for a given caption preset."""
+    s = (style or "xianxia").lower()
+    if s == "hormozi":
+        return {
+            "primary":   "&H00FFFFFF",    # white base
+            "secondary": "&H0000FFFF",    # bright yellow active (BGR for #FFFF00)
+            "outline":   "&H00000000",    # black outline
+            "back":      "&HC8000000",    # 78% black shadow
+            "outline_size": 6.0,
+            "shadow_size": 2.0,
+            "bold": -1,
+        }
+    if s == "mrbeast":
+        return {
+            "primary":   "&H00FFFFFF",
+            "secondary": "&H001A1AF0",    # red active (BGR for #F01A1A)
+            "outline":   "&H00000000",
+            "back":      "&HD0000000",
+            "outline_size": 7.0,
+            "shadow_size": 3.0,
+            "bold": -1,
+        }
+    if s == "minimal":
+        return {
+            "primary":   "&H00FFFFFF",
+            "secondary": "&H00CCCCCC",
+            "outline":   "&H00000000",
+            "back":      "&H80000000",
+            "outline_size": 3.0,
+            "shadow_size": 1.5,
+            "bold": -1,
+        }
+    if s == "neon":
+        return {
+            "primary":   "&H00FFFFFF",
+            "secondary": "&H00FF00FF",    # magenta active
+            "outline":   "&H00FFFF00",    # cyan outline
+            "back":      "&HA0000000",
+            "outline_size": 5.0,
+            "shadow_size": 4.0,
+            "bold": -1,
+        }
+    # xianxia (default)
+    return {
+        "primary":   GOLD_FILL,
+        "secondary": GOLD_HIGHLIGHT,
+        "outline":   JADE_OUTLINE,
+        "back":      SHADOW,
+        "outline_size": 4.5,
+        "shadow_size": 2.5,
+        "bold": -1,
+    }
+
 # Per-language fonts (must exist on the system; fallbacks can be configured).
 LANG_FONTS = {
     "en": ("Arial", 68),
@@ -73,6 +130,17 @@ class SubtitleRequest(BaseModel):
     model: str = "xianxia-llm"
     out_dir: str | None = None
     project_id: str | None = None
+    # Vertical Shorts mode (1080x1920). Adjusts ASS PlayResX/Y, MarginV, font size,
+    # and applies TikTok safe zones (top 7%, bottom 18%) so captions never collide
+    # with platform UI overlays. Defaults to false (horizontal 1920x1080).
+    vertical: bool = False
+    # Caption style preset:
+    #   "xianxia"  — gold fill / jade outline (default, our brand)
+    #   "hormozi"  — yellow active word, white base, thick outline
+    #   "mrbeast"  — red highlight, big bold sans, drop shadow
+    #   "minimal"  — clean white, subtle outline, no fancy
+    #   "neon"     — cyan + magenta highlight, glow
+    style: str = "xianxia"
 
 
 class SubtitleAsset(BaseModel):
@@ -117,8 +185,12 @@ async def generate_subtitles(req: SubtitleRequest) -> SubtitleResponse:
     # 3) Source ASS — word-level karaoke
     words = _flatten_words(segments)
     src_ass = out_dir / f"subs-{req.source_language}.ass"
+    base_font, base_size = LANG_FONTS.get(req.source_language, ("Arial", 64))
+    # In vertical Shorts mode, bump the font ~25 % so captions stay legible on
+    # mobile screens without dominating the frame.
+    src_size = int(base_size * 1.25) if req.vertical else base_size
     src_ass.write_text(
-        _word_karaoke_ass(words, *LANG_FONTS.get(req.source_language, ("Arial", 64))),
+        _word_karaoke_ass(words, base_font, src_size, vertical=req.vertical, style=req.style),
         encoding="utf-8",
     )
 
@@ -142,8 +214,9 @@ async def generate_subtitles(req: SubtitleRequest) -> SubtitleResponse:
         srt_p.write_text(_entries_to_srt(translated_entries), encoding="utf-8")
         ass_p = out_dir / f"subs-{lang}.ass"
         font, size = LANG_FONTS.get(lang, ("Arial", 60))
+        eff_size = int(size * 1.25) if req.vertical else size
         ass_p.write_text(
-            _segment_karaoke_ass(translated_entries, font, size),
+            _segment_karaoke_ass(translated_entries, font, eff_size, vertical=req.vertical, style=req.style),
             encoding="utf-8",
         )
         assets.append(
@@ -346,14 +419,37 @@ async def _translate_entries(entries, target: str, model: str):
     return list(results)
 
 
-def _ass_header(font: str, size: int) -> str:
+def _ass_header(font: str, size: int, vertical: bool = False, style: str = "xianxia") -> str:
+    """ASS header with horizontal (1920×1080) or vertical (1080×1920) canvas.
+
+    For vertical Shorts:
+      - PlayResX/Y = 1080×1920
+      - Alignment = 2 (bottom-centre)
+      - MarginL/R = 140 (TikTok right-side icons safe zone, ~13% of width)
+      - MarginV = 360 (≈ 18% of 1920 height — TikTok bottom safe zone where
+        the like/comment/share column lives + caption + UI)
+      - Bigger Outline + Shadow so SF Pro-Bold-style text reads on mobile.
+    """
+    if vertical:
+        play_x, play_y = 1080, 1920
+        margin_l, margin_r, margin_v = 140, 140, 360
+    else:
+        play_x, play_y = 1920, 1080
+        margin_l, margin_r, margin_v = 80, 80, 90
+
+    palette = _style_palette(style)
+    # Vertical Shorts get +20% outline/shadow for mobile legibility.
+    scale = 1.2 if vertical else 1.0
+    outline = palette["outline_size"] * scale
+    shadow = palette["shadow_size"] * scale
+
     return (
         f"[Script Info]\n"
-        f"Title: Xianxia Studio\n"
+        f"Title: Xianxia Studio · {style}\n"
         f"ScriptType: v4.00+\n"
         f"Collisions: Normal\n"
-        f"PlayResX: 1920\n"
-        f"PlayResY: 1080\n"
+        f"PlayResX: {play_x}\n"
+        f"PlayResY: {play_y}\n"
         f"Timer: 100.0000\n"
         f"WrapStyle: 0\n\n"
         f"[V4+ Styles]\n"
@@ -361,16 +457,27 @@ def _ass_header(font: str, size: int) -> str:
         f"OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
         f"ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
         f"MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Xianxia,{font},{size},{GOLD_FILL},{GOLD_HIGHLIGHT},"
-        f"{JADE_OUTLINE},{SHADOW},-1,0,0,0,100,100,0,0,1,4.5,2.5,2,80,80,90,1\n\n"
+        f"Style: Xianxia,{font},{size},{palette['primary']},{palette['secondary']},"
+        f"{palette['outline']},{palette['back']},{palette['bold']},0,0,0,100,100,0,0,1,"
+        f"{outline:.1f},{shadow:.1f},2,"
+        f"{margin_l},{margin_r},{margin_v},1\n\n"
         f"[Events]\n"
         f"Format: Layer, Start, End, Style, Name, MarginL, MarginR, "
         f"MarginV, Effect, Text\n"
     )
 
 
-def _word_karaoke_ass(words: list[dict], font: str, size: int, max_chars: int = 42) -> str:
-    """Word-level karaoke ASS for source language (exact timestamps)."""
+def _word_karaoke_ass(
+    words: list[dict], font: str, size: int, max_chars: int = 42, vertical: bool = False,
+    style: str = "xianxia",
+) -> str:
+    """Word-level karaoke ASS for source language (exact timestamps).
+
+    Vertical Shorts get a tighter line wrap (24 chars/line) so captions fit
+    inside the safe zone instead of wrapping into the side columns.
+    """
+    if vertical:
+        max_chars = 24
     chunks: list[list[dict]] = []
     cur, cur_len = [], 0
     for w in words:
@@ -395,10 +502,10 @@ def _word_karaoke_ass(words: list[dict], font: str, size: int, max_chars: int = 
         events.append(
             f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Xianxia,,0,0,0,,{{\\fad(180,180)}}{text}"
         )
-    return _ass_header(font, size) + "\n".join(events) + "\n"
+    return _ass_header(font, size, vertical=vertical, style=style) + "\n".join(events) + "\n"
 
 
-def _segment_karaoke_ass(entries, font: str, size: int) -> str:
+def _segment_karaoke_ass(entries, font: str, size: int, vertical: bool = False, style: str = "xianxia") -> str:
     """Segment-level karaoke for translated text (no exact word timing)."""
     events = []
     for start, end, body in entries:
@@ -415,4 +522,4 @@ def _segment_karaoke_ass(entries, font: str, size: int) -> str:
         events.append(
             f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end + 0.15)},Xianxia,,0,0,0,,{{\\fad(180,180)}}{text}"
         )
-    return _ass_header(font, size) + "\n".join(events) + "\n"
+    return _ass_header(font, size, vertical=vertical, style=style) + "\n".join(events) + "\n"

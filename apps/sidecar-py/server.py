@@ -16,6 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from xianxia_ai.routes import (
     depth,
+    engagement,
+    export,
     health,
     image,
     install,
@@ -24,6 +26,7 @@ from xianxia_ai.routes import (
     render,
     script,
     shorts,
+    shorts_auto,
     subtitles,
     transcribe,
     tts,
@@ -67,9 +70,12 @@ app.include_router(transcribe.router, prefix="/transcribe", tags=["transcribe"])
 app.include_router(subtitles.router, prefix="/subtitles", tags=["subtitles"])
 app.include_router(render.router, prefix="/render", tags=["render"])
 app.include_router(shorts.router, prefix="/shorts", tags=["shorts"])
+app.include_router(shorts_auto.router, prefix="/shorts", tags=["shorts"])
 app.include_router(depth.router, prefix="/depth", tags=["depth"])
 app.include_router(unload.router, prefix="/unload", tags=["unload"])
 app.include_router(reframe.router, prefix="/reframe", tags=["reframe"])
+app.include_router(export.router, prefix="/export", tags=["export"])
+app.include_router(engagement.router, prefix="/engagement", tags=["engagement"])
 
 
 if __name__ == "__main__":
