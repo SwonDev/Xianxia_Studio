@@ -344,21 +344,32 @@ async fn http_ok(url: &str) -> bool {
 }
 
 fn check_hyperframes() -> Option<PathBuf> {
-    // 1) Local install in apps/sidecar-node/node_modules/.bin
-    let workspace = option_env!("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .map(|p| p.join("..").join("..").join(".."));
-    if let Some(ws) = workspace {
+    let bin_subpath = std::path::Path::new("node_modules").join(".bin");
+    let mut roots: Vec<PathBuf> = Vec::new();
+    // 1) Installed runtime (production .exe): <data_dir>/runtime/sidecar-node
+    if let Ok(p) = paths::paths() {
+        roots.push(p.data_dir.join("runtime").join("sidecar-node"));
+    }
+    // 2) Dev workspace fallback
+    if let Some(manifest) = option_env!("CARGO_MANIFEST_DIR") {
+        roots.push(
+            std::path::Path::new(manifest)
+                .join("..")
+                .join("..")
+                .join("..")
+                .join("apps")
+                .join("sidecar-node"),
+        );
+    }
+    for root in roots {
         for ext in &[".cmd", ".CMD", ""] {
-            let p = ws
-                .join("apps/sidecar-node/node_modules/.bin")
-                .join(format!("hyperframes{}", ext));
+            let p = root.join(&bin_subpath).join(format!("hyperframes{}", ext));
             if p.exists() {
                 return Some(p);
             }
         }
     }
-    // 2) Global npm install
+    // 3) Global npm install on PATH
     if let Ok(out) = std::process::Command::new("hyperframes")
         .arg("--version")
         .hide_console()

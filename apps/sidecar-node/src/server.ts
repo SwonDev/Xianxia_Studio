@@ -15,8 +15,17 @@ import { logger } from './logger.js';
 const app = Fastify({ loggerInstance: logger });
 
 // CORS for the browser-mode shim (Vite dev :1420) AND the Tauri webview.
+// Tauri 2 on Windows uses http(s)://tauri.localhost (WebView2 protocol);
+// Tauri 1 / macOS / Linux uses tauri://localhost. Both are allowed.
 await app.register(cors, {
-  origin: ['http://localhost:1420', 'http://127.0.0.1:1420', 'tauri://localhost'],
+  origin: [
+    'http://localhost:1420',
+    'http://127.0.0.1:1420',
+    'tauri://localhost',
+    'http://tauri.localhost',
+    'https://tauri.localhost',
+    'http://asset.localhost',
+  ],
   methods: ['GET', 'POST', 'OPTIONS'],
   credentials: true,
 });

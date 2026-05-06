@@ -6,6 +6,24 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-05-06
+
+### Corregido
+
+- **CORS bloqueaba al webview Tauri 2 en Windows**. La app instalada
+  hace fetch desde el origin `http://tauri.localhost` (WebView2),
+  pero los sidecars solo permitían `http://localhost:1420` y
+  `tauri://localhost`. El selector "Voz narradora" se quedaba en
+  «Cargando voces…» indefinidamente y, en silencio, también fallaban
+  `/music/backends`, `/engagement/backend` y otros endpoints. Ahora
+  los dos sidecars admiten `http(s)://tauri.localhost` y
+  `http://asset.localhost` además de los origins de dev.
+- **HyperFrames CLI detectado en producción**. `verify_stack` solo
+  miraba el path embebido del workspace (`CARGO_MANIFEST_DIR`), que
+  no existe en el .exe instalado. Ahora también escanea
+  `<data_dir>/runtime/sidecar-node/node_modules/.bin/hyperframes`
+  donde la extracción del bundle lo deja.
+
 ## [0.1.3] — 2026-05-06
 
 ### Corregido
