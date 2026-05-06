@@ -19,6 +19,7 @@ target/
 **/target/
 src-tauri/target/
 src-tauri/gen/
+**/src-tauri/gen/
 **/Cargo.lock.bak
 
 # ─── Python sidecar ──────────────────────────────────────────────
@@ -92,12 +93,16 @@ tests/screenshots/
 # ─── TS / build incremental state ────────────────────────────────
 *.tsbuildinfo
 **/.tsbuildinfo-*/
+**/.tsbuildinfo-node/
 
 # ─── Claude Code runtime ─────────────────────────────────────────
 .claude/
 
 # ─── Installer asset previews (regen via pnpm installer:assets) ──
 assets/installer/*.preview.png
+
+# ─── User-supplied music library (kept local, never committed) ───
+assets/music/
 
 # ─── Temporary ───────────────────────────────────────────────────
 *.tmp

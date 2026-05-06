@@ -129,7 +129,7 @@ pnpm lint           # ESLint v9 flat config (0 warnings tolerados)
 ```
 
 Cómo lanzar una release: ver [`RELEASING.md`](RELEASING.md).
-Documento de arquitectura completo: [`docs/PLAN.md`](docs/PLAN.md) · [`docs/XIANXIA_STUDIO_DESIGN.md`](docs/XIANXIA_STUDIO_DESIGN.md) · [`DESIGN.md`](DESIGN.md).
+Sistema de diseño visual y tokens: [`DESIGN.md`](DESIGN.md).
 
 ---
 

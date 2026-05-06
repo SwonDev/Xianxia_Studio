@@ -9,13 +9,24 @@ Gracias por interesarte en el proyecto. Antes de abrir un PR, ten en cuenta lo s
 
 ## Filosofía AUTO
 
-Toda feature nueva debe cumplir las **3 leyes Auto** documentadas en [`CLAUDE.md`](CLAUDE.md):
+Toda feature nueva debe cumplir las **3 leyes Auto**:
 
-1. **Autoinstalable**: cero comandos en terminal por parte del usuario. Las dependencias entran al manifest del installer (`apps/desktop/src-tauri/src/installer/manifest.rs`).
-2. **Autodetectable**: `verify_stack` detecta por reflexión qué hay instalado y la UI se adapta dinámicamente.
-3. **Autoconfigurable**: defaults sensatos sin que el usuario toque nada.
+1. **Autoinstalable**: cero comandos en terminal por parte del usuario. Las dependencias entran al manifest del installer (`apps/desktop/src-tauri/src/installer/manifest.rs`) y se instalan desde Ajustes con un clic.
+2. **Autodetectable**: `verify_stack` detecta por reflexión qué hay instalado (puerto, paquete Python, modelo HF, custom node ComfyUI). La UI se adapta dinámicamente al backend disponible.
+3. **Autoconfigurable**: defaults sensatos sin que el usuario toque nada. Tier de hardware → modelo apropiado, idioma del sistema → voces filtradas, vertical/horizontal → resolución nativa.
 
-Si una feature no cumple las 3 leyes, no se mergea. El checklist completo está en `CLAUDE.md`.
+Checklist al añadir una feature/integración:
+
+- [ ] Manifest entry en `installer/manifest.rs` (`id`, `label`, `size_bytes`, `kind`, `required: false` si opcional)
+- [ ] `verify.rs` autodetect + nuevo campo en `StackSummary`
+- [ ] `/<feature>/backend` endpoint en el sidecar Python que reporta `{installed: bool, ...}`
+- [ ] Card en Settings → Componentes opcionales (si pesa >100 MB o requiere build)
+- [ ] Toggle dinámico en Generator si impacta al pipeline
+- [ ] Pipeline phase wired con graceful skip si el backend no está instalado
+- [ ] Spec Playwright en `tests/e2e/`
+- [ ] `tauri-shim.ts` parity para que los specs corran en browser-mode
+
+Si una feature no cumple las 3 leyes, no se mergea.
 
 ## Setup local
 

@@ -1,7 +1,7 @@
 /**
  * UX audit: walks every route, captures console errors, layout issues,
- * accessibility hints, and full-page screenshots. Output drives the UX
- * improvement plan in CLAUDE.md.
+ * accessibility hints, and full-page screenshots. Run before each
+ * release to catch UX regressions across the app.
  */
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
