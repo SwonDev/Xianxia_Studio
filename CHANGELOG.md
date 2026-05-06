@@ -6,10 +6,7 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
-(Próxima release 0.1.1 — el contenido se moverá aquí desde la
-sección `[0.1.1]` de abajo cuando se taggee.)
-
-## [0.1.1] — 2026-05-06 (pendiente de tag)
+## [0.1.1] — 2026-05-06
 
 ### Añadido
 
