@@ -30,7 +30,7 @@ Gracias por tu PR. Rellena lo siguiente para acelerar la review.
 - [ ] Card en Settings → Componentes opcionales (si >100 MB)
 - [ ] Toggle dinámico en Generator wizard (si impacta al pipeline)
 - [ ] Pipeline phase wired con graceful skip si no instalado
-- [ ] Spec Playwright en `tests/e2e/`
+- [ ] Spec Playwright en `e2e/`
 - [ ] `tauri-shim.ts` parity para browser-mode
 
 ## Verificación local

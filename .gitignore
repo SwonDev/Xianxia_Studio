@@ -87,6 +87,7 @@ coverage/
 *.lcov
 test-results/
 playwright-report/
+e2e/.output/
 tests/proof/
 tests/screenshots/
 
@@ -101,6 +102,9 @@ tests/screenshots/
 # ─── Local-only project journal (NEVER commit) ───────────────────
 PROJECT_JOURNAL.md
 .filter-repo-paths.txt
+
+# ─── Playwright MCP throwaway artifacts ──────────────────────────
+.playwright-mcp/
 
 # ─── Installer asset previews (regen via pnpm installer:assets) ──
 assets/installer/*.preview.png

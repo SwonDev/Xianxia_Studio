@@ -14,7 +14,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 
-const REPORT = 'tests/screenshots/deep-audit';
+const REPORT = '.output/screenshots/deep-audit';
 
 interface Finding {
   area: string;

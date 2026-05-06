@@ -6,7 +6,7 @@
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 
-const SHOTS = 'tests/screenshots/ux-audit';
+const SHOTS = '.output/screenshots/ux-audit';
 
 const ROUTES = [
   { path: '/', label: 'dashboard' },

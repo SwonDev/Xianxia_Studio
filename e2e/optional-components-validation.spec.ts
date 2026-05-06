@@ -9,7 +9,7 @@ import { promises as fs } from 'node:fs';
 
 test('optional components section renders + install buttons present', async ({ page }) => {
   test.setTimeout(60_000);
-  await fs.mkdir('tests/screenshots/optional-components', { recursive: true });
+  await fs.mkdir('.output/screenshots/optional-components', { recursive: true });
 
   await page.goto('/settings');
   await page.waitForTimeout(3_000);
@@ -29,7 +29,7 @@ test('optional components section renders + install buttons present', async ({ p
 
   // Take screenshot for visual inspection
   await page.screenshot({
-    path: 'tests/screenshots/optional-components/01-settings.png',
+    path: '.output/screenshots/optional-components/01-settings.png',
     fullPage: true,
   });
 

@@ -9,7 +9,7 @@
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 
-const SHOTS = 'tests/screenshots/ux-improvements';
+const SHOTS = '.output/screenshots/ux-improvements';
 
 test('UX improvements end-to-end', async ({ page }) => {
   test.setTimeout(120_000);

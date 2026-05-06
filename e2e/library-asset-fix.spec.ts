@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs';
 
 test('library renders without 403 asset.localhost errors', async ({ page }) => {
   test.setTimeout(60_000);
-  await fs.mkdir('tests/screenshots/library-asset-fix', { recursive: true });
+  await fs.mkdir('.output/screenshots/library-asset-fix', { recursive: true });
 
   const consoleErrors: string[] = [];
   const networkFailures: { url: string; status: number }[] = [];
@@ -29,7 +29,7 @@ test('library renders without 403 asset.localhost errors', async ({ page }) => {
   await page.goto('/library');
   await page.waitForTimeout(4_000);
   await page.screenshot({
-    path: 'tests/screenshots/library-asset-fix/01-library.png',
+    path: '.output/screenshots/library-asset-fix/01-library.png',
     fullPage: true,
   });
 

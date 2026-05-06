@@ -23,7 +23,7 @@ Checklist al añadir una feature/integración:
 - [ ] Card en Settings → Componentes opcionales (si pesa >100 MB o requiere build)
 - [ ] Toggle dinámico en Generator si impacta al pipeline
 - [ ] Pipeline phase wired con graceful skip si el backend no está instalado
-- [ ] Spec Playwright en `tests/e2e/`
+- [ ] Spec Playwright en `e2e/`
 - [ ] `tauri-shim.ts` parity para que los specs corran en browser-mode
 
 Si una feature no cumple las 3 leyes, no se mergea.
@@ -41,7 +41,7 @@ pnpm tauri:dev
 
 1. **Branch**: parte de `main` y nombra la rama `feat/<corto>`, `fix/<corto>` o `docs/<corto>`.
 2. **Commits**: usa el estilo del proyecto: `feat(area): mensaje`, `fix(area): mensaje`, `chore: ...`, `docs: ...`, `test: ...`. Un commit limpio explica el "por qué", no el "qué".
-3. **Tests**: si añades una ruta backend o un componente UI nuevo, añade un spec Playwright en `tests/e2e/`. Los specs deben pasar en `pnpm playwright test` antes de mergear.
+3. **Tests**: si añades una ruta backend o un componente UI nuevo, añade un spec Playwright en `e2e/`. Los specs deben pasar en `pnpm playwright test` antes de mergear.
 4. **Lint y typecheck**: el repo exige cero warnings.
    ```bash
    cd apps/desktop

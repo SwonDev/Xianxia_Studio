@@ -2,7 +2,7 @@
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 
-const SHOTS = 'tests/screenshots/audit';
+const SHOTS = '.output/screenshots/audit';
 
 test('full app walkthrough', async ({ page }) => {
   test.setTimeout(120_000);

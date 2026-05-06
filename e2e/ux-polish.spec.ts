@@ -5,7 +5,7 @@
 import { test, expect } from '@playwright/test';
 import { promises as fs } from 'node:fs';
 
-const SHOTS = 'tests/screenshots/ux-polish';
+const SHOTS = '.output/screenshots/ux-polish';
 
 test('UX polish features', async ({ page }) => {
   test.setTimeout(120_000);
