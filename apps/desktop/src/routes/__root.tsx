@@ -2,6 +2,7 @@ import { createRootRouteWithContext, Outlet } from '@tanstack/react-router';
 import type { QueryClient } from '@tanstack/react-query';
 import { Sidebar } from '@/components/sidebar';
 import { Topbar } from '@/components/topbar';
+import { KeyboardShortcuts } from '@/components/keyboard-shortcuts';
 
 export interface RouterContext {
   queryClient: QueryClient;
@@ -24,6 +25,7 @@ function RootComponent() {
           </div>
         </main>
       </div>
+      <KeyboardShortcuts />
     </div>
   );
 }

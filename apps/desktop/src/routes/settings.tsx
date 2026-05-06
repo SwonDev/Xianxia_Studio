@@ -37,10 +37,11 @@ function SettingsRoute() {
         <h1 className="font-display text-4xl font-medium">Ajustes</h1>
       </header>
 
-      <Section title="Servicios" icon={Database}>
-        <ServiceRow label="Ollama (LLM)" status={sidecars?.ollama ?? 'stopped'} />
+      <Section title="Servicios" icon={Database} defaultOpen>
+        <ServiceRow label="Ollama (LLM :11434)" status={sidecars?.ollama ?? 'stopped'} />
         <ServiceRow label="Python sidecar (FastAPI :8731)" status={sidecars?.python ?? 'stopped'} />
         <ServiceRow label="Node sidecar (HyperFrames :8732)" status={sidecars?.node ?? 'stopped'} />
+        <ServiceRow label="ComfyUI (Z-Image :8188)" status={sidecars?.comfyui ?? 'stopped'} />
       </Section>
 
       <Section title="Hardware" icon={Cpu}>
@@ -81,8 +82,16 @@ function SettingsRoute() {
         <VerifyStackPanel />
       </Section>
 
+      <Section title="Componentes opcionales (autoinstalables)" icon={Download} defaultOpen>
+        <OptionalComponentsPanel />
+      </Section>
+
       <Section title="Biblioteca de música" icon={Music}>
         <MusicLibraryPanel />
+      </Section>
+
+      <Section title="Voces clonadas (Qwen3-TTS)" icon={Bot} defaultOpen>
+        <VoiceClonesPanel />
       </Section>
 
       <Section title="Credenciales Google OAuth" icon={KeyRound}>
@@ -138,25 +147,43 @@ function Section({
   icon: Icon,
   danger,
   children,
+  defaultOpen = false,
 }: {
   title: string;
   icon: React.ComponentType<{ className?: string }>;
   danger?: boolean;
   children: React.ReactNode;
+  defaultOpen?: boolean;
 }) {
+  // Each Section is a collapsible to keep the Settings scroll manageable.
+  // First section (Servicios) is open by default; the rest start collapsed.
   return (
-    <section
+    <details
       className={cn(
-        'rounded-lg border bg-card/60 backdrop-blur p-6',
+        'group rounded-lg border bg-card/60 backdrop-blur',
         danger ? 'border-crimson-500/30' : 'border-border/50',
       )}
+      open={defaultOpen}
+      data-testid={`section-${title.toLowerCase().split(' ')[0]}`}
     >
-      <h2 className="flex items-center gap-2 font-display text-xl font-medium mb-4">
+      <summary
+        className="flex items-center gap-2 font-display text-xl font-medium px-6 py-4 cursor-pointer list-none select-none hover:bg-obsidian-800/30 rounded-lg"
+        aria-label={`Sección ${title}`}
+      >
         <Icon className={cn('w-5 h-5', danger ? 'text-crimson-400' : 'text-gold-400')} />
-        {title}
-      </h2>
-      {children}
-    </section>
+        <span className="flex-1">{title}</span>
+        <svg
+          aria-hidden="true"
+          className="w-4 h-4 text-paper-400 transition-transform duration-200 group-open:rotate-90"
+          viewBox="0 0 16 16" fill="none"
+        >
+          <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </summary>
+      <div className="px-6 pb-6">
+        {children}
+      </div>
+    </details>
   );
 }
 
@@ -625,3 +652,326 @@ function MusicLibraryPanel() {
     </div>
   );
 }
+
+
+function VoiceClonesPanel() {
+  const qc = useQueryClient();
+  const { data: clones, isLoading } = useQuery({
+    queryKey: ['voice-clones'],
+    queryFn: tauri.listVoiceClones,
+    refetchInterval: 8000,
+  });
+
+  const [pickedPath, setPickedPath] = useState<string | null>(null);
+  const [label, setLabel] = useState('');
+  const [primary, setPrimary] = useState<'es' | 'en' | 'zh'>('es');
+  const [gender, setGender] = useState<'female' | 'male' | 'neutral'>('neutral');
+  const [refText, setRefText] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const pick = async () => {
+    setError(null);
+    const sel = await openDialog({
+      multiple: false,
+      filters: [{ name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'ogg', 'flac'] }],
+    });
+    if (typeof sel === 'string') setPickedPath(sel);
+  };
+
+  const submit = async () => {
+    if (!pickedPath || !label.trim()) {
+      setError('Selecciona un audio y dale un nombre.');
+      return;
+    }
+    setBusy(true); setError(null);
+    try {
+      await tauri.registerVoiceClone({
+        audioPath: pickedPath,
+        label: label.trim(),
+        gender, primary,
+        description: `Voz clonada · ${primary.toUpperCase()} · ${gender}`,
+        refText: refText.trim() || undefined,
+      });
+      setPickedPath(null);
+      setLabel('');
+      setRefText('');
+      qc.invalidateQueries({ queryKey: ['voice-clones'] });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: string) => {
+    try {
+      await tauri.deleteVoiceClone(id);
+      qc.invalidateQueries({ queryKey: ['voice-clones'] });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-paper-300 leading-relaxed">
+        Sube un clip de <strong>5–15 s</strong> con tu voz (o cualquier voz que tengas autorización para clonar)
+        y Qwen3-TTS la usará para generar narraciones cinematográficas en {' '}
+        <strong>en / es / zh / ja / ko</strong> con prosodia natural. Cuanto más limpio el audio (sin música ni ruido),
+        mejor el resultado. WAV mono 16 kHz es ideal — si subes otro formato, lo convertimos automáticamente.
+      </p>
+
+      <div className="rounded-lg border border-border/50 bg-obsidian-800/50 p-4 space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <label className="text-xs uppercase tracking-wide text-paper-300">Nombre</label>
+            <input
+              data-testid="clone-label"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Diego ES, Carmen ES, Mi voz…"
+              className="w-full bg-obsidian-900 border border-border/50 rounded-md px-3 py-2 text-sm text-paper-100 placeholder:text-paper-400 focus:outline-none focus:border-gold-500"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs uppercase tracking-wide text-paper-300">Idioma primario</label>
+            <select
+              value={primary}
+              onChange={(e) => setPrimary(e.target.value as 'es' | 'en' | 'zh')}
+              className="w-full bg-obsidian-900 border border-border/50 rounded-md px-3 py-2 text-sm text-paper-100 focus:outline-none focus:border-gold-500"
+            >
+              <option value="es">Español (castellano)</option>
+              <option value="en">English</option>
+              <option value="zh">中文</option>
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs uppercase tracking-wide text-paper-300">Tono</label>
+            <select
+              value={gender}
+              onChange={(e) => setGender(e.target.value as 'female' | 'male' | 'neutral')}
+              className="w-full bg-obsidian-900 border border-border/50 rounded-md px-3 py-2 text-sm text-paper-100 focus:outline-none focus:border-gold-500"
+            >
+              <option value="neutral">Neutral</option>
+              <option value="female">Femenina</option>
+              <option value="male">Masculina</option>
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs uppercase tracking-wide text-paper-300">Texto del clip (opcional, mejora calidad)</label>
+            <input
+              value={refText}
+              onChange={(e) => setRefText(e.target.value)}
+              placeholder="Transcripción exacta del clip…"
+              className="w-full bg-obsidian-900 border border-border/50 rounded-md px-3 py-2 text-sm text-paper-100 placeholder:text-paper-400 focus:outline-none focus:border-gold-500"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={pick}
+            data-testid="clone-pick"
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-obsidian-900 border border-border/50 hover:border-gold-500/50 text-sm text-paper-200"
+          >
+            <Plus className="w-4 h-4" /> Elegir audio
+          </button>
+          {pickedPath && (
+            <span className="text-xs text-paper-300 font-mono truncate max-w-[280px]" title={pickedPath}>
+              {pickedPath.split(/[\\/]/).pop()}
+            </span>
+          )}
+          <div className="flex-1" />
+          <button
+            onClick={submit}
+            data-testid="clone-submit"
+            disabled={busy || !pickedPath || !label.trim()}
+            className={cn(
+              'inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium',
+              busy || !pickedPath || !label.trim()
+                ? 'bg-obsidian-800 text-paper-400 cursor-not-allowed'
+                : 'bg-gold-500 text-obsidian-950 hover:bg-gold-300',
+            )}
+          >
+            {busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            {busy ? 'Subiendo y procesando…' : 'Registrar voz'}
+          </button>
+        </div>
+
+        {error && (
+          <div className="p-2.5 rounded-md bg-crimson-500/15 border border-crimson-500/40 text-xs text-paper-100 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-crimson-400 shrink-0 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-1.5" data-testid="clone-list">
+        {isLoading && <div className="text-sm text-paper-400">Cargando voces clonadas…</div>}
+        {!isLoading && (clones ?? []).length === 0 && (
+          <div className="text-sm text-paper-400 italic">No hay voces clonadas todavía.</div>
+        )}
+        {(clones ?? []).map((c) => (
+          <div
+            key={c.id}
+            className="flex items-center gap-3 px-3 py-2 rounded-md bg-obsidian-800/40 border border-border/30"
+          >
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-paper-100 truncate">
+                {c.label} <span className="text-xs text-gold-300 ml-1">·{c.primary.toUpperCase()}·{c.gender}</span>
+              </div>
+              <div className="text-[11px] text-paper-400 truncate">
+                {c.description || 'sin descripción'} {c.duration_seconds && ` · ${c.duration_seconds.toFixed(1)} s`}
+              </div>
+            </div>
+            <button
+              onClick={() => remove(c.id)}
+              className="p-1.5 rounded text-paper-300 hover:text-crimson-400 hover:bg-crimson-500/10 transition-colors"
+              aria-label={`Borrar ${c.label}`}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+function OptionalComponentsPanel() {
+  const qc = useQueryClient();
+  const { data: stack, refetch } = useQuery({
+    queryKey: ['verify-stack'],
+    queryFn: tauri.verifyStack,
+    refetchInterval: 5_000,
+  });
+  const summary = stack?.summary as Record<string, boolean | number> | undefined;
+
+  // Each card represents an opt-in feature backed by a manifest component id.
+  // The 'check' fn reads from the live verify_stack summary so the card flips
+  // to '✓ instalado' the moment the supervisor respawned the Python sidecar.
+  const FEATURES: { id: string; label: string; desc: string; size: string; check: () => boolean }[] = [
+    {
+      id: 'python-deps-engagement',
+      label: 'TRIBE v2 (Meta · engagement con neurociencia in-silico)',
+      desc: 'Predice respuestas fMRI y mapea a redes funcionales (Salience + FPN + Visual + Auditory − DMN). Detecta valles aburridos y permite auto-optimización. CC-BY-NC-4.0.',
+      size: '~12 GB',
+      check: () => Boolean(summary?.tribe_installed),
+    },
+    {
+      id: 'python-deps-music',
+      label: 'ACE-Step v1.5 + MusicGen-medium',
+      desc: 'Generación local de música cinematográfica oriental. ACE-Step preferido (Apache 2.0, calidad superior), MusicGen como fallback.',
+      size: '~6 GB',
+      check: () => Boolean(summary?.acestep_installed) || Boolean(summary?.musicgen_installed),
+    },
+    {
+      id: 'python-deps-vision',
+      label: 'Vision stack (rembg + MediaPipe + YOLO11)',
+      desc: 'Segmentación + parallax 2.5D + subject tracking para Shorts. Necesario para reframe vertical inteligente.',
+      size: '~720 MB',
+      check: () => Boolean(summary?.rembg_installed) && Boolean(summary?.ultralytics_installed),
+    },
+  ];
+
+  return (
+    <div className="space-y-3" data-testid="optional-components">
+      <p className="text-sm text-paper-300 leading-relaxed">
+        Componentes opcionales que enriquecen el pipeline. Se instalan desde aquí
+        sin terminal: la app reinicia el sidecar Python al terminar y los activa
+        automáticamente.
+      </p>
+      {FEATURES.map((f) => (
+        <FeatureCard key={f.id} feature={f} onInstalled={() => { refetch(); qc.invalidateQueries({ queryKey: ['verify-stack'] }); }} />
+      ))}
+    </div>
+  );
+}
+
+function FeatureCard({
+  feature,
+  onInstalled,
+}: {
+  feature: { id: string; label: string; desc: string; size: string; check: () => boolean };
+  onInstalled: () => void;
+}) {
+  const installed = feature.check();
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!busy) return;
+    let unlisten: (() => void) | null = null;
+    events.onInstallProgress((p) => {
+      if (p.component === feature.id) {
+        setProgress(`${p.status} · ${p.percent.toFixed(0)}% · ${p.message ?? ''}`);
+      }
+    }).then((u) => (unlisten = u));
+    return () => { unlisten?.(); };
+  }, [busy, feature.id]);
+
+  const install = async () => {
+    setBusy(true); setError(null); setProgress('Iniciando…');
+    try {
+      await tauri.installOptionalComponent(feature.id);
+      setProgress('Instalado. Reiniciando sidecar Python…');
+      // Give supervisor 5 s to respawn before refreshing
+      setTimeout(() => { onInstalled(); setBusy(false); setProgress(''); }, 5_000);
+    } catch (e) {
+      setError(String(e));
+      setBusy(false);
+      setProgress('');
+    }
+  };
+
+  return (
+    <div
+      className={cn(
+        'rounded-md border p-3 flex items-start gap-3',
+        installed
+          ? 'border-jade-500/40 bg-jade-700/10'
+          : 'border-border/50 bg-obsidian-800/40',
+      )}
+      data-testid={`feature-${feature.id}`}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <h4 className="text-sm font-medium text-paper-100">{feature.label}</h4>
+          <span className="text-[10px] text-paper-400">· {feature.size}</span>
+          {installed && (
+            <span className="text-[10px] uppercase font-bold tracking-wider text-jade-300 bg-jade-500/15 px-1.5 py-0.5 rounded">
+              ✓ Instalado
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-paper-300 mt-1 leading-relaxed">{feature.desc}</p>
+        {progress && (
+          <div className="text-[11px] text-gold-300 mt-2 font-mono truncate">{progress}</div>
+        )}
+        {error && (
+          <div className="text-[11px] text-crimson-400 mt-2">{error}</div>
+        )}
+      </div>
+      {!installed && (
+        <button
+          onClick={install}
+          disabled={busy}
+          data-testid={`install-${feature.id}`}
+          className={cn(
+            'shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium transition-colors',
+            busy
+              ? 'bg-obsidian-800 text-paper-400 cursor-wait'
+              : 'bg-gold-500/15 border border-gold-500/40 text-gold-300 hover:bg-gold-500/25',
+          )}
+        >
+          {busy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+          {busy ? 'Instalando…' : 'Instalar'}
+        </button>
+      )}
+    </div>
+  );
+}
+

@@ -161,6 +161,29 @@ export interface SidecarState {
   python: 'stopped' | 'starting' | 'running' | 'failed';
   node: 'stopped' | 'starting' | 'running' | 'failed';
   ollama: 'stopped' | 'starting' | 'running' | 'failed';
+  comfyui: 'stopped' | 'starting' | 'running' | 'failed';
+}
+
+export interface VoiceClone {
+  id: string;
+  label: string;
+  gender: string;
+  primary: string;
+  description: string;
+  duration_seconds: number | null;
+  has_ref_text: boolean;
+}
+
+export interface LibraryVideo {
+  project_id: string;
+  title: string;
+  video_path: string;
+  poster_path: string | null;
+  size_bytes: number;
+  duration_seconds: number | null;
+  width: number | null;
+  height: number | null;
+  modified_at: number;
 }
 
 export interface Project {
@@ -183,7 +206,31 @@ export interface GenerateRequest {
   /** When true, render at 1080x1920 (vertical/Shorts aspect). Defaults to false. */
   vertical?: boolean;
   /** Voice preset name for Qwen3-TTS. Defaults to 'Vivian'. */
-  voice?: string;
+  voice_speaker?: string;
+  /** Use MusicGen / ACE-Step for soundtrack generation instead of library tracks. */
+  use_musicgen?: boolean;
+  /** Optional override for the LLM model used in script phase. */
+  llm_model?: string;
+  /** Phase 10: extract N viral Shorts from the long-form output. */
+  auto_shorts?: boolean;
+  /** Number of shorts to extract (default 3). */
+  shorts_count?: number;
+  /** When true and YouTube connected, Phase 9 uploads automatically. */
+  auto_upload?: boolean;
+  /** YouTube privacy: "private" | "unlisted" | "public". */
+  publish_privacy?: string;
+  /** Unix timestamp for scheduled publish. */
+  publish_at?: number;
+  /** When false, skip the karaoke ASS burn-in pass (SRT files still generated). */
+  burn_subtitles?: boolean;
+  /** Animation preset: cinematic | dynamic | minimal | dramatic. */
+  animation_preset?: string;
+  /** Caption style preset: xianxia | hormozi | mrbeast | minimal | neon. */
+  caption_style?: string;
+  /** Phase 11: TRIBE v2 in-silico neuroscience engagement analysis. Default true. */
+  analyze_engagement?: boolean;
+  /** When true, auto-applies cuts + audio swells to fix detected boring spots. */
+  auto_optimize_engagement?: boolean;
 }
 
 export interface PhaseUpdate {
@@ -192,6 +239,14 @@ export interface PhaseUpdate {
   status: string;
   progress: number;
   message: string;
+}
+
+export interface ImageReadyEvent {
+  project_id: string;
+  index: number;
+  total: number;
+  image_path: string;
+  prompt: string;
 }
 
 export const tauri = {
@@ -215,6 +270,33 @@ export const tauri = {
     invoke<Project>('create_project', { args }),
   startGeneration: (args: GenerateRequest) =>
     invoke<string>('start_generation', { args }),
+  // Voice clones
+  listVoiceClones: () => invoke<VoiceClone[]>('list_voice_clones'),
+  registerVoiceClone: (args: {
+    audioPath: string;
+    label: string;
+    gender?: string;
+    primary?: string;
+    description?: string;
+    refText?: string;
+  }) =>
+    invoke<VoiceClone>('register_voice_clone', {
+      audioPath: args.audioPath,
+      label: args.label,
+      gender: args.gender,
+      primary: args.primary,
+      description: args.description,
+      refText: args.refText,
+    }),
+  deleteVoiceClone: (id: string) => invoke<void>('delete_voice_clone', { id }),
+  // Library
+  libraryListVideos: () => invoke<LibraryVideo[]>('library_list_videos'),
+  libraryDeleteVideo: (videoPath: string) =>
+    invoke<void>('library_delete_video', { videoPath }),
+  libraryOpenFolder: () => invoke<string>('library_open_video_folder'),
+  // Optional components — install ONE component by id (auto-restarts python sidecar)
+  installOptionalComponent: (componentId: string) =>
+    invoke<boolean>('install_optional_component', { componentId }),
   // YouTube
   youtubeStatus: () => invoke<YouTubeStatus>('youtube_status'),
   youtubeDisconnect: () => invoke<void>('youtube_disconnect'),
@@ -255,6 +337,8 @@ export const events = {
     listen<PhaseUpdate>('pipeline:progress', (e) => cb(e.payload)),
   onPipelineError: (cb: (p: { project_id: string; error: string }) => void): Promise<UnlistenFn> =>
     listen<{ project_id: string; error: string }>('pipeline:error', (e) => cb(e.payload)),
+  onImageReady: (cb: (p: ImageReadyEvent) => void): Promise<UnlistenFn> =>
+    listen<ImageReadyEvent>('pipeline:image_ready', (e) => cb(e.payload)),
   onYoutubeConnected: (cb: () => void): Promise<UnlistenFn> =>
     listen<unknown>('youtube:connected', () => cb()),
   onYoutubeError: (cb: (msg: string) => void): Promise<UnlistenFn> =>

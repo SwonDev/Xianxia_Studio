@@ -146,8 +146,11 @@ interface GenerateArgs {
   languages: string[];
   target_minutes: number;
   experimental_llm: boolean;
-  // shim extras
   vertical?: boolean;
+  voice_speaker?: string;
+  use_musicgen?: boolean;
+  llm_model?: string;
+  /** legacy alias accepted for backward compat with older shim callers */
   voice?: string;
 }
 
@@ -221,7 +224,7 @@ async function runPipeline(project_id: string, args: GenerateArgs): Promise<void
       {
         text: script.narration,
         language: langToQwen(lang),
-        speaker: args.voice || 'Vivian',
+        speaker: args.voice_speaker || args.voice || 'Vivian',
         instruction: 'Read with the gravitas of an epic mythology narrator. Slow, deep, cinematic.',
         chunk_chars: 600,
       },
@@ -524,18 +527,40 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
         { id: 'mediapipe', label: 'MediaPipe (subject tracking)', ok: py,
           detail: py ? '(asumido OK porque sidecar Python responde)' : 'no detectable desde browser',
           group: 'Herramientas' },
+        { id: 'ultralytics', label: 'ultralytics YOLO11 (Shorts subject tracking)', ok: py,
+          detail: py ? '(asumido OK porque sidecar Python responde)' : 'no detectable desde browser',
+          group: 'Herramientas' },
+      );
+      // Música backends — query the live /music/backends endpoint
+      let acestepOk = false;
+      let musicgenOk = false;
+      if (py) {
+        try {
+          const m = await http<{ acestep_available: boolean; musicgen_available: boolean }>(
+            PY, '/music/backends', 'GET', undefined, 3000,
+          );
+          acestepOk = !!m.acestep_available;
+          musicgenOk = !!m.musicgen_available;
+        } catch { /* sidecar may not be ready yet */ }
+      }
+      checks.push(
+        { id: 'acestep', label: 'ACE-Step v1.5 (música cinematográfica · preferido)', ok: acestepOk,
+          detail: acestepOk ? '✓ instalado' : 'no instalado — opcional. requirements-music.txt',
+          group: 'Música' },
+        { id: 'musicgen', label: 'MusicGen (audiocraft · fallback)', ok: musicgenOk,
+          detail: musicgenOk ? '✓ instalado' : 'no instalado — opcional',
+          group: 'Música' },
       );
       const summary = {
         gpu_available: py, video_hw_accelerated: py,
         ollama_running: ol, xianxia_llm_registered: xianxiaLlm,
         sidecar_python_running: py, sidecar_node_running: nd, comfyui_running: cf,
-        // Browser shim cannot probe local FS for these — reasonable best-guess:
-        // HyperFrames available if Node sidecar reachable (it owns the binary);
-        // rembg/mediapipe assumed present if Python sidecar is up (the routes
-        // would 503 on first call otherwise).
         hyperframes_installed: nd,
         rembg_installed: py,
         mediapipe_installed: py,
+        ultralytics_installed: py,
+        acestep_installed: acestepOk,
+        musicgen_installed: musicgenOk,
         models_ready_count: checks.filter((c) => c.group === 'Modelos' && c.ok).length,
         models_total: checks.filter((c) => c.group === 'Modelos').length,
       };
@@ -552,18 +577,53 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
       } as unknown as T;
 
     case 'get_sidecar_state': {
-      const [p, n, o] = await Promise.all([
+      const [p, n, o, c] = await Promise.all([
         reachable(`${PY}/health`), reachable(`${NODE}/health`), reachable(`${OLLAMA}/api/tags`),
+        reachable('http://127.0.0.1:8188/system_stats'),
       ]);
       return {
         python: p ? 'running' : 'stopped',
         node: n ? 'running' : 'stopped',
         ollama: o ? 'running' : 'stopped',
+        comfyui: c ? 'running' : 'stopped',
       } as unknown as T;
     }
 
     case 'get_sidecar_logs':
       return { python: '(logs no disponibles en modo navegador)', node: '(idem)' } as unknown as T;
+
+    case 'list_voice_clones': {
+      try {
+        return (await http<unknown>(PY, '/tts/clones', 'GET', undefined, 5000)) as T;
+      } catch {
+        return [] as unknown as T;
+      }
+    }
+
+    case 'library_list_videos':
+      return [] as unknown as T;
+
+    case 'library_delete_video':
+      return undefined as unknown as T;
+
+    case 'library_open_video_folder':
+      return '' as unknown as T;
+
+    case 'install_optional_component':
+      // Browser shim: real install requires Tauri filesystem + supervisor.
+      throw new Error('Component install requires the Tauri webview (no browser-mode equivalent).');
+
+    case 'register_voice_clone':
+      // Browser shim can't open OS file pickers; surface a clear error.
+      throw new Error('Voice clone registration requires the Tauri webview (file picker not available in browser mode).');
+
+    case 'delete_voice_clone': {
+      const a = (args ?? {}) as { id?: string };
+      if (!a.id) throw new Error('id required');
+      await http<unknown>(PY, `/tts/clones/${encodeURIComponent(a.id)}`, 'POST', undefined, 5000)
+        .catch(() => fetch(`${PY}/tts/clones/${encodeURIComponent(a.id!)}`, { method: 'DELETE' }));
+      return undefined as unknown as T;
+    }
 
     case 'get_workspace_root':
       return null as unknown as T;

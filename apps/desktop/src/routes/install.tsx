@@ -66,16 +66,17 @@ function InstallWizard() {
               <strong className="text-gold-300"> 25–30 GB</strong> según tu GPU.
             </p>
             <ul className="space-y-2.5 text-sm text-paper-200">
-              <Item icon="🐍" text="Python 3.11 embebido (~30 MB) + libs IA: torch+CUDA, diffusers, transformers, accelerate, qwen-tts, faster-whisper, mediapipe, rembg, opencv (~8–10 GB)" />
+              <Item icon="🐍" text="Python 3.11 embebido (~30 MB) + libs IA: torch+CUDA, diffusers, transformers, accelerate, qwen-tts, faster-whisper, mediapipe, rembg, opencv, ultralytics YOLO11 (~8–10 GB)" />
               <Item icon="📦" text="Node 22 portable + Fastify sidecar para HyperFrames (~120 MB)" />
-              <Item icon="🎬" text="FFmpeg 8 con NVENC h264/hevc (~80 MB) — render + cinematic post-pass" />
+              <Item icon="🎬" text="FFmpeg 8 con NVENC h264/hevc (~80 MB) — render Steadicam 60fps con 2x canvas lanczos + spatial-aq + temporal-aq + loudnorm -14 LUFS" />
               <Item icon="🦙" text="Ollama + xianxia-llm registrado desde supergemma4-e4b-abliterated GGUF Q4_K_M (~5.3 GB) — guion narrativo, modelo de la familia Gemma 4" />
-              <Item icon="🐉" text="Z-Image-Turbo Q4_K_M GGUF (~4.7 GB) + Qwen3-4B FP8 encoder + AE VAE para ComfyUI — generación rápida en 8 GB VRAM (BF16 12 GB opcional para 12+ GB)" />
-              <Item icon="🎙️" text="Qwen3-TTS-12Hz-1.7B-CustomVoice (~3.5 GB) — narración cinematográfica multilenguaje" />
-              <Item icon="✂️" text="ComfyUI + custom node ComfyUI-GGUF (~250 MB) — runtime de inferencia para Z-Image" />
-              <Item icon="🎞️" text="HyperFrames CLI (~60 MB) — render HTML/CSS/GSAP a vídeo" />
-              <Item icon="📐" text="rembg + onnxruntime-gpu + MediaPipe (~700 MB) — segmentación de profundidad para parallax 2.5D y subject tracking para reframe vertical" />
-              <Item icon="🔊" text="faster-whisper-large-v3 (~3 GB) — transcripción con timestamps por palabra" />
+              <Item icon="🐉" text="Z-Image-Turbo Q4_K_M GGUF (~4.7 GB) + Qwen3-4B FP8 encoder + AE VAE — sampler dpmpp_sde+beta nativo a 720x1280 / 1280x720 (8 GB VRAM, sin offload)" />
+              <Item icon="🎙️" text="Qwen3-TTS-12Hz-1.7B-CustomVoice (~3.5 GB) — 9 voces nativas multilenguaje (Vivian/Serena/Ryan/Aiden/Uncle Fu/Eric/Dylan/Ono Anna/Sohee)" />
+              <Item icon="✂️" text="ComfyUI + custom nodes ComfyUI-GGUF + rgthree-comfy (~252 MB) — runtime de inferencia para Z-Image" />
+              <Item icon="🎞️" text="HyperFrames CLI (~60 MB) — render HTML/CSS/GSAP a vídeo (modo opcional)" />
+              <Item icon="📐" text="rembg + onnxruntime-gpu + MediaPipe + YOLO11n-pose (~720 MB) — parallax 2.5D + subject tracking Shorts vertical 1080×1920 con safe zones TikTok" />
+              <Item icon="🔊" text="faster-whisper-large-v3 (~3 GB) — transcripción palabra-a-palabra para karaoke ASS con highlight contextual" />
+              <Item icon="🎵" text="ACE-Step v1.5 + MusicGen-medium (~6 GB, opcional) — generación local de música cinematográfica xianxia con erhu/guzheng/taiko, pre-master EQ + compresor + loudnorm -16 LUFS" />
             </ul>
             <div className="mt-6 p-4 rounded-lg bg-jade-700/20 border border-jade-600/30 text-sm text-paper-200">
               <strong className="text-jade-300">Filosofía local-first:</strong> ningún

@@ -68,7 +68,7 @@ function SchedulerRoute() {
         <div className="flex items-center justify-between mb-5">
           <h2 className="font-display text-xl capitalize">{monthLabel}</h2>
           <div className="flex gap-1">
-            <NavBtn onClick={() => setCursor(addMonth(cursor, -1))} icon={ChevronLeft} />
+            <NavBtn onClick={() => setCursor(addMonth(cursor, -1))} icon={ChevronLeft} ariaLabel="Mes anterior" />
             <button
               onClick={() => {
                 const d = new Date();
@@ -79,7 +79,7 @@ function SchedulerRoute() {
             >
               Hoy
             </button>
-            <NavBtn onClick={() => setCursor(addMonth(cursor, 1))} icon={ChevronRight} />
+            <NavBtn onClick={() => setCursor(addMonth(cursor, 1))} icon={ChevronRight} ariaLabel="Mes siguiente" />
           </div>
         </div>
 
@@ -154,10 +154,17 @@ function SchedulerRoute() {
   );
 }
 
-function NavBtn({ onClick, icon: Icon }: { onClick: () => void; icon: React.ComponentType<{ className?: string }> }) {
+function NavBtn({
+  onClick, icon: Icon, ariaLabel,
+}: {
+  onClick: () => void;
+  icon: React.ComponentType<{ className?: string }>;
+  ariaLabel: string;
+}) {
   return (
     <button
       onClick={onClick}
+      aria-label={ariaLabel}
       className="p-1.5 rounded-md text-paper-300 hover:bg-obsidian-800 hover:text-paper-100"
     >
       <Icon className="w-4 h-4" />

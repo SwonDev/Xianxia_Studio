@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as ShortsRouteImport } from './routes/shorts'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SchedulerRouteImport } from './routes/scheduler'
 import { Route as LibraryRouteImport } from './routes/library'
@@ -16,6 +17,11 @@ import { Route as InstallRouteImport } from './routes/install'
 import { Route as GeneratorRouteImport } from './routes/generator'
 import { Route as IndexRouteImport } from './routes/index'
 
+const ShortsRoute = ShortsRouteImport.update({
+  id: '/shorts',
+  path: '/shorts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -54,6 +60,7 @@ export interface FileRoutesByFullPath {
   '/library': typeof LibraryRoute
   '/scheduler': typeof SchedulerRoute
   '/settings': typeof SettingsRoute
+  '/shorts': typeof ShortsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -62,6 +69,7 @@ export interface FileRoutesByTo {
   '/library': typeof LibraryRoute
   '/scheduler': typeof SchedulerRoute
   '/settings': typeof SettingsRoute
+  '/shorts': typeof ShortsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -71,6 +79,7 @@ export interface FileRoutesById {
   '/library': typeof LibraryRoute
   '/scheduler': typeof SchedulerRoute
   '/settings': typeof SettingsRoute
+  '/shorts': typeof ShortsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -81,8 +90,16 @@ export interface FileRouteTypes {
     | '/library'
     | '/scheduler'
     | '/settings'
+    | '/shorts'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/generator' | '/install' | '/library' | '/scheduler' | '/settings'
+  to:
+    | '/'
+    | '/generator'
+    | '/install'
+    | '/library'
+    | '/scheduler'
+    | '/settings'
+    | '/shorts'
   id:
     | '__root__'
     | '/'
@@ -91,6 +108,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/scheduler'
     | '/settings'
+    | '/shorts'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -100,10 +118,18 @@ export interface RootRouteChildren {
   LibraryRoute: typeof LibraryRoute
   SchedulerRoute: typeof SchedulerRoute
   SettingsRoute: typeof SettingsRoute
+  ShortsRoute: typeof ShortsRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/shorts': {
+      id: '/shorts'
+      path: '/shorts'
+      fullPath: '/shorts'
+      preLoaderRoute: typeof ShortsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -156,6 +182,7 @@ const rootRouteChildren: RootRouteChildren = {
   LibraryRoute: LibraryRoute,
   SchedulerRoute: SchedulerRoute,
   SettingsRoute: SettingsRoute,
+  ShortsRoute: ShortsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -35,6 +35,7 @@ export function Topbar() {
     { ok: sidecars?.ollama === 'running', label: 'Ollama' },
     { ok: sidecars?.python === 'running', label: 'Python' },
     { ok: sidecars?.node === 'running', label: 'Node' },
+    { ok: sidecars?.comfyui === 'running', label: 'ComfyUI' },
   ];
 
   return (
@@ -58,7 +59,11 @@ export function Topbar() {
       {/* Services dots */}
       <div className="flex items-center gap-3 text-xs">
         {services.map((s) => (
-          <div key={s.label} className="flex items-center gap-1.5 text-muted-foreground">
+          <div
+            key={s.label}
+            className="flex items-center gap-1.5 text-muted-foreground"
+            title={`${s.label} · ${s.ok ? 'running' : 'stopped'}`}
+          >
             <StatusDot ok={s.ok} />
             <span>{s.label}</span>
           </div>
