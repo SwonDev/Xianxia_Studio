@@ -98,6 +98,10 @@ tests/screenshots/
 # ─── Claude Code runtime ─────────────────────────────────────────
 .claude/
 
+# ─── Local-only project journal (NEVER commit) ───────────────────
+PROJECT_JOURNAL.md
+.filter-repo-paths.txt
+
 # ─── Installer asset previews (regen via pnpm installer:assets) ──
 assets/installer/*.preview.png
 
