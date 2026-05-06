@@ -116,12 +116,48 @@ async def generate_metadata(req: MetadataRequest) -> MetadataResponse:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
         parsed = {}
+
+    # Defensive normalization. Gemma sometimes nests `tags` / `chapters`
+    # *inside* the `description` dict instead of at the top level (despite
+    # the schema in the prompt). Promote them back to the top level and
+    # coerce description to the expected dict[str, str] shape so Pydantic
+    # validation never explodes.
+    description = parsed.get("description")
+    if isinstance(description, dict):
+        # Pop any non-language nested keys the model accidentally put here.
+        for nested_key in ("tags", "chapters"):
+            if nested_key in description and nested_key not in parsed:
+                parsed[nested_key] = description.pop(nested_key)
+        # Filter description to {lang: str} entries only — drop anything else.
+        description = {
+            k: v if isinstance(v, str) else str(v)
+            for k, v in description.items()
+            if isinstance(k, str)
+        }
+    elif isinstance(description, str):
+        description = {"en": description}
+    else:
+        description = {}
+
+    raw_tags = parsed.get("tags", [])
+    if isinstance(raw_tags, str):
+        # Some models return a comma-separated string instead of an array.
+        raw_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+    elif not isinstance(raw_tags, list):
+        raw_tags = []
+    tags = [str(t) for t in raw_tags]
+
+    raw_chapters = parsed.get("chapters", [])
+    if not isinstance(raw_chapters, list):
+        raw_chapters = []
+    chapters = [c for c in raw_chapters if isinstance(c, dict)]
+
     return MetadataResponse(
-        title_en=parsed.get("title_en", ""),
-        title_zh=parsed.get("title_zh"),
-        description=parsed.get("description", {}),
-        tags=parsed.get("tags", []),
-        chapters=parsed.get("chapters", []),
+        title_en=str(parsed.get("title_en", "") or ""),
+        title_zh=parsed.get("title_zh") if isinstance(parsed.get("title_zh"), (str, type(None))) else None,
+        description=description,
+        tags=tags,
+        chapters=chapters,
     )
 
 

@@ -6,6 +6,20 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-05-06
+
+### Corregido
+
+- **Pipeline ya no muere en Fase 2 (Metadatos)**. Gemma 4 a veces
+  anidaba `tags` y `chapters` *dentro* del dict `description` en vez
+  de ponerlos al nivel superior, lo que reventaba la validación
+  Pydantic con un 500 que el cliente Rust traducía como
+  `error decoding response body`. Ahora el handler normaliza la
+  respuesta del LLM tolerando: `tags` como string CSV o como lista,
+  `chapters` como lista o vacío, y `description` con claves no-idioma
+  promovidas automáticamente al nivel superior. El pipeline avanza a
+  TTS aunque el LLM se desvíe del schema.
+
 ## [0.1.5] — 2026-05-06
 
 ### Corregido
