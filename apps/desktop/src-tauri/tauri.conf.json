@@ -67,14 +67,26 @@
         "headerImage": "../../../assets/installer/header.bmp",
         "sidebarImage": "../../../assets/installer/sidebar.bmp",
         "installMode": "currentUser",
-        "license": "../../../assets/installer/LICENSE.txt",
         "compression": "lzma"
       },
       "wix": {
         "language": ["es-ES", "en-US"],
         "bannerPath": "../../../assets/installer/wix-banner.bmp",
-        "dialogImagePath": "../../../assets/installer/wix-dialog.bmp",
-        "license": "../../../assets/installer/LICENSE.rtf"
+        "dialogImagePath": "../../../assets/installer/wix-dialog.bmp"
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdDMTE5RjdCQjZFMjQzNTIKUldSU1ErSzJlNThSZk5iN05ZMXRQRU5RTkhIRVJ3YnZEdEtZL0plUmpMYytOVEI3aVlBWmFiWEcK",
+      "endpoints": [
+        "https://github.com/SwonDev/Xianxia_Studio/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

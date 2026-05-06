@@ -3,8 +3,9 @@ import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'motion/react';
 import {
-  AlertTriangle, Cpu, Youtube, Database, Bot, Download, Link2, Unlink, KeyRound, ShieldCheck, RefreshCw, CheckCircle2, XCircle, Music, FolderOpen, Trash2, Plus,
+  AlertTriangle, Cpu, Youtube, Database, Bot, Download, Link2, Unlink, KeyRound, ShieldCheck, RefreshCw, CheckCircle2, XCircle, Music, FolderOpen, Trash2, Plus, Sparkles,
 } from 'lucide-react';
+import { UpdaterPanel } from '@/components/updater-panel';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { tauri, events, type CheckItem, type MusicLibrary } from '@/lib/tauri';
@@ -36,6 +37,10 @@ function SettingsRoute() {
         </p>
         <h1 className="font-display text-4xl font-medium">Ajustes</h1>
       </header>
+
+      <Section title="Actualizaciones" icon={Sparkles} defaultOpen>
+        <UpdaterPanel />
+      </Section>
 
       <Section title="Servicios" icon={Database} defaultOpen>
         <ServiceRow label="Ollama (LLM :11434)" status={sidecars?.ollama ?? 'stopped'} />
