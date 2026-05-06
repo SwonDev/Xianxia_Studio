@@ -77,6 +77,12 @@ pub fn run() {
             // Bootstrap music library (creates dir, seeds from workspace bundle).
             commands::music::bootstrap();
 
+            // Kill any sidecar processes left running by a previous instance
+            // of this .exe (e.g. after a passive auto-update). Without this,
+            // the new supervisor sees ports 8731/8732/8188 already bound and
+            // can never spawn the new code.
+            sidecars::kill_orphan_sidecars();
+
             // Extract bundled sidecars (sidecar-py + sidecar-node) into the
             // runtime dir on first launch / after upgrade. The supervisor
             // resolves them from there, so the installed .exe doesn't depend
@@ -99,21 +105,32 @@ pub fn run() {
                 }
             });
 
-            let handle_db = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match db::init_pool().await {
-                    Ok(pool) => {
-                        let pool = Arc::new(pool);
-                        handle_db.manage(pool.clone());
-                        let pool_clone = pool.clone();
-                        tokio::spawn(async move { scheduler::run_loop(pool_clone).await });
-                        tracing::info!("database + scheduler up");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "db init failed — services UI still works, but project CRUD won't");
+            // The DB pool must be `.manage()`d BEFORE the webview can issue
+            // any IPC command, otherwise commands like `start_generation`
+            // panic with "state not managed for field `pool`". We block the
+            // setup hook for ~1–2 s while the SQLite pool opens and the
+            // migrations apply — that's the cost of correctness here.
+            match tauri::async_runtime::block_on(db::init_pool()) {
+                Ok(pool) => {
+                    let pool = Arc::new(pool);
+                    app.manage(pool.clone());
+                    let pool_clone = pool.clone();
+                    tauri::async_runtime::spawn(async move {
+                        scheduler::run_loop(pool_clone).await
+                    });
+                    tracing::info!("database + scheduler up");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "db init failed — falling back to in-memory pool so the UI still loads");
+                    // Last-ditch fallback: in-memory SQLite + migrations so the
+                    // commands that need the pool don't blow up. The user
+                    // will see project CRUD reset on next launch but the app
+                    // is at least usable instead of stuck on a startup panic.
+                    if let Ok(mem_pool) = tauri::async_runtime::block_on(db::init_memory_pool()) {
+                        app.manage(Arc::new(mem_pool));
                     }
                 }
-            });
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -6,6 +6,34 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-05-06
+
+### Corregido
+
+- **Sidecars huérfanos tras auto-update se cierran solos**. Cuando el
+  updater pasivo aplicaba v0.1.X → v0.1.X+1, el `.exe` nuevo arrancaba
+  pero los procesos `python.exe` / `node.exe` lanzados por la versión
+  anterior seguían ocupando los puertos 8731/8732/8188 con código
+  obsoleto (p. ej. el CORS de v0.1.3 no tenía `tauri.localhost`, así
+  que «Cargando voces…» no se desbloqueaba pese al fix). El nuevo
+  setup llama a `kill_orphan_sidecars()`: identifica todos los
+  procesos cuyo ejecutable vive dentro de `<data_dir>/runtime/` y los
+  termina, así el supervisor nuevo siempre toma puertos limpios.
+- **`state not managed for field 'pool' on command 'start_generation'`**.
+  El pool SQLite se inicializaba en una tarea `spawn` y, si el usuario
+  pulsaba «Iniciar generación» antes de que terminara, el comando
+  fallaba con ese error. Ahora la inicialización se hace bloqueante
+  en el `setup` (~1-2 s) y, si SQLite falla por permisos / FS,
+  caemos a un pool en memoria con migraciones aplicadas para que
+  la UI siga operativa hasta el siguiente arranque.
+- **Texto del clip de Qwen3-TTS ajustado a 3-15 s**. La doc oficial
+  permite «rapid voice clone» desde 3 s; antes la UI sugería 5-15 s
+  innecesariamente.
+- **Botón «Ideas IA» informa cuando falla**. Si el endpoint
+  `/script/suggest` no responde (servicio caído, LLM timeout) ahora
+  se muestra un toast con la causa concreta en vez de quedarse en
+  silencio.
+
 ## [0.1.4] — 2026-05-06
 
 ### Corregido

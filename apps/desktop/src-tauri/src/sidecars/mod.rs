@@ -29,6 +29,48 @@ use crate::installer::paths;
 use crate::installer::python_env;
 use crate::process_ext::HideConsole;
 
+/// Kills sidecar processes (python.exe / node.exe) inherited from a previous
+/// instance of the app. Critical after auto-updates: when v0.1.3 → v0.1.4
+/// applies, the OS replaces the .exe but the daemons spawned by v0.1.3
+/// keep running, holding port 8731 / 8732 / 8188 with stale code. The new
+/// supervisor would then see the port bound and back off forever, leaving
+/// the user with the previous version's bugs (e.g. stale CORS rules).
+///
+/// Safety scope: we only kill processes whose executable lives inside our
+/// own `<data_dir>/runtime/` tree, so we never touch unrelated software.
+pub fn kill_orphan_sidecars() {
+    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+    let runtime = match paths::runtime_dir() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    // Canonicalize once so prefix-matching is robust to /\ variations on Windows.
+    let runtime = std::fs::canonicalize(&runtime).unwrap_or(runtime);
+
+    let mut sys = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+
+    let mut killed = 0;
+    for (pid, proc_) in sys.processes() {
+        let exe = match proc_.exe() {
+            Some(p) => p,
+            None => continue,
+        };
+        let exe_canon = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+        if exe_canon.starts_with(&runtime) {
+            tracing::warn!(?pid, ?exe_canon, "killing orphan sidecar from previous app instance");
+            if proc_.kill() {
+                killed += 1;
+            }
+        }
+    }
+    if killed > 0 {
+        tracing::info!(killed, "purged orphan sidecars; new supervisor can now bind ports cleanly");
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SidecarStatus {

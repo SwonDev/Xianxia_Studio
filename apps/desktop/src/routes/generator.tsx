@@ -10,6 +10,7 @@ import { useQuery } from '@tanstack/react-query';
 import { tauri, events, type PhaseUpdate, type GenerateRequest, type ImageReadyEvent } from '@/lib/tauri';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/components/toast';
 
 interface VoiceProfile {
   id: string;
@@ -83,6 +84,7 @@ function GeneratorWizard() {
   const [vertical, setVertical] = useState(draft?.vertical ?? false);
   const [suggesting, setSuggesting] = useState(false);
   const [topicIdeas, setTopicIdeas] = useState<{ title: string; hook: string }[] | null>(null);
+  const { toast } = useToast();
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [phaseState, setPhaseState] = useState<Record<number, PhaseUpdate>>({});
   const [error, setError] = useState<string | null>(null);
@@ -260,12 +262,25 @@ function GeneratorWizard() {
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ niche: 'xianxia', count: 6, language: primaryLang }),
                     });
-                    if (r.ok) {
-                      const j = await r.json();
-                      setTopicIdeas((j.ideas ?? []).map((x: { title: string; hook: string }) => ({ title: x.title, hook: x.hook })));
+                    if (!r.ok) {
+                      throw new Error(`HTTP ${r.status}`);
                     }
-                  } catch { /* */ }
-                  finally { setSuggesting(false); }
+                    const j = await r.json();
+                    const ideas = (j.ideas ?? []).map((x: { title: string; hook: string }) => ({ title: x.title, hook: x.hook }));
+                    if (ideas.length === 0) {
+                      toast.warning('Sin ideas', 'El LLM no devolvió ninguna sugerencia. Reintenta en unos segundos.');
+                    } else {
+                      setTopicIdeas(ideas);
+                    }
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    toast.error(
+                      'No se pudieron generar ideas',
+                      `${msg}. Verifica que Ollama y el sidecar Python estén verdes en el topbar.`,
+                    );
+                  } finally {
+                    setSuggesting(false);
+                  }
                 }}
                 data-testid="suggest-topics"
                 disabled={suggesting}

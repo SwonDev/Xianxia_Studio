@@ -721,10 +721,12 @@ function VoiceClonesPanel() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-paper-300 leading-relaxed">
-        Sube un clip de <strong>5–15 s</strong> con tu voz (o cualquier voz que tengas autorización para clonar)
+        Sube un clip de <strong>3–15 s</strong> con tu voz (o cualquier voz que tengas autorización para clonar)
         y Qwen3-TTS la usará para generar narraciones cinematográficas en {' '}
-        <strong>en / es / zh / ja / ko</strong> con prosodia natural. Cuanto más limpio el audio (sin música ni ruido),
-        mejor el resultado. WAV mono 16 kHz es ideal — si subes otro formato, lo convertimos automáticamente.
+        <strong>en / es / zh / ja / ko</strong> con prosodia natural. El modelo soporta clones a partir de 3 s
+        («rapid voice clone»); con 8–15 s mejora la prosodia y los matices. Cuanto más limpio el audio
+        (sin música ni ruido), mejor el resultado. WAV mono 16 kHz es ideal — si subes otro formato,
+        lo convertimos automáticamente.
       </p>
 
       <div className="rounded-lg border border-border/50 bg-obsidian-800/50 p-4 space-y-3">

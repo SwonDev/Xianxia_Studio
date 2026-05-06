@@ -34,6 +34,22 @@ pub async fn init_pool() -> Result<DbPool> {
     Ok(pool)
 }
 
+/// Last-resort in-memory pool used by the setup hook when the on-disk DB
+/// can't be opened (corrupt file, locked by another process, FS permissions).
+/// The app still loads and the user can operate the services UI; project
+/// CRUD reverts to volatile state until the next launch fixes the on-disk DB.
+pub async fn init_memory_pool() -> Result<DbPool> {
+    let options = SqliteConnectOptions::from_str("sqlite::memory:")?
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect_with(options)
+        .await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
+    tracing::warn!("running with in-memory SQLite fallback (data not persisted)");
+    Ok(pool)
+}
+
 pub fn db_path() -> Result<PathBuf> {
     let dirs = ProjectDirs::from("studio", "xianxia", "XianxiaStudio")
         .ok_or_else(|| anyhow::anyhow!("cannot resolve project dirs"))?;
