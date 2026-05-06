@@ -313,19 +313,21 @@ async function runPipeline(project_id: string, args: GenerateArgs): Promise<void
     if (beats.length === 0) throw new Error('No image beats produced — script lacks IMAGE markers');
 
     // Phase 6: Render. Strategy:
-    //   - When vertical, render HORIZONTAL first (1920×1080) — Z-Image was generated
-    //     horizontally for speed, and rendering horizontal lets the FFmpeg parallax
-    //     2.5D path animate the bg+fg layers without lowvram offload. We then call
-    //     /reframe to produce the 1080×1920 vertical via subject-tracking +
-    //     blur-extend. This preserves composition, no "stretched" feel.
-    //   - HyperFrames (Node) only when all beats have depth layers, Node is up, AND
-    //     we're rendering horizontal (HyperFrames doesn't reframe).
-    const allLayered = layeredBeats.every((b) => 'foreground_path' in b && b.foreground_path);
+    //   - HyperFrames (Node sidecar) is the primary auto-edit engine. Composes
+    //     HTML/CSS/GSAP with parallax 2.5D (when depth layers exist), atmospherics,
+    //     transitions and post-pass FFmpeg grade. Used whenever the Node sidecar
+    //     is reachable — for both horizontal AND vertical (template responds to
+    //     width/height passed in the request).
+    //   - FFmpeg-direct fallback only when Node sidecar is down. When vertical,
+    //     it still renders horizontal first and then /reframe to 1080×1920 to
+    //     preserve composition.
+    void layeredBeats; // depth layers feed the template, no longer gate the path
     const nodeUp = await reachable(`${NODE}/health`);
-    const useHyperFrames = allLayered && nodeUp && !vertical;
-    // Always render horizontal first when vertical=true; reframe second.
-    const renderW = vertical ? 1920 : W;
-    const renderH = vertical ? 1080 : H;
+    const useHyperFrames = nodeUp;
+    // For the FFmpeg-fallback path: always render horizontal first when
+    // vertical=true; then /reframe. HyperFrames takes vertical natively.
+    const renderW = useHyperFrames ? W : (vertical ? 1920 : W);
+    const renderH = useHyperFrames ? H : (vertical ? 1080 : H);
 
     phase(project_id, 6, 'running', 0.2,
       useHyperFrames

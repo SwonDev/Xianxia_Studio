@@ -343,23 +343,39 @@ async fn run(
     emit(app, pid, 5, "done", 100.0, "Música lista");
 
     // ─── Phase 6: Render ─────────────────────────────────────────────
-    // Mode selection:
-    //   - HyperFrames (Node sidecar) when ALL beats have depth layers AND
-    //     Node sidecar is up: full effects pack (parallax 2.5D, atmospheric
-    //     particles, cinematic transitions). Slower (~5-10× realtime).
-    //   - FFmpeg-fast (Python sidecar /render): zoompan + xfade + cinematic
-    //     stack + NVENC. ~1× realtime, no parallax/particles but full grade.
+    // HyperFrames is the project's primary auto-edit engine: HTML/CSS/GSAP
+    // composition rendered to MP4 via the Node sidecar's `narrative.html`
+    // template. Pack: parallax 2.5D (when depth layers exist), atmospherics
+    // (mist/embers/snow/dust_motes/clouds), cinematic transitions
+    // (cross/flash/whip/inkwash), light rays, then FFmpeg post-pass with
+    // grade + sidechain ducking. Works for both horizontal and vertical
+    // (the template is responsive to width/height passed in the request).
+    //
+    // FFmpeg-direct (Python sidecar /render) only acts as an emergency
+    // fallback when the Node sidecar is unreachable: zoompan + xfade +
+    // cinematic stack + NVENC. ~1× realtime, no parallax/atmospherics
+    // but full grade.
+    //
+    // Note: buildBeatNode in render.ts already falls back to a non-parallax
+    // single-image layer when individual beats lack depth, so requiring
+    // ALL beats to be layered (`all_layered`) was an over-restriction.
+    // We now use HyperFrames whenever the Node sidecar is up.
     let video_out = format!("{}/video.mp4", out_dir);
-    let use_hyperframes = all_layered && node_alive(&client).await;
+    let use_hyperframes = node_alive(&client).await;
+    let _ = all_layered; // depth presence informs the template, not the gating
+
     emit(
         app, pid, 6, "running", 0.0,
         if use_hyperframes {
-            "Renderizando con HyperFrames (parallax 2.5D + atmospherics)…"
+            "Renderizando con HyperFrames (HTML/CSS/GSAP · parallax 2.5D · atmospherics · transiciones)…"
         } else {
-            "Renderizando con FFmpeg (zoompan + xfade + cinematic + NVENC)…"
+            "Node sidecar no disponible · render directo con FFmpeg (zoompan + xfade + NVENC)…"
         },
     );
     let render: serde_json::Value = if use_hyperframes {
+        // Pass explicit width/height so the same composition template works
+        // for both horizontal (1920×1080) and vertical (1080×1920) renders.
+        let (width, height) = if req.vertical { (1080u32, 1920u32) } else { (1920u32, 1080u32) };
         client
             .post(format!("{}/render/narrative", NODE_SIDECAR))
             .timeout(std::time::Duration::from_secs(45 * 60))
@@ -370,6 +386,8 @@ async fn run(
                 "narration_path": narration_audio,
                 "music_path": music["audio_path"],
                 "out_path": video_out,
+                "width": width,
+                "height": height,
                 "cinematic": "full",
                 "music_ducking": true,
             }))

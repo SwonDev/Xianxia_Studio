@@ -6,6 +6,32 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-05-06
+
+### Corregido
+
+- **HyperFrames como motor primario de render** (era la intención
+  original del proyecto). El pipeline lo usaba sólo cuando TODOS
+  los beats tenían depth layers segmentados, lo que dejaba fuera
+  cualquier vídeo con un fallo puntual de `rembg`. Ahora HyperFrames
+  se usa siempre que el Node sidecar esté arriba; los beats sin
+  depth siguen renderizando con la composición normal (single
+  layer + atmospherics + transitions + grade), y el fallback a
+  FFmpeg directo queda reservado para cuando el sidecar no
+  responde.
+- **HyperFrames también para vertical** (1080×1920). El `width`/
+  `height` se pasan al template responsive, así que Shorts y
+  vídeos verticales se autoeditan con el mismo motor que el
+  long-form horizontal.
+
+### Documentación
+
+- README: la fila Stack `Vídeo` se reescribió para reflejar
+  HyperFrames como motor primario, FFmpeg como post-pass + fallback.
+  Añadidas filas para ComfyUI custom nodes (ComfyUI-GGUF +
+  rgthree-comfy) y la stack de visión 2.5D (rembg + onnxruntime +
+  MediaPipe + YOLO11n-pose).
+
 ## [0.1.1] — 2026-05-06
 
 ### Añadido
@@ -81,6 +107,7 @@ YouTube, Tauri 2 supervisor de sidecars (Python FastAPI · Node
 Fastify · Ollama · ComfyUI), Z-Image-Turbo Q4_K_M GGUF para
 inferencia visual en 8 GB VRAM.
 
-[Unreleased]: https://github.com/SwonDev/Xianxia_Studio/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/SwonDev/Xianxia_Studio/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/SwonDev/Xianxia_Studio/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/SwonDev/Xianxia_Studio/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/SwonDev/Xianxia_Studio/releases/tag/v0.1.0
