@@ -1,0 +1,82 @@
+XIANXIA STUDIO
+Licencia de uso · End User License Agreement
+==============================================================
+
+ESPAÑOL
+-------
+
+Bienvenido a Xianxia Studio.
+
+Xianxia Studio es una aplicación de escritorio para la producción
+automatizada de contenido cinematográfico (vídeos completos y Shorts)
+con procesamiento de inteligencia artificial 100 % local.
+
+Software distribuido bajo licencia Apache 2.0 (texto íntegro abajo).
+Esto significa, en pocas palabras:
+
+  • Puedes usar la aplicación libre y gratuitamente, también con
+    fines comerciales (por ejemplo, monetizar los vídeos generados
+    en YouTube, TikTok o cualquier otra plataforma).
+  • Puedes copiar, modificar y redistribuir la aplicación, siempre
+    que mantengas el aviso de copyright original y la licencia
+    Apache 2.0 en las copias o trabajos derivados.
+  • La aplicación se ofrece "TAL CUAL", sin garantías de ningún
+    tipo. El uso es por tu cuenta y riesgo.
+
+Componentes opcionales (TRIBE v2 de Meta) tienen licencias propias
+de uso no comercial (CC-BY-NC-4.0). Su instalación es opcional desde
+Ajustes; los vídeos producidos con dichos componentes pueden ser
+publicados y monetizados solo si el uso de la aplicación es a título
+personal o sin fines comerciales del propio software.
+
+Al continuar con la instalación aceptas estos términos.
+
+
+ENGLISH
+-------
+
+Welcome to Xianxia Studio.
+
+Xianxia Studio is a desktop application for the automated production
+of cinematic content (full videos and Shorts) with 100 % local AI
+processing.
+
+Software distributed under the Apache 2.0 license (full text below).
+In short:
+
+  • You may use the application freely and at no cost, including
+    commercially (for example, monetising the generated videos on
+    YouTube, TikTok or any other platform).
+  • You may copy, modify and redistribute the application, provided
+    you keep the original copyright notice and the Apache 2.0
+    license in copies or derivative works.
+  • The application is provided "AS IS", without warranties of any
+    kind. Use is at your own risk.
+
+Optional components (Meta's TRIBE v2) carry their own non-commercial
+licenses (CC-BY-NC-4.0). Their installation is optional from
+Settings; videos produced with those components may be published and
+monetised only if the use of the application is personal or
+non-commercial with respect to the software itself.
+
+By continuing with the installation you accept these terms.
+
+
+==============================================================
+                Apache License, Version 2.0
+                http://www.apache.org/licenses/LICENSE-2.0
+==============================================================
+
+Copyright (c) 2026 Xianxia Studio · SwonDev
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied. See the License for the specific language governing
+permissions and limitations under the License.

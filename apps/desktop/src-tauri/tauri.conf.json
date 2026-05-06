@@ -43,7 +43,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -52,8 +52,30 @@
       "icons/icon.ico"
     ],
     "category": "Productivity",
-    "shortDescription": "Automated YouTube xianxia content production",
-    "longDescription": "Xianxia Studio is a desktop application that automates the production of YouTube videos about Chinese mythology, xianxia, and wuxia, using 100% local AI processing.",
-    "copyright": "© 2026 Xianxia Studio"
+    "shortDescription": "Studio cinematográfico de IA local",
+    "longDescription": "Xianxia Studio produce vídeos de YouTube cinematográficos profesionales — desde Shorts virales hasta long-form de cualquier duración — con procesamiento de inteligencia artificial 100 % local. Sin APIs externas, sin cuotas mensuales, sin dependencia de la nube.",
+    "copyright": "© 2026 Xianxia Studio · SwonDev",
+    "publisher": "Xianxia Studio",
+    "homepage": "https://github.com/SwonDev/Xianxia_Studio",
+    "license": "Apache-2.0",
+    "licenseFile": "../../../assets/installer/LICENSE.txt",
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": true,
+        "languages": ["Spanish", "English"],
+        "installerIcon": "../../../assets/installer/installer-icon.ico",
+        "headerImage": "../../../assets/installer/header.bmp",
+        "sidebarImage": "../../../assets/installer/sidebar.bmp",
+        "installMode": "currentUser",
+        "license": "../../../assets/installer/LICENSE.txt",
+        "compression": "lzma"
+      },
+      "wix": {
+        "language": ["es-ES", "en-US"],
+        "bannerPath": "../../../assets/installer/wix-banner.bmp",
+        "dialogImagePath": "../../../assets/installer/wix-dialog.bmp",
+        "license": "../../../assets/installer/LICENSE.rtf"
+      }
+    }
   }
 }

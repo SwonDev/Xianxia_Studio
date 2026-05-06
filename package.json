@@ -15,6 +15,8 @@
     "tauri:dev": "pnpm --filter @xianxia/desktop tauri dev",
     "tauri:build": "pnpm --filter @xianxia/desktop tauri build",
     "icons": "node scripts/gen-icons.mjs",
+    "installer:assets": "node scripts/gen-installer-assets.mjs",
+    "branding": "pnpm icons && pnpm installer:assets",
     "design:lint": "npx @google/design.md lint DESIGN.md",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",

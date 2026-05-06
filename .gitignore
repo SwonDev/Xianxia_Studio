@@ -96,6 +96,9 @@ tests/screenshots/
 # ─── Claude Code runtime ─────────────────────────────────────────
 .claude/
 
+# ─── Installer asset previews (regen via pnpm installer:assets) ──
+assets/installer/*.preview.png
+
 # ─── Temporary ───────────────────────────────────────────────────
 *.tmp
 *.bak
