@@ -186,12 +186,20 @@ def _pick_top_non_overlapping(candidates: list[dict], n: int) -> list[dict]:
     return picked
 
 
+NODE_SIDECAR_URL = "http://127.0.0.1:8732"
+
+
 def _cut_short(
     video_path: str,
     out_path: Path,
     start: float,
     duration: float,
     burn_ass_path: Path | None,
+    *,
+    enhanced_words: list[dict] | None = None,
+    enhanced_hook: str | None = None,
+    enhanced_cta_title: str | None = None,
+    enhanced_cta_sub: str | None = None,
 ) -> None:
     """Cut a vertical Short out of a horizontal source.
 
@@ -201,13 +209,28 @@ def _cut_short(
     back to the legacy center-crop when the source is already vertical
     or when CV libs aren't available.
 
-    The subtitle burn-in runs as a SECOND ffmpeg pass so the karaoke
-    text always sits in the safe zone of the reframed video, not on
-    the original 1920×1080 coordinate system (which would clip).
+    Two finishing modes after the smart reframe:
+
+    1. **Enhanced (preferred)** — when `enhanced_words` is provided
+       (Whisper word-level timings on the clip's local timeline) and
+       the Node sidecar is reachable. Pipes the reframed clip into the
+       HyperFrames `short.html` v2 composition: animated word-by-word
+       captions with active-token highlight, hook overlay with pop-in,
+       progress bar, and CTA card. Captions are NATIVELY rendered by
+       Chromium (no libass quemado) for crisper edges.
+
+    2. **Legacy ASS burn-in** — when no enhanced payload is given.
+       Burns the supplied ASS karaoke into the reframed clip with a
+       second FFmpeg pass.
+
+    On any error in mode 1 the function falls back to mode 2 (or the
+    plain center-crop if the smart reframe itself fails) so a Short is
+    always produced — never silently broken.
     """
     src_w, src_h = _probe_dimensions(video_path)
     target_ar = 9.0 / 16.0
     src_ar = src_w / src_h if src_h else 1.0
+    use_enhanced = bool(enhanced_words)
 
     if src_ar <= target_ar * 1.05:
         # Source is already 9:16 (or close). Center crop is fine here.
@@ -230,6 +253,30 @@ def _cut_short(
         )
         if not intermediate.exists() or intermediate.stat().st_size < 1024:
             raise RuntimeError("smart reframe produced empty file")
+
+        if use_enhanced:
+            try:
+                _render_enhanced_short_via_hyperframes(
+                    clip_path=intermediate,
+                    out_path=out_path,
+                    duration=duration,
+                    words=enhanced_words or [],
+                    hook=enhanced_hook or "",
+                    cta_title=enhanced_cta_title,
+                    cta_sub=enhanced_cta_sub,
+                )
+                try:
+                    intermediate.unlink()
+                except OSError:
+                    pass
+                return
+            except Exception as exc:
+                log.warning(
+                    "enhanced HyperFrames render failed (%s); "
+                    "falling back to ASS burn-in",
+                    exc,
+                )
+
         # Burn-in pass on the already-vertical reframed clip.
         if burn_ass_path is not None and burn_ass_path.exists():
             _burn_subs_into_vertical(intermediate, out_path, burn_ass_path)
@@ -245,6 +292,127 @@ def _cut_short(
             "smart reframe failed (%s); falling back to center crop", exc
         )
         _cut_short_center_crop(video_path, out_path, start, duration, burn_ass_path)
+
+
+def _render_enhanced_short_via_hyperframes(
+    *,
+    clip_path: Path,
+    out_path: Path,
+    duration: float,
+    words: list[dict],
+    hook: str,
+    cta_title: str | None,
+    cta_sub: str | None,
+) -> None:
+    """POST the smart-reframed clip + word timings + hook to the Node
+    sidecar so HyperFrames can compose the animated captions and hook
+    overlay. Times in `words` are CLIP-LOCAL (starting at 0 = clip
+    start), not source-video-absolute — the caller already shifted them.
+    """
+    import httpx
+
+    payload: dict = {
+        "clip_path": str(clip_path),
+        "duration": float(duration),
+        "hook": hook[:80],
+        "out_path": str(out_path),
+        "words": [
+            {
+                "w": str(w.get("word", "")).strip(),
+                "s": max(0.0, float(w.get("start", 0.0))),
+                "e": max(
+                    float(w.get("start", 0.0)) + 0.05,
+                    float(w.get("end", 0.0)),
+                ),
+            }
+            for w in words
+            if str(w.get("word", "")).strip()
+        ],
+    }
+    if cta_title:
+        payload["cta_title"] = cta_title[:40]
+    if cta_sub:
+        payload["cta_sub"] = cta_sub[:90]
+
+    with httpx.Client(timeout=httpx.Timeout(60 * 30.0, connect=10.0)) as client:
+        r = client.post(f"{NODE_SIDECAR_URL}/render/short", json=payload)
+        r.raise_for_status()
+
+    if not out_path.exists() or out_path.stat().st_size < 1024:
+        raise RuntimeError(
+            "Node /render/short returned 200 but output file is empty/missing",
+        )
+
+
+_CTA_DEFAULTS: dict[str, dict[str, str]] = {
+    # title (≤40 chars) + sub (≤90 chars) per detected source language.
+    "en": {"title": "FOLLOW",     "sub": "▶ Watch the full story on the channel"},
+    "es": {"title": "SUSCRÍBETE", "sub": "▶ Más historias en el canal"},
+    "zh": {"title": "关注一下",   "sub": "▶ 完整故事在频道"},
+    "ja": {"title": "登録する",   "sub": "▶ 完全な物語はチャンネルで"},
+    "ko": {"title": "구독하기",   "sub": "▶ 채널에서 전체 이야기 보기"},
+    "de": {"title": "ABONNIEREN", "sub": "▶ Die ganze Geschichte im Kanal"},
+    "fr": {"title": "S'ABONNER",  "sub": "▶ L'histoire complète sur la chaîne"},
+    "it": {"title": "ISCRIVITI",  "sub": "▶ La storia completa sul canale"},
+    "pt": {"title": "INSCREVA-SE","sub": "▶ A história completa no canal"},
+    "ru": {"title": "ПОДПИСКА",   "sub": "▶ Полная история на канале"},
+}
+
+
+_HOOK_SYSTEM_PROMPT = (
+    "You are a viral YouTube Shorts hook writer. Given a transcript "
+    "snippet of a clip, output ONE attention-grabbing hook line of "
+    "4 to 8 words MAXIMUM in the SAME LANGUAGE as the transcript. "
+    "Use shock, curiosity, or a bold promise — never a polite intro. "
+    "Output ONLY the hook line, no quotes, no preamble, no markdown."
+)
+
+
+async def _generate_short_hook(
+    client: httpx.AsyncClient, model: str, transcript: str, fallback: str = "",
+) -> str:
+    """Ask Gemma for a 4–8 word viral hook in the transcript's language.
+
+    Returns the cleaned hook string or `fallback` (typically the first
+    sentence of the clip) on any error so a Short is always produced.
+    """
+    snippet = (transcript or "").strip()[:600]
+    if not snippet:
+        return fallback
+    try:
+        r = await client.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": model,
+                "system": _HOOK_SYSTEM_PROMPT,
+                "prompt": f"Transcript: {snippet}\n\nHook:",
+                "stream": False,
+                "options": {
+                    "temperature": 0.9,
+                    "num_predict": 64,
+                    "num_ctx": 1024,
+                },
+            },
+            timeout=60.0,
+        )
+        r.raise_for_status()
+        text = (r.json().get("response", "") or "").strip()
+        # Strip surrounding quotes / brackets / preamble fragments the
+        # model sometimes leaks in despite the system prompt.
+        for prefix in ("Hook:", "HOOK:", "hook:", "•", "-", "*"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+        text = text.strip("\"'`“”‘’«»()[]{}")
+        # Take the first non-empty line; Gemma occasionally appends a
+        # second alternative.
+        text = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        # Cap to ~80 chars so the on-screen hook always fits one line.
+        if len(text) > 80:
+            text = text[:80].rsplit(" ", 1)[0]
+        return text or fallback
+    except Exception as exc:
+        log.warning("hook generation failed (%s); using fallback", exc)
+        return fallback
 
 
 def _probe_dimensions(video_path: str) -> tuple[int, int]:
@@ -664,15 +832,38 @@ async def shorts_from_video(req: ShortsFromVideoRequest) -> ShortsAutoResponse:
 
     picked = _pick_top_non_overlapping(candidates, req.n_shorts)
 
-    # 5. Cut + reframe + burn each Short
+    # 5. Cut + reframe + (HyperFrames-enhanced compose | ASS burn-in fallback)
+    # ─────────────────────────────────────────────────────────────────
+    # Generate hooks for the picked clips up front. Each call is
+    # ~1-3 s on Gemma 4B, so we serialise them rather than parallel —
+    # OLLAMA_NUM_PARALLEL=1 on 8 GB VRAM saturates anyway.
     shorts: list[ShortInfo] = []
+    detected_lang = (info.language or "en").lower()
+    cta_defaults = _CTA_DEFAULTS.get(detected_lang, _CTA_DEFAULTS["en"])
+    async with httpx.AsyncClient() as client:
+        hooks: list[str] = []
+        for c in picked:
+            # First sentence of the clip is a sane fallback hook.
+            fallback = (c["text"] or "").split(".", 1)[0].strip()
+            if len(fallback) > 70:
+                fallback = fallback[:70].rsplit(" ", 1)[0]
+            hook = await _generate_short_hook(
+                client, req.model, c["text"], fallback=fallback,
+            )
+            hooks.append(hook)
+
     for i, c in enumerate(picked):
-        # Word subset for this Short
+        # Word subset for this Short, with start times remapped to the
+        # CLIP-LOCAL timeline (0 = clip start) — both the ASS karaoke
+        # and the HyperFrames overlay expect these local offsets.
         seg_words = [
             {"word": w.word, "start": w.start - c["start"], "end": w.end - c["start"]}
             for w in words
             if c["start"] <= w.start <= c["end"]
         ]
+        # Generate ASS as a SAFETY NET — if the HyperFrames enhanced path
+        # fails (Node sidecar down, Chromium error, etc.), _cut_short
+        # auto-falls-back to burn-in and we still get readable captions.
         ass_path: Path | None = None
         if req.burn_subs and seg_words:
             from .subtitles import _word_karaoke_ass, LANG_FONTS
@@ -685,7 +876,17 @@ async def shorts_from_video(req: ShortsFromVideoRequest) -> ShortsAutoResponse:
             )
 
         out_path = out_dir / f"short-{i + 1:02d}-{uuid.uuid4().hex[:6]}.mp4"
-        _cut_short(req.video_path, out_path, c["start"], c["duration"], ass_path)
+        _cut_short(
+            req.video_path,
+            out_path,
+            c["start"],
+            c["duration"],
+            ass_path,
+            enhanced_words=seg_words if req.burn_subs else None,
+            enhanced_hook=hooks[i],
+            enhanced_cta_title=cta_defaults["title"],
+            enhanced_cta_sub=cta_defaults["sub"],
+        )
         preview = c["text"][:120] + ("…" if len(c["text"]) > 120 else "")
         shorts.append(
             ShortInfo(

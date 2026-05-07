@@ -79,8 +79,11 @@ app.post<{
 app.post<{
   Body: {
     clip_path: string;
+    duration: number;
     hook: string;
-    subtitles_srt?: string;
+    words?: { w: string; s: number; e: number }[];
+    cta_title?: string;
+    cta_sub?: string;
     out_path: string;
   };
 }>('/render/short', async (req) => {

@@ -221,14 +221,35 @@ export async function renderThumbnail(req: {
   return { out_path: req.out_path };
 }
 
+export interface ShortWord {
+  /** The visible token (Whisper word, with leading whitespace stripped). */
+  w: string;
+  /** Start time in seconds, zero-based on the Short's own timeline. */
+  s: number;
+  /** End time in seconds. Must be > s. */
+  e: number;
+}
+
 export async function renderShort(req: {
+  /** Vertical 1080×1920 clip from _smart_reframe_to_vertical (Pass 1). */
   clip_path: string;
+  /** Total duration of the clip in seconds. */
+  duration: number;
+  /** Big attention-grabber rendered for the first 1.5–2 s. */
   hook: string;
-  subtitles_srt?: string;
+  /** Word-level Whisper timings for animated captions. Empty array =
+   *  no captions (the previous "hook only" v1 behaviour). */
+  words?: ShortWord[];
+  /** Optional CTA copy for the last 1.5 s. Falls back to canned defaults. */
+  cta_title?: string;
+  cta_sub?: string;
   out_path: string;
 }): Promise<RenderResult> {
   const tmpl = await readFile(join(TEMPLATES_DIR, 'short.html'), 'utf8');
-  const duration = 30;
+  // Use the actual clip duration. The old v1 baked in 30 s which clipped
+  // longer Shorts and stretched shorter ones — both wrong now that we
+  // honour the producer's chosen viral-moment length.
+  const duration = req.duration > 0 ? req.duration : 30;
   const projectDir = req.out_path.replace(/\.\w+$/, '-short-proj');
   const assetsDir = join(projectDir, 'assets');
   await mkdir(assetsDir, { recursive: true });
@@ -236,17 +257,72 @@ export async function renderShort(req: {
   const stage = makeAssetStager(assetsDir);
   const stagedClip = await stage.copy(req.clip_path, 'clip');
 
+  // ── Build the per-word DOM and matching JSON timing array ──────────
+  // The DOM order MUST match the WORDS array order — the timeline
+  // looks them up by querySelectorAll index. Each word renders TWO
+  // stacked spans (white base + yellow active) so the highlight
+  // animation can stay opacity-only (HyperFrames doesn't officially
+  // support animating `color` via GSAP).
+  const words = (req.words ?? []).filter((w) => w && w.e > w.s && w.w.trim().length > 0);
+  const captionsHtml = words
+    .map((w) => {
+      const safe = escapeHtml(w.w.trim());
+      return (
+        `<span class="word">` +
+        `<span class="w-base">${safe}</span>` +
+        `<span class="w-active">${safe}</span>` +
+        `</span>`
+      );
+    })
+    .join('\n');
+  const wordsJson = JSON.stringify(
+    words.map((w) => ({ s: round3(w.s), e: round3(w.e) })),
+  );
+
+  const ctaTitle = (req.cta_title ?? 'SUSCRÍBETE').slice(0, 40);
+  const ctaSub = (req.cta_sub ?? '▶ Más historias en el canal').slice(0, 90);
+
   const html = tmpl
     .replace('__CLIP__', stagedClip)
-    .replace('__HOOK__', escapeHtml(req.hook))
+    .replace('__HOOK__', escapeHtml((req.hook ?? '').slice(0, 80)))
+    .replace('__CAPTIONS_HTML__', captionsHtml)
+    .replace('__WORDS_JSON__', wordsJson)
+    .replace('__CTA_TITLE__', escapeHtml(ctaTitle))
+    .replace('__CTA_SUB__', escapeHtml(ctaSub))
     .replace(/__DURATION__/g, String(duration));
+
   await scaffoldProject(projectDir, html, {
     id: `${dirname(req.out_path).split(/[\\/]/).pop()}-short`,
     name: 'Xianxia short',
   });
+
+  // 30 fps is plenty for vertical Shorts on mobile and keeps the render
+  // ~2× faster than 60 fps without any perceptible difference at the
+  // resolution / typical viewing distance.
+  logger.info(
+    {
+      clip: stagedClip,
+      duration,
+      words: words.length,
+      hook: (req.hook ?? '').slice(0, 60),
+    },
+    'rendering short v2 (HyperFrames + animated captions)',
+  );
   await runHyperFrames(projectDir, req.out_path, 30);
-  try { await rm(projectDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  return { out_path: req.out_path, duration_seconds: duration, cinematic_profile: 'full' };
+  try {
+    await rm(projectDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+  return {
+    out_path: req.out_path,
+    duration_seconds: duration,
+    cinematic_profile: 'full',
+  };
+}
+
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
 }
 
 /**

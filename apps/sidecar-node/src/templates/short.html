@@ -5,77 +5,336 @@
     <meta name="viewport" content="width=1080, height=1920" />
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
     <style>
+      /*
+       * Xianxia Shorts v2 — HyperFrames-driven, OpusClip-grade composition.
+       *
+       * Layers (bottom → top):
+       *   1. Background <video> (the smart-reframed vertical clip from
+       *      _smart_reframe_to_vertical in shorts_auto.py).
+       *   2. Atmospheric vignette + bottom gradient for caption legibility.
+       *   3. HOOK overlay (first 1.5–2 s) — large attention-grabber.
+       *   4. CAPTIONS — word tokens with timed pop-in + active highlight.
+       *   5. PROGRESS BAR — bottom, fills 0→1 over the full clip.
+       *   6. CTA card — last 1.5 s, fades up over the video.
+       *
+       * GSAP property note: HyperFrames officially supports
+       *   opacity, x, y, scale, scaleX, scaleY, rotation, width, height,
+       *   visibility.
+       * We do NOT animate color/background/clipPath/filter via GSAP.
+       * Active-word highlight is achieved with TWO stacked <span>s
+       * (white base + yellow on top) animated only via opacity. Same
+       * idea for the CTA card: the visual swap is opacity-only.
+       *
+       * The wrapper around the <video> exists because HyperFrames
+       * forces opacity:1 on any element with data-start/data-duration —
+       * applying opacity to the video tag itself would be silently
+       * overwritten. The wrapper has NO data-* attributes.
+       */
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body {
         width: 1080px;
         height: 1920px;
-        background: #0a0a0f;
+        background: #000;
         overflow: hidden;
         font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+        color: #fff;
       }
-      video {
+      .stage { position: relative; width: 1080px; height: 1920px; }
+
+      /* — Layer 1: background video (no opacity gymnastics here) — */
+      .video-wrap {
+        position: absolute; inset: 0;
+        width: 100%; height: 100%;
+      }
+      video.bg-clip {
         position: absolute; inset: 0;
         width: 100%; height: 100%;
         object-fit: cover;
       }
-      .hook {
-        position: absolute;
-        top: 120px;
-        left: 40px;
-        right: 40px;
-        font-size: 64px;
-        font-weight: 800;
-        line-height: 1.1;
-        color: #e8c96d;
-        text-align: center;
-        text-shadow: 0 6px 20px rgba(0,0,0,0.95);
-        letter-spacing: -0.02em;
+
+      /* — Layer 2: vignette + bottom gradient for caption legibility — */
+      .vignette {
+        position: absolute; inset: 0;
+        background:
+          radial-gradient(120% 80% at 50% 35%,
+            rgba(0,0,0,0) 55%, rgba(0,0,0,0.45) 100%),
+          linear-gradient(to bottom,
+            rgba(0,0,0,0.0) 0%,
+            rgba(0,0,0,0.0) 60%,
+            rgba(0,0,0,0.55) 100%);
+        pointer-events: none;
       }
-      .footer {
+
+      /* — Layer 3: HOOK — large attention grabber (top region) — */
+      .hook-wrap {
         position: absolute;
-        bottom: 80px;
-        left: 0;
-        right: 0;
+        top: 11%;
+        left: 50%;
+        transform: translateX(-50%) translate3d(0,0,0);
+        width: 92%;
         text-align: center;
-        font-size: 28px;
-        color: #e8e8f0;
-        text-shadow: 0 4px 12px rgba(0,0,0,0.95);
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      .hook-text {
+        display: inline-block;
+        padding: 18px 36px;
+        font-weight: 900;
+        font-size: 92px;
+        line-height: 1.05;
+        color: #fff;
+        background: linear-gradient(180deg, #ffd23f 0%, #ff8a1f 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        letter-spacing: -0.02em;
+        text-shadow:
+          0 0 22px rgba(0,0,0,0.85),
+          0 8px 28px rgba(0,0,0,0.65);
+        filter: drop-shadow(0 6px 12px rgba(0,0,0,0.95));
+      }
+
+      /* — Layer 4: CAPTIONS — word tokens — */
+      .caps {
+        position: absolute;
+        bottom: 22%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 92%;
+        text-align: center;
+        line-height: 1.18;
+        will-change: transform;
+      }
+      .word {
+        display: inline-block;
+        position: relative;
+        margin: 4px 6px;
+        padding: 8px 16px;
+        font-weight: 800;
+        font-size: 72px;
+        letter-spacing: -0.01em;
+        background: rgba(0,0,0,0.86);
+        border-radius: 14px;
+        white-space: nowrap;
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      .word .w-base, .word .w-active {
+        display: inline-block;
+        line-height: 1;
+      }
+      .word .w-base { color: #ffffff; }
+      .word .w-active {
+        position: absolute;
+        top: 8px; left: 16px; right: 16px;
+        text-align: center;
+        color: #ffd23f;
+        opacity: 0;
+        will-change: opacity;
+        text-shadow: 0 0 16px rgba(255,210,63,0.6);
+      }
+
+      /* — Layer 5: PROGRESS BAR — */
+      .progress-track {
+        position: absolute;
+        bottom: 60px;
+        left: 7%; right: 7%;
+        height: 8px;
+        background: rgba(255,255,255,0.18);
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .progress-fill {
+        position: absolute;
+        left: 0; top: 0; bottom: 0;
+        width: 100%;
+        background: linear-gradient(90deg, #ffd23f 0%, #ff6b35 100%);
+        transform: scaleX(0);
+        transform-origin: left center;
+        will-change: transform;
+      }
+
+      /* — Layer 6: CTA card — last 1.5 s — */
+      .cta-wrap {
+        position: absolute; inset: 0;
+        background: rgba(8, 8, 14, 0.94);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        will-change: opacity;
+      }
+      .cta-title {
+        font-size: 132px;
+        font-weight: 900;
+        color: #ffd23f;
+        text-shadow: 0 8px 30px rgba(0,0,0,0.85);
+        margin-bottom: 28px;
+        letter-spacing: -0.02em;
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      .cta-sub {
+        font-size: 50px;
+        color: #f4f4f8;
+        font-weight: 600;
+        text-align: center;
+        max-width: 86%;
+        line-height: 1.2;
+        opacity: 0;
+        will-change: transform, opacity;
       }
     </style>
   </head>
   <body>
     <div
-      id="root"
+      class="stage"
+      id="stage"
       data-composition-id="short"
       data-start="0"
       data-duration="__DURATION__"
       data-width="1080"
       data-height="1920"
     >
-      <video
-        id="short-clip"
-        class="clip"
-        data-track-index="0"
-        data-start="0"
-        data-duration="__DURATION__"
-        src="__CLIP__"
-        autoplay
-        muted
-      ></video>
-      <div class="hook" id="short-hook">__HOOK__</div>
-      <div class="footer" id="short-footer">▶ Watch the full story</div>
+      <!-- Layer 1: video (wrapped so we keep total control of the wrapper opacity if ever needed; the framework owns opacity on the video itself) -->
+      <div class="video-wrap">
+        <video
+          class="bg-clip clip"
+          id="short-clip"
+          data-track-index="0"
+          data-start="0"
+          data-duration="__DURATION__"
+          data-media-start="0"
+          src="__CLIP__"
+          autoplay
+          muted
+          playsinline
+        ></video>
+      </div>
+
+      <!-- Layer 2: atmospheric overlays -->
+      <div class="vignette"></div>
+
+      <!-- Layer 3: HOOK -->
+      <div class="hook-wrap" id="hook-wrap">
+        <div class="hook-text">__HOOK__</div>
+      </div>
+
+      <!-- Layer 4: CAPTIONS -->
+      <div class="caps" id="caps">__CAPTIONS_HTML__</div>
+
+      <!-- Layer 5: PROGRESS BAR -->
+      <div class="progress-track">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+
+      <!-- Layer 6: CTA -->
+      <div class="cta-wrap" id="cta-wrap">
+        <div class="cta-title" id="cta-title">__CTA_TITLE__</div>
+        <div class="cta-sub" id="cta-sub">__CTA_SUB__</div>
+      </div>
     </div>
 
     <script>
-      window.__timelines = window.__timelines || {};
+      // ── Configuration injected by the renderer ─────────────────────
+      var DURATION = parseFloat(document.getElementById('stage').dataset.duration);
+      // WORDS = [{s:start, e:end}, ...] — one entry per .word DOM node, in order
+      var WORDS = __WORDS_JSON__;
+      // Hook visibility window (seconds): the hook lives during the first
+      // ~min(2.0, 18 % of clip). Captions don't appear until then so the
+      // viewer reads the hook first.
+      var HOOK_END = Math.max(0.6, Math.min(2.0, DURATION * 0.18));
+      // CTA reveal happens during the last 1.5 s.
+      var CTA_AT = Math.max(0, DURATION - 1.5);
+
+      // ── Build the GSAP timeline (paused; framework controls play/seek) ──
       var tl = gsap.timeline({ paused: true });
-      // Subtle hook entrance animation so the title isn't a static popup.
-      tl.fromTo('#short-hook',
-        { opacity: 0, y: -30 },
-        { opacity: 1, y: 0, duration: 0.6, ease: 'power2.out' },
-        0.1
+      window.__timelines = window.__timelines || {};
+      window.__timelines["short"] = tl;
+
+      // 1) HOOK pop-in + hold + pop-out
+      tl.fromTo("#hook-wrap",
+        { opacity: 0, scale: 0.65, y: -30 },
+        { opacity: 1, scale: 1.0, y: 0, duration: 0.42, ease: "back.out(2.0)" },
+        0.05
       );
-      window.__timelines['short'] = tl;
+      // breathe slightly during the hold so it doesn't look frozen
+      tl.to("#hook-wrap",
+        { scale: 1.04, duration: Math.max(0.4, HOOK_END - 1.0), ease: "sine.inOut" },
+        0.5
+      );
+      tl.to("#hook-wrap",
+        { opacity: 0, scale: 0.85, y: -22, duration: 0.32, ease: "power2.in" },
+        Math.max(0.55, HOOK_END - 0.32)
+      );
+
+      // 2) PROGRESS BAR — linear scaleX 0→1 over the whole clip
+      tl.fromTo("#progress-fill",
+        { scaleX: 0 },
+        { scaleX: 1, duration: DURATION, ease: "none" },
+        0
+      );
+
+      // 3) CAPTIONS — per-word pop-in, active highlight, group fade-out
+      var capsEl = document.getElementById("caps");
+      var wordEls = capsEl.querySelectorAll(".word");
+      var groupSize = 5; // captions visible in groups of up to 5 words
+      WORDS.forEach(function (w, i) {
+        var el = wordEls[i];
+        if (!el) return;
+        var wActive = el.querySelector(".w-active");
+        // Pop-in 80 ms before the word is heard
+        var popIn = Math.max(HOOK_END * 0.7, w.s - 0.08);
+        tl.fromTo(el,
+          { opacity: 0, y: 22, scale: 0.85 },
+          { opacity: 1, y: 0, scale: 1.0, duration: 0.18, ease: "back.out(2.5)" },
+          popIn
+        );
+        // Active highlight — opacity-only swap to the yellow overlay span
+        if (wActive) {
+          tl.to(wActive, { opacity: 1, duration: 0.06, ease: "power1.out" }, w.s);
+          tl.to(el, { scale: 1.10, duration: 0.10, ease: "power2.out" }, w.s);
+          tl.to(wActive, { opacity: 0, duration: 0.10, ease: "power1.in" }, w.e);
+          tl.to(el, { scale: 1.0, duration: 0.12, ease: "power2.in" }, w.e);
+        }
+        // At the end of each group of 5 words, all the words in that
+        // group fade out together — keeps the screen uncluttered for
+        // the next group.
+        var atGroupEnd = (i % groupSize === groupSize - 1) || i === WORDS.length - 1;
+        if (atGroupEnd) {
+          var groupStart = i - (i % groupSize);
+          var groupLastEnd = w.e;
+          for (var j = groupStart; j <= i; j++) {
+            var gEl = wordEls[j];
+            if (!gEl) continue;
+            tl.to(gEl,
+              { opacity: 0, y: -16, duration: 0.22, ease: "power2.in" },
+              groupLastEnd + 0.04
+            );
+          }
+        }
+      });
+
+      // 4) CTA reveal — fade the dark card up, then pop the title
+      tl.to("#cta-wrap",
+        { opacity: 1, duration: 0.42, ease: "power2.out" },
+        CTA_AT
+      );
+      tl.fromTo("#cta-title",
+        { opacity: 0, scale: 0.55, y: 12 },
+        { opacity: 1, scale: 1.0, y: 0, duration: 0.5, ease: "back.out(2.5)" },
+        CTA_AT + 0.08
+      );
+      tl.fromTo("#cta-sub",
+        { opacity: 0, y: 18 },
+        { opacity: 1, y: 0, duration: 0.4, ease: "power2.out" },
+        CTA_AT + 0.32
+      );
+
+      // Sentinel: extend the timeline to the full clip duration so
+      // HyperFrames doesn't bail past the last meaningful tween.
+      tl.set({}, {}, DURATION);
     </script>
   </body>
 </html>

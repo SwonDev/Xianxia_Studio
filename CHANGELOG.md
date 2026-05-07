@@ -6,6 +6,49 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.15] — 2026-05-07
+
+### Mejorado — Shorts virales con HyperFrames-enhanced composition (OpusClip-grade)
+
+Smart reframing v0.1.13 producía un vertical limpio pero sin overlays: solo el clip + ASS quemado. v0.1.15 añade un **segundo pase HyperFrames** que compone encima del vertical reframed:
+
+* **Hook overlay (1.5–2 s al inicio)** — frase enganche generada por Gemma 4B con system prompt agresivo ("4 a 8 palabras MAX en el idioma del transcript, shock/curiosity/promise"). Pop-in con `back.out(2.0)` + breath sutil + pop-out al terminar.
+* **Captions animados word-by-word** — cada palabra se compone como `<span class="word">` con dos children apilados (white base + yellow active overlay). GSAP timeline anima:
+  - Pop-in 80 ms antes de oírse: `opacity 0→1 + y 22→0 + scale 0.85→1` con `back.out(2.5)`.
+  - Active highlight: el yellow span aparece con `opacity 0→1` + scale 1→1.10 al inicio de la palabra, vuelve al final.
+  - Group fade-out cada 5 palabras para no saturar la pantalla.
+  - Sub que hace HyperFrames-ofical: opacity-only para el cambio de color (color/background/clipPath NO están en la lista de properties soportadas oficialmente, así que se evita).
+* **Progress bar inferior** con `scaleX 0→1` linear sobre toda la duración del clip + gradient `#ffd23f → #ff6b35`.
+* **CTA card final 1.5 s** — fondo opaco (#08080e 94 %) con título grande pop-in `back.out(2.5)` + sub-line con slide-up. Copy localizada por idioma detectado por Whisper (en/es/zh/ja/ko/de/fr/it/pt/ru).
+* **Vignette + bottom gradient** persistente para legibilidad de captions sobre cualquier escena.
+
+### Investigación HyperFrames
+
+* Leído `node_modules/hyperframes/dist/docs/{compositions,data-attributes,gsap,examples,rendering}.md` y `skills/hyperframes/patterns.md`. Reglas críticas adoptadas:
+  - **Wrapper div sin `data-*`** alrededor del `<video>` para poder controlar opacity desde CSS — la runtime fuerza `opacity:1` a cualquier elemento con `data-start`/`data-duration` mientras está activo.
+  - **GSAP properties oficialmente soportadas**: opacity, x, y, scale, scaleX/Y, rotation, width, height, visibility. Nada de animar `color`/`background` directamente — se sustituye con opacidad apilada.
+  - **Timeline siempre `paused: true`** y registrada en `window.__timelines["short"]`. La runtime maneja play/seek.
+  - Sentinel `tl.set({},{},DURATION)` para que el renderer no corte antes del último tween.
+
+### Cambios
+
+* `apps/sidecar-node/src/templates/short.html` — reescrito como composition v2 con 6 layers GSAP-animadas + comentarios extensos sobre las reglas de HyperFrames.
+* `apps/sidecar-node/src/render.ts::renderShort` acepta ahora `{clip_path, duration, hook, words, cta_title?, cta_sub?, out_path}` y construye el HTML con divs por palabra.
+* `apps/sidecar-node/src/server.ts` — endpoint `/render/short` actualizado al nuevo schema.
+* `apps/sidecar-py/src/xianxia_ai/routes/shorts_auto.py`:
+  - Nuevo `_render_enhanced_short_via_hyperframes()` POSTea al Node tras el smart reframe.
+  - Nuevo `_generate_short_hook()` llama a Gemma con system prompt en mayúsculas para forzar el idioma del transcript + hook 4-8 palabras.
+  - `_cut_short()` extendido con kwargs `enhanced_words`/`enhanced_hook`/`enhanced_cta_*` y fallback automático al ASS burn-in si la pasada HyperFrames falla.
+  - `_CTA_DEFAULTS` localizada por idioma (10 idiomas).
+  - El call site de `/shorts/from_video` pre-genera hooks en serie antes del bucle (Ollama 4B 1-3 s/hook).
+
+### Notas técnicas
+
+* Pipeline para cada Short: Pass 1 smart reframe (~2× tiempo real) → hook gen (~2 s) → Pass 2 HyperFrames (~3-4× tiempo real) ≈ 5-7× tiempo real total. Para un Short de 45 s, ~4 min de procesamiento en RTX 4060 8 GB.
+* Captions HTML+GSAP > ASS quemado: edges nítidos sobre cualquier resolución (Chromium subpixel), sin artefactos libass al panear, animación rica imposible en ASS.
+* El ASS legacy se sigue generando como **safety net**: si la pasada Node falla por cualquier razón, `_cut_short` cae al `_burn_subs_into_vertical` y el Short se entrega con captions quemados aunque sin overlay rico.
+* Hook localization: Gemma 4B abliterated escribe en el idioma del transcript gracias al system prompt + uso de `info.language` de Whisper como contexto. Si Whisper detecta "es", el hook sale en español.
+
 ## [0.1.14] — 2026-05-07
 
 ### Corregido — /script ignoraba el idioma seleccionado en la UI
