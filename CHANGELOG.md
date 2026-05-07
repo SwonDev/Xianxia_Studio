@@ -6,6 +6,45 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.18] — 2026-05-07
+
+### Mejorado — Voice cloning realmente autoinstalable (sin botón)
+
+Hasta ahora el banner de voice cloning aparecía con un botón "Instalar voice
+cloning (7 GB)" que el usuario tenía que pulsar manualmente. El usuario pidió
+explícitamente que TODO sea **autodetectable, autoinstalable y autoconfigurable**
+— pulsar un botón rompe esa promesa.
+
+* `apps/desktop/src/routes/generator.tsx`:
+  - **Auto-trigger silencioso de la instalación**: un `useEffect` detecta
+    `cloningStatus.base_model_installed === false` + `registered_clones > 0`
+    y dispara `install_optional_component('model-qwen-tts-base')` en
+    background **sin que el usuario tenga que hacer nada**. Una sola vez
+    por sesión (protegido por `useRef` flag).
+  - **Banner cambia de estado en vivo**:
+    1. Mientras descarga → banner verde "Instalando voice cloning
+       automáticamente…" con spinner, **sin botón** ni decisión.
+    2. Si todo va bien → banner desaparece solo cuando el polling cada
+       5 s detecta `base_model_installed: true`. Las voces clonadas
+       aparecen en el dropdown automáticamente.
+    3. Si falla (sin internet, antivirus, etc.) → banner ámbar con
+       botón "Reintentar instalación" como red de seguridad. NO
+       toast de error scary durante el auto-attempt silencioso.
+* La generación normal NO se bloquea durante la descarga: el usuario
+  puede seguir generando con voces preset mientras Base se baja en
+  background.
+
+### Notas
+
+* La auto-instalación NO se reintenta automáticamente si falla — se
+  marca el flag `autoInstallAttempted` para evitar bucles si la red
+  sigue mal. El usuario puede reintentar manualmente con el botón del
+  banner ámbar.
+* `tauri.installOptionalComponent('model-qwen-tts-base')` ya emite
+  eventos de progreso de descarga internamente; el polling de
+  `/tts/cloning/status` cubre la transición de "downloading" a
+  "installed" sin recargar la app.
+
 ## [0.1.17] — 2026-05-07
 
 ### Añadido — Selectores separados de idioma audio + idiomas subtítulos en la UI

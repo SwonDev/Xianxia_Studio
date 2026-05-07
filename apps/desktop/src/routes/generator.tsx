@@ -158,13 +158,21 @@ function GeneratorWizard() {
   });
 
   const [installingVoiceClone, setInstallingVoiceClone] = useState(false);
-  const handleInstallVoiceClone = async () => {
+  // Once we attempt the auto-install in this session we don't retry,
+  // even if it fails — otherwise a user with a flaky connection would
+  // spam the installer on every voice picker re-render. They can
+  // always retry manually from Ajustes → Componentes opcionales.
+  const autoInstallAttempted = useRef(false);
+
+  const handleInstallVoiceClone = async (silent = false) => {
     if (installingVoiceClone) return;
     setInstallingVoiceClone(true);
-    toast.info(
-      'Descargando Qwen3-TTS Base (≈7 GB)…',
-      'Esto puede tardar varios minutos en función de tu conexión.',
-    );
+    if (!silent) {
+      toast.info(
+        'Descargando Qwen3-TTS Base (≈7 GB)…',
+        'Esto puede tardar varios minutos en función de tu conexión.',
+      );
+    }
     try {
       await tauri.installOptionalComponent('model-qwen-tts-base');
       toast.success(
@@ -173,11 +181,44 @@ function GeneratorWizard() {
       );
       await refetchCloningStatus();
     } catch (e) {
-      toast.error('No se pudo instalar voice cloning', String(e));
+      // Only surface the error toast on manual installs. The silent
+      // auto-install runs in the background — failing there should
+      // not pop a scary toast in the user's face; the banner stays
+      // visible with a manual button as the fallback path.
+      if (!silent) {
+        toast.error('No se pudo instalar voice cloning', String(e));
+      } else {
+        // Reset the flag so a subsequent manual click can still try.
+        autoInstallAttempted.current = false;
+      }
     } finally {
       setInstallingVoiceClone(false);
     }
   };
+
+  // ─── Auto-install voice cloning in background ────────────────────
+  // The user explicitly requested "todo tiene que ser autodetectable,
+  // autoinstalable y autoconfigurable" — they don't want to click an
+  // "Instalar" button when the Base model is the obvious next step
+  // (they already registered a voice clone). We auto-trigger the
+  // install once per session as soon as the status query confirms:
+  //   • the user has at least one registered clone
+  //   • the Base model is NOT installed
+  //   • we haven't tried already this session
+  //
+  // The poll-every-5s on cloningStatus picks up completion live and
+  // unlocks the dropdown without any user action. If the auto-install
+  // fails (e.g. offline), the manual button on the banner remains as
+  // a fallback.
+  useEffect(() => {
+    if (!cloningStatus) return;
+    if (cloningStatus.base_model_installed) return;
+    if (cloningStatus.registered_clones === 0) return;
+    if (autoInstallAttempted.current) return;
+    autoInstallAttempted.current = true;
+    handleInstallVoiceClone(true /* silent */);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloningStatus?.base_model_installed, cloningStatus?.registered_clones]);
 
   // Music backend availability — drives the toggle label so the user knows
   // whether ACE-Step v1.5 (preferred) or MusicGen-medium (fallback) will run.
@@ -495,43 +536,52 @@ function GeneratorWizard() {
           </Field>
 
           {/*
-            Voice cloning availability banner — shows when the user has
-            registered clones (or has selected a clone voice) but the
-            optional Qwen3-TTS-Base component isn't installed yet.
-            One-click install with live polling of /tts/cloning/status
-            so the dropdown unlocks the moment the download completes.
+            Voice cloning availability banner.
+            • If the auto-install kicked off (installingVoiceClone=true),
+              we render an emerald "Descargando…" banner with a spinner
+              and zero buttons — totally hands-off as the user demanded.
+            • If the auto-install hasn't started yet, or it failed and
+              we cleared the flag, the original amber banner shows with
+              a manual fallback button so the user can retry.
+            The dropdown re-renders the moment the 5 s poll detects the
+            install completion (base_model_installed flips to true) so
+            the banner disappears live.
           */}
           {cloningStatus && !cloningStatus.base_model_installed && (cloningStatus.registered_clones > 0 || isCloneVoice) && (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100 flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-400" />
-              <div className="flex-1">
-                <div className="font-semibold text-amber-200 mb-0.5">
-                  Voice cloning aún no está instalado
+            installingVoiceClone ? (
+              <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-100 flex items-start gap-2">
+                <Loader2 className="w-4 h-4 mt-0.5 flex-shrink-0 text-emerald-400 animate-spin" />
+                <div className="flex-1">
+                  <div className="font-semibold text-emerald-200 mb-0.5">
+                    Instalando voice cloning automáticamente…
+                  </div>
+                  <div className="text-emerald-100/80">
+                    Descargando Qwen3-TTS Base (≈{cloningStatus.download_size_gb} GB).
+                    Cuando termine, las voces clonadas aparecerán
+                    automáticamente. Puedes seguir usando la app
+                    mientras tanto.
+                  </div>
                 </div>
-                <div className="text-amber-100/80 mb-2">
-                  {cloningStatus.hint}
-                </div>
-                <button
-                  onClick={handleInstallVoiceClone}
-                  disabled={installingVoiceClone}
-                  className={cn(
-                    'px-3 py-1.5 rounded-md text-xs font-semibold border transition-all',
-                    installingVoiceClone
-                      ? 'bg-amber-500/20 border-amber-500/40 text-amber-300 cursor-wait'
-                      : 'bg-amber-500 border-amber-500 text-obsidian-900 hover:bg-amber-400',
-                  )}
-                >
-                  {installingVoiceClone ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                      Descargando ≈{cloningStatus.download_size_gb} GB…
-                    </span>
-                  ) : (
-                    <>Instalar voice cloning ({cloningStatus.download_size_gb} GB)</>
-                  )}
-                </button>
               </div>
-            </div>
+            ) : (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-400" />
+                <div className="flex-1">
+                  <div className="font-semibold text-amber-200 mb-0.5">
+                    Voice cloning no se pudo instalar
+                  </div>
+                  <div className="text-amber-100/80 mb-2">
+                    {cloningStatus.hint} Reintenta cuando tengas conexión.
+                  </div>
+                  <button
+                    onClick={() => handleInstallVoiceClone(false)}
+                    className="px-3 py-1.5 rounded-md text-xs font-semibold border border-amber-500 bg-amber-500 text-obsidian-900 hover:bg-amber-400 transition-all"
+                  >
+                    Reintentar instalación ({cloningStatus.download_size_gb} GB)
+                  </button>
+                </div>
+              </div>
+            )
           )}
 
           <Field label={`Voz narradora (${primaryLang.toUpperCase()})`}>
