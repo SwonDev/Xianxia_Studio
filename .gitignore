@@ -120,3 +120,6 @@ assets/music/
 *.tmp
 *.bak
 .cache/
+
+# Local Tauri signing keys (NEVER commit). Production keys live in GitHub Secrets.
+.tauri-keys/
