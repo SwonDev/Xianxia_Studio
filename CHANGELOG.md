@@ -6,6 +6,28 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.19] — 2026-05-07
+
+### Corregido — smart shorts se colgaba indefinidamente
+
+* `apps/sidecar-py/src/xianxia_ai/routes/shorts_auto.py::_smart_reframe_to_vertical`
+  Pass 1 hacía `cap.set(CAP_PROP_POS_FRAMES, X)` random seek por cada
+  sample. En MP4s con keyframes dispersos cada seek tarda segundos
+  enteros y, peor, en algunas combinaciones codec/contenedor se cuelga
+  indefinidamente. El usuario reportó un short que estuvo > 7 min sin
+  avanzar (ffmpeg vivo pero esperando frames del pipe que nunca
+  llegaban). Refactor a **lectura secuencial** desde `start_f` con
+  modulo skip — sin seeks aleatorios.
+* Añadido logging de progreso cada 50 samples (Pass 1) y cada 60
+  frames (Pass 2). Si vuelve a quedarse colgado, en el JSONL se ve
+  exactamente en qué sample ocurrió en lugar de tener que matar
+  ffmpeg a ciegas.
+* Bug colateral: `_cut_short` llamaba `log.warning(...)` si el smart
+  reframe fallaba, pero `log` no estaba importado en el módulo —
+  cualquier error real se transformaba en `NameError` y un 500 sin
+  contexto. Añadido `log = logging.getLogger("xianxia.shorts")` al
+  top del archivo.
+
 ## [0.1.18] — 2026-05-07
 
 ### Mejorado — Voice cloning realmente autoinstalable (sin botón)

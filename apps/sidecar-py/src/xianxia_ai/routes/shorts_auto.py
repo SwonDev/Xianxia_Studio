@@ -28,6 +28,10 @@ Pipeline (per Short):
 
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("xianxia.shorts")
+
 import json
 import os
 import subprocess
@@ -539,14 +543,39 @@ def _smart_reframe_to_vertical(
         saliency = None
 
     # ─── Pass 1: ROI sampling ─────────────────────────────────────
+    # Read SEQUENTIALLY from start_f and only process every Nth frame
+    # for ROI detection. Random `cap.set(POS_FRAMES, X)` per sample is
+    # 10× slower on x264 MP4s without dense keyframes — and on some
+    # codec/container combinations it stalls indefinitely (the symptom
+    # we hit on the user's first /shorts/from_video run: ffmpeg waited
+    # 7+ minutes on 0 frames piped from Python). Sequential read +
+    # modulo skip avoids both pathologies.
     sample_every = max(1, int(round(fps / 5.0)))  # ~5 Hz
     samples: list[tuple[int, float, float, float]] = []  # (frame, cx, cy, roi_area)
-    cur = start_f
-    while cur <= end_f:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, cur)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
+    fidx = start_f
+    sample_count = 0
+    log_every = 50
+    import time as _t
+    pass1_t0 = _t.time()
+    while fidx <= end_f:
         ok, frame = cap.read()
         if not ok:
             break
+        if (fidx - start_f) % sample_every != 0:
+            fidx += 1
+            continue
+        sample_count += 1
+        if sample_count % log_every == 0:
+            try:
+                log.info(
+                    "shorts.reframe pass1 sample %d/%d (frame=%d)",
+                    sample_count,
+                    max(1, (end_f - start_f) // sample_every),
+                    fidx,
+                )
+            except Exception:
+                pass
         cx = src_w * 0.5
         cy = src_h * 0.5
         roi_area = 0.0
@@ -583,8 +612,15 @@ def _smart_reframe_to_vertical(
                         roi_area = max(0.02, min(0.5, float(m["m00"]) / (sal_u8.size * 255.0)))
             except Exception:
                 pass
-        samples.append((cur, cx, cy, roi_area))
-        cur += sample_every
+        samples.append((fidx, cx, cy, roi_area))
+        fidx += 1
+    try:
+        log.info(
+            "shorts.reframe pass1 done: %d samples in %.1fs",
+            len(samples), _t.time() - pass1_t0,
+        )
+    except Exception:
+        pass
 
     if not samples:
         cap.release()
@@ -664,11 +700,24 @@ def _smart_reframe_to_vertical(
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
     fidx = start_f
+    pass2_t0 = _t.time()
+    last_log = 0
     try:
         while fidx <= end_f:
             ok, frame = cap.read()
             if not ok:
                 break
+            # Heartbeat every 60 frames so a stuck ffmpeg pipe is visible
+            # in the JSONL log within ~2 seconds, not 7 minutes from now.
+            if fidx - last_log >= 60:
+                last_log = fidx
+                try:
+                    log.info(
+                        "shorts.reframe pass2 frame %d/%d",
+                        fidx - start_f, end_f - start_f,
+                    )
+                except Exception:
+                    pass
             cx, cy, zoom = _lookup(fidx)
             ch = max(64, int(round(src_h / zoom)))
             cw = max(36, int(round(ch * TARGET_AR)))
