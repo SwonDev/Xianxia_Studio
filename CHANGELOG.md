@@ -6,6 +6,55 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.16] — 2026-05-07
+
+### Corregido — voice cloning real (no más "error decoding response body")
+
+* `apps/sidecar-py/src/xianxia_ai/routes/tts.py::_do_synthesize_clone`
+  ahora carga el modelo correcto. El bundled `Qwen3-TTS-1.7B-CustomVoice`
+  **no soporta voice cloning** (lo confirma el model card oficial:
+  https://github.com/QwenLM/Qwen3-TTS), solo `generate_custom_voice()`
+  con preset speakers. La variante `Qwen3-TTS-1.7B-Base` es la que
+  expone `generate_voice_clone()`.
+* Antes: el endpoint `/tts` lanzaba un `ValueError` no manejado →
+  FastAPI 500 sin body JSON → Rust pipeline reportaba "error decoding
+  response body" sin nada accionable para el usuario.
+* Ahora: cuando una voz registrada como clone se selecciona, la
+  función swapea el modelo (unload de CustomVoice → load Base) y llama
+  a `generate_voice_clone()`. Si Base no está instalado retorna 503
+  con un `detail` claro: "Voice cloning requires the Qwen3-TTS-Base
+  model (≈7 GB) and it's not installed yet. Open Ajustes → Componentes
+  opcionales → Voice Cloning to download it."
+
+### Añadido — Voice cloning como componente opcional autoinstalable
+
+* `apps/sidecar-py/src/xianxia_ai/models/tts_base_model.py` (nuevo) —
+  loader paralelo al `tts_model` con `is_available()` que escanea el
+  HF cache para detectar si los pesos del Base están descargados,
+  `load()` con `local_files_only=True` para evitar descargas en hot
+  path, y `unload()` para liberar VRAM.
+* `apps/desktop/src-tauri/src/installer/manifest.rs` registra
+  `model-qwen-tts-base` (≈7 GB, `Qwen/Qwen3-TTS-12Hz-1.7B-Base`,
+  target `models/tts-base`) con `required: false` — el usuario lo
+  instala desde **Ajustes → Componentes opcionales** cuando quiere
+  voice cloning. Una vez descargado se autodetecta sin reiniciar la
+  app.
+* Endpoint nuevo `GET /tts/cloning/status` devuelve
+  `{base_model_installed, registered_clones, hint}` para que la UI
+  muestre el banner correcto sin tener que adivinar.
+* `list_voices` filtra automáticamente las voces `kind="clone"` del
+  catálogo cuando `is_available()` devuelve `False` — el usuario no
+  puede seleccionar una clone que no se podría ejecutar (mejor que ver
+  el error sólo al darle a Generar).
+
+### VRAM lifecycle
+
+* Custom + Base no caben simultáneamente en 8 GB (cada uno ≈7 GB).
+  El swap es secuencial: si una request llega con `is_clone=True` y
+  CustomVoice está cargado, se hace `tts_model.unload()` antes de
+  `tts_base_model.load()`. La siguiente request preset hará el swap
+  inverso. Coste: ~15-25 s por swap en RTX 4060.
+
 ## [0.1.15] — 2026-05-07
 
 ### Mejorado — Shorts virales con HyperFrames-enhanced composition (OpusClip-grade)

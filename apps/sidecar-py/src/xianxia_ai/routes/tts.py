@@ -28,7 +28,11 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 
-from ..models import tts_model
+import logging
+
+from ..models import tts_model, tts_base_model
+
+log = logging.getLogger("xianxia.tts")
 
 router = APIRouter()
 
@@ -144,20 +148,27 @@ async def list_voices(language: str | None = None) -> list[VoiceProfile]:
                 kind="builtin",
             )
         )
-    # User clones
-    for c in _load_clone_manifest():
-        profiles.append(
-            VoiceProfile(
-                id=f"clone:{c['id']}",
-                label=c.get("label", c["id"]),
-                gender=c.get("gender", "neutral"),
-                tone="cloned voice",
-                languages=["en", "es", "zh", "ja", "ko"],  # cross-lingual via Qwen3-TTS
-                primary=c.get("primary", "es"),
-                description=c.get("description", "Voz clonada por el usuario."),
-                kind="clone",
+    # User clones — only surface them if the Base model is installed,
+    # because that's the only Qwen3-TTS variant that supports voice
+    # cloning. With CustomVoice alone the clone would fail at synth
+    # time with a confusing "model does not support generate_voice_clone".
+    # Better to hide them in the picker entirely until the user adds
+    # the optional component.
+    base_ready = tts_base_model.is_available()
+    if base_ready:
+        for c in _load_clone_manifest():
+            profiles.append(
+                VoiceProfile(
+                    id=f"clone:{c['id']}",
+                    label=c.get("label", c["id"]),
+                    gender=c.get("gender", "neutral"),
+                    tone="cloned voice",
+                    languages=["en", "es", "zh", "ja", "ko"],  # cross-lingual via Qwen3-TTS
+                    primary=c.get("primary", "es"),
+                    description=c.get("description", "Voz clonada por el usuario."),
+                    kind="clone",
+                )
             )
-        )
 
     if language:
         lang = language.lower()[:2]
@@ -177,9 +188,83 @@ def _do_synthesize_builtin(text: str, language: str, speaker: str, instruct: str
 
 
 def _do_synthesize_clone(text: str, language: str, ref_audio: str, ref_text: str | None):
-    model = tts_model.load()
+    """Voice cloning runs on the SEPARATE *Base* model variant.
+
+    Per the upstream Qwen3-TTS model card
+    (https://github.com/QwenLM/Qwen3-TTS):
+
+      - Qwen3-TTS-1.7B-CustomVoice → only generate_custom_voice() (preset speakers)
+      - Qwen3-TTS-1.7B-Base        → only generate_voice_clone()
+
+    They are TWO different checkpoints. The bundled stack ships
+    CustomVoice for narration (it's smaller in cold-start because it
+    has the speaker presets baked in). The Base model is an OPTIONAL
+    component the user installs from Ajustes when they need voice
+    cloning. We swap models at runtime: unload CustomVoice → load Base
+    → run clone → on next non-clone request the supervisor unloads
+    Base + reloads CustomVoice. Both can't coexist in 8 GB VRAM.
+
+    If the Base model isn't installed we surface a clean 503 with a
+    message the UI can show instead of a confusing 500.
+    """
+    # Free CustomVoice from VRAM before loading Base — both ~7 GB.
+    if tts_model.is_loaded():
+        tts_model.unload()
+    try:
+        model = tts_base_model.load()
+    except RuntimeError as exc:
+        # is_available() returned False → component not installed.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Voice cloning requires the Qwen3-TTS-Base model "
+                "(≈7 GB) and it's not installed yet. Open "
+                "Ajustes → Componentes opcionales → Voice Cloning "
+                "to download it. Original error: " + str(exc)
+            ),
+        ) from exc
     return model.generate_voice_clone(
         text=text, language=language, ref_audio=ref_audio, ref_text=ref_text,
+    )
+
+
+# ── Voice cloning component status ────────────────────────────────
+# Surfaces whether the optional Qwen3-TTS-Base model is installed so
+# the UI can show a "Install voice cloning (≈7 GB)" banner before the
+# user tries to register or use a clone — much better UX than failing
+# at synthesis time. The Tauri command `install_optional_component(
+# "model-qwen-tts-base")` is the corresponding installer hook.
+
+class CloningStatusResponse(BaseModel):
+    base_model_installed: bool
+    component_id: str = "model-qwen-tts-base"
+    repo_id: str = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    download_size_gb: float = 7.0
+    registered_clones: int = 0
+    hint: str = ""
+
+
+@router.get("/cloning/status", response_model=CloningStatusResponse)
+async def cloning_status() -> CloningStatusResponse:
+    base_ready = tts_base_model.is_available()
+    clones_count = len(_load_clone_manifest())
+    if base_ready:
+        hint = "Voice cloning is available."
+    elif clones_count > 0:
+        hint = (
+            f"Tienes {clones_count} voz/voces clonadas registradas, pero el "
+            "modelo Base de voice cloning (≈7 GB) aún no está instalado. "
+            "Instálalo desde Ajustes → Componentes opcionales para usarlas."
+        )
+    else:
+        hint = (
+            "Voice cloning requiere el modelo Base de Qwen3-TTS (≈7 GB). "
+            "Instálalo cuando quieras subir y usar voces clonadas."
+        )
+    return CloningStatusResponse(
+        base_model_installed=base_ready,
+        registered_clones=clones_count,
+        hint=hint,
     )
 
 
