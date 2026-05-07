@@ -110,7 +110,12 @@ jobs:
             ---
             Hecho con Tauri 2 + React 19 + Python embebido + ComfyUI.
             Apache 2.0.
-          releaseDraft: true
+          # Publish the release directly (was: draft). Drafts are
+          # invisible to /releases/latest/download/* — the Tauri updater
+          # endpoint — so users keep seeing the previous published
+          # version forever. We need each tagged release to become
+          # "Latest" automatically the moment its assets land.
+          releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
           updaterJsonKeepUniversal: false
