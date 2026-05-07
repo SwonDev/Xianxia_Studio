@@ -505,6 +505,28 @@ pub fn full_manifest() -> Vec<Component> {
             required: true,
             depends_on: vec!["python-deps-core".to_string()],
         },
+        // Optional: Qwen3-TTS-Base for VOICE CLONING.
+        // The default TTS variant is CustomVoice (preset speakers); cloning a
+        // user voice requires the Base variant — they're separate checkpoints
+        // (per the upstream model card). The user installs this component
+        // explicitly when they want clone support; without it the voices
+        // catalogue hides `kind="clone"` entries.
+        Component {
+            id: "model-qwen-tts-base".to_string(),
+            label: "Qwen3-TTS Base · voice cloning (opcional)".to_string(),
+            category: Category::Model,
+            size_bytes: 7 * 1024 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::HuggingfaceSnapshot {
+                repo: "Qwen/Qwen3-TTS-12Hz-1.7B-Base".to_string(),
+                target: "models/tts-base".to_string(),
+            },
+            required: false,
+            depends_on: vec!["python-deps-core".to_string()],
+        },
         // The LLM (Gemma 4 GGUF) is added dynamically per hardware tier
         // via `with_llm_for_tier(...)` below.
 
