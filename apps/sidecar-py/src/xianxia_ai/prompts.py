@@ -2,18 +2,71 @@
 
 SCRIPT_PROMPT_TEMPLATE = """You are a master narrator for a YouTube channel about Chinese mythology, xianxia, wuxia, and cultivation lore. Your tone is epic, mystical, and accessible to Western audiences.
 
-Write a complete narration script of approximately {minutes} minutes about: {topic}
+Write a COMPLETE narration script of approximately {minutes} minutes (~{minutes}50 words at 150 wpm) about: {topic}
 
-Rules:
-- Write in flowing English prose, in second-person occasional address ("imagine you stand…").
-- Insert image markers as [IMAGE: detailed cinematic xianxia scene description] every 12-25 seconds of narration.
-- Insert music mood markers as [MUSIC: mood=epic|serene|mystic|emotional] at chapter boundaries.
-- Insert chapter markers as [CHAPTER: Title] every 2-4 minutes.
-- Use ~150 words per minute. Total: ~{minutes}50 words approx.
-- DO NOT use any meta language ("In this video", "Today we'll talk about"). Open in medias res.
-- Image prompts must include style cues: "cinematic, jade mountains, swirling qi, golden light, photorealistic, ultra detailed".
+═══ STRUCTURE (mandatory) ═══
+- Open in medias res — never with "In this video", "Today we'll talk about", "Welcome".
+- Write flowing English prose. Use occasional second-person ("imagine you stand…").
+- Use ~150 words per minute. Target ≈{minutes}50 words. DO NOT stop early.
 
-Begin the script now:
+═══ MARKERS (mandatory frequency) ═══
+1. [IMAGE: …] — insert ONE marker every 40-80 words of prose (≈ every 15-30 seconds).
+   For a {minutes}-minute script that means roughly {minutes}*4 = {minutes}-many image markers TOTAL. DO NOT generate fewer.
+2. [MUSIC: mood=epic|serene|mystic|emotional|tense|melancholic] — at every chapter boundary.
+3. [CHAPTER: Title] — every 2-4 minutes (so {minutes}/3 ≈ a few chapters).
+
+═══ IMAGE PROMPT QUALITY (critical) ═══
+Each [IMAGE: …] MUST be UNIQUE and CONTEXTUAL — describe the EXACT moment of narration that follows it.
+
+═══ MANDATORY SHOT-TYPE ROTATION ═══
+You MUST alternate between these 6 shot types so the video doesn't show
+"a person standing in front of mountains" for every beat. Cycle through them:
+
+  Type A — WIDE LANDSCAPE (no people):
+    "vast frozen lake at dawn, mist rising, distant pagoda silhouette, no people, cinematic, photorealistic"
+
+  Type B — ACTION MOMENT (movement, energy, conflict):
+    "a sword cuts through the air leaving a trail of blue qi, sparks scattering, motion blur, dynamic angle, photorealistic"
+
+  Type C — EXTREME CLOSE-UP (hand, eye, object, symbol):
+    "close-up of a calloused hand pressing onto an ancient bronze talisman, golden glyphs igniting around the fingers, shallow depth of field, ultra detailed"
+
+  Type D — CHARACTER SHOT (person doing something specific):
+    "an elderly Daoist monk seated cross-legged on a moss-covered stone, eyes closed, faint silver qi spiraling around his shoulders, photorealistic"
+
+  Type E — SYMBOLIC OBJECT (no people, ritual or magical item):
+    "an open scroll on a black lacquered table, ink characters smoldering as if alive, candles guttering, low key lighting"
+
+  Type F — ARCHITECTURE / INTERIOR (no people, atmospheric):
+    "interior of an abandoned mountain temple, broken statues, vines through the roof, sun rays through cracks, atmospheric"
+
+Pattern for {minutes}-minute video: A → D → C → B → E → D → F → C → ...
+NEVER place two TYPE-D character shots in a row.
+NEVER use the same character appearance twice unless the narration explicitly returns to that character.
+
+═══ EVERY IMAGE PROMPT MUST INCLUDE ═══
+  • SHOT TYPE (one of A–F above) — pick a DIFFERENT one from the previous image
+  • SUBJECT — what is the focal point of THIS frame
+  • ACTION or STATE — what is happening (or implied)
+  • LOCATION — specific place (not just "mountains")
+  • MOOD/LIGHT — dawn / dusk / moonlit / lantern-glow / qi-glow / blood-red sunset / overcast
+  • STYLE TAG — append: "cinematic, photorealistic, ultra detailed, dramatic lighting"
+
+═══ HARD DIVERSITY RULES ═══
+  • If image N had a person → image N+1 MUST be a landscape, object, or close-up (NOT another full-body person shot).
+  • If image N was set in mountains → image N+1 must be elsewhere (cave, hall, water, sky, forge, library).
+  • If image N had jade-green colour palette → image N+1 must use a DIFFERENT palette (red lanterns, blue moonlight, golden temple light, black ink, snowy white).
+  • DO NOT default to "jade mountains, swirling qi, golden light" for every image. That phrase is BANNED unless the narration is literally about jade mountains in that exact moment.
+
+═══ EXAMPLE OF CORRECT MARKER DENSITY (for 1 minute) ═══
+[IMAGE: a young cultivator in white robes kneels at the edge of a frozen lake, breath steaming in dawn light, distant peaks reflected on the ice, cinematic, photorealistic]
+He had walked seven days through the snow to reach this place. The elders said it was where the first immortal had crossed.
+[IMAGE: close-up of the cultivator's hand pressing against ancient stone tablets half-buried in ice, faint qi-glyphs glowing blue beneath his palm, dramatic lighting, ultra detailed]
+The tablets answered him before he could speak.
+[IMAGE: a translucent dragon-figure made of swirling mist erupts upward from the frozen lake, scattering ice shards into a low golden sun, epic, photorealistic, cinematic]
+…
+
+Begin the FULL script now (do not stop until you reach ~{minutes}50 words):
 """
 
 METADATA_PROMPT_TEMPLATE = """Given the following xianxia narration script, produce YouTube metadata as strict JSON with this shape:

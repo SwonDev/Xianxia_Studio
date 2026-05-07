@@ -217,23 +217,35 @@
         var panX = (idx % 2 === 0) ? 1 : -1;
         var panY = (idx % 3 === 0) ? -1 : 1;
 
-        if (bg && mid && fg) {
+        // Parallax now works for ANY layer combo: bg+fg, bg+mid+fg, mid+fg,
+        // or just `single`. The previous `if (bg && mid && fg)` branch
+        // required all three; rembg only segments bg+fg (no mid layer is
+        // ever produced upstream), so the condition was permanently false
+        // and every image rendered as a static still — visible to the
+        // user as "parallax only on the first image" because the only
+        // motion the eye picked up was the opacity fade-in/out.
+        if (bg) {
           tl.fromTo(bg,
-            { x: -25 * panX, y: -10 * panY },
-            { x: 25 * panX, y: 10 * panY, duration: dur, ease: 'none' },
+            { x: -25 * panX, y: -10 * panY, scale: 1.20 },
+            { x: 25 * panX, y: 10 * panY, scale: 1.22, duration: dur, ease: 'none' },
             start
           );
+        }
+        if (mid) {
           tl.fromTo(mid,
-            { x: -55 * panX, y: -22 * panY },
-            { x: 55 * panX, y: 22 * panY, duration: dur, ease: 'none' },
+            { x: -55 * panX, y: -22 * panY, scale: 1.06 },
+            { x: 55 * panX, y: 22 * panY, scale: 1.08, duration: dur, ease: 'none' },
             start
           );
+        }
+        if (fg) {
           tl.fromTo(fg,
             { x: -90 * panX, y: -38 * panY, scale: 0.96 },
             { x: 90 * panX, y: 38 * panY, scale: 1.02, duration: dur, ease: 'none' },
             start
           );
-        } else if (single) {
+        }
+        if (!bg && !mid && !fg && single) {
           tl.fromTo(single,
             { scale: 1.05, x: -30 * panX, y: -12 * panY },
             { scale: 1.18, x: 30 * panX, y: 12 * panY, duration: dur, ease: 'none' },

@@ -87,7 +87,12 @@ class TTSRequest(BaseModel):
     language: str = "English"
     speaker: str = "Vivian"
     instruction: str | None = None
-    chunk_chars: int = 600
+    # 220 chars/chunk gives Qwen3-TTS-1.7B ~30-50 s of inference per chunk
+    # on a laptop RTX 4060 8 GB. The previous 600-char default produced
+    # 5–6 minute chunks because the autoregressive decoder time scales
+    # super-linearly with sequence length. Smaller chunks keep the worst
+    # case bounded so long narrations stay under a few minutes wall-time.
+    chunk_chars: int = 220
     out_dir: str | None = None
 
 
@@ -211,11 +216,17 @@ async def synthesize(req: TTSRequest) -> TTSResponse:
         if spk not in _SPEAKER_PROFILE:
             raise HTTPException(status_code=400, detail=f"unknown speaker '{req.speaker}'")
 
+    from ..logging_utils import log_event
+    import time as _t
+
     chunks = chunk_text(req.text, req.chunk_chars)
     audio_segments: list = []
     sr = 0
     loop = asyncio.get_running_loop()
-    for chunk in chunks:
+    log_event("info", "tts_synthesis_start", chunks=len(chunks), total_chars=sum(len(c) for c in chunks), language=lang)
+    t_total = _t.time()
+    for idx, chunk in enumerate(chunks):
+        t_chunk = _t.time()
         if is_clone:
             wav, sr_returned = await loop.run_in_executor(
                 None, _do_synthesize_clone, chunk, lang, ref_audio, ref_text,
@@ -226,6 +237,13 @@ async def synthesize(req: TTSRequest) -> TTSResponse:
             )
         audio_segments.append(wav[0])
         sr = sr_returned
+        log_event(
+            "info", "tts_chunk_done",
+            index=idx, total=len(chunks),
+            chars=len(chunk),
+            duration_ms=int((_t.time() - t_chunk) * 1000),
+        )
+    log_event("info", "tts_synthesis_done", total_ms=int((_t.time() - t_total) * 1000), chunks=len(chunks))
     full = np.concatenate(audio_segments) if audio_segments else np.zeros(1)
     out_dir = Path(req.out_dir or os.environ.get("XIANXIA_OUT_DIR", "./out"))
     out_dir.mkdir(parents=True, exist_ok=True)

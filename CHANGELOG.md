@@ -6,6 +6,96 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.11] — 2026-05-07
+
+### Corregido — defectos visuales severos en el output final
+
+Tras inspeccionar el MP4 producido por v0.1.10 con ffprobe + frame
+dump, el equipo (Claude + usuario) detectó cuatro fallos coincidentes
+que el "exit code 0 + subtitles_done en logs" estaba ocultando:
+
+1. **Mux desincronizado en `postProcessCinematic`** (Node sidecar)
+   producía `video_stream_duration=3.36 s` mientras `audio` y
+   `container` eran 22.2 s. Causa: combinar `-vf` con
+   `-filter_complex` en un mismo invocación de FFmpeg desconectaba
+   los timings. Fix integral en `apps/sidecar-node/src/render.ts`:
+   • todo el procesamiento (cinematic look + audio mix) va dentro de
+     un único `-filter_complex` que deja `[v]` y `[a]` etiquetados;
+   • `+faststart` para que el moov llegue al inicio del archivo;
+   • decode software (NVDEC chocaba con el filter graph mixed);
+   • **auto-defensa runtime**: tras escribir el MP4, ffprobe verifica
+     que `video_dur / container_dur ∈ [0.95, 1.05]` y lanza error si
+     no, lo que hace al Rust caller fallar limpio al render fallback
+     en vez de entregar un archivo roto silenciosamente.
+
+2. **Subtítulos ilegibles** (chunks 42 chars + solape +0.15 s + 
+   `Collisions: Normal` + `BorderStyle: 1` + `MarginV: 90`):
+   libass apilaba dos captions en filas distintas porque los
+   eventos de Whisper se solapaban entre sí, y el outline puro no
+   sobrevivía sobre frames con artefactos. Fix en
+   `apps/sidecar-py/src/xianxia_ai/routes/subtitles.py`:
+   • `max_chars=28` (22 vertical) — una sola línea por chunk;
+   • monotonic non-overlap forzado entre chunks consecutivos;
+   • `Collisions: Reverse`, `WrapStyle: 2`;
+   • `BorderStyle: 3` (caja opaca) — legible sobre cualquier fondo;
+   • `MarginV: 130`, `MarginL/R: 120` (zona segura amplia).
+
+3. **Parallax solo aplicado a la primera imagen** (en realidad a
+   ninguna): `narrative.html` exigía `if (bg && mid && fg)` pero
+   rembg solo segmenta `bg + fg` (no `mid`). Resultado: ningún beat
+   tenía las 3 capas y la animación caía al fallback `single` que
+   tampoco existía como `<img>`. Fix: animaciones independientes
+   por capa (`if (bg)`, `if (mid)`, `if (fg)`) con escala suave
+   añadida al fondo.
+
+4. **17 s de pantalla negra al inicio + 34 s al final**: los
+   timestamps de los markers `[IMAGE: …]` venían de un cálculo a
+   150 wpm que no coincidía con la velocidad real del TTS Qwen3.
+   Fix en `apps/desktop/src-tauri/src/pipeline/mod.rs`: tras Phase
+   3 TTS leemos `duration_seconds` real del audio y `normalise_beat_timeline()`
+   distribuye las imágenes uniformemente sobre toda la duración con
+   transiciones alternadas (cross/flash/inkwash/whip).
+
+### Corregido — biblioteca
+
+5. **`library_list_videos` priorizaba el .mp4 sin subs**: al elegir
+   "el más grande", listaba el video sin subtítulos en vez del
+   `*.subs.mp4`. Nuevo `video_rank()` con prioridad explícita:
+   `.subs > video > resto`, desempate por mtime.
+
+### Corregido — rendimiento TTS
+
+6. **Chunks de TTS demasiado largos** (default 600 chars producía
+   chunks de 5–6 min cada uno por escalado super-lineal del decoder
+   autoregresivo). Bajado a `chunk_chars=220` → ~30–80 s por chunk
+   en RTX 4060 8 GB.
+
+### Añadido — pruebas
+
+* **9 tests unitarios** que blindan los fixes:
+  - Rust (`cargo test`): 6 tests sobre `normalise_beat_timeline`
+    (head=0, tail=audio_dur, sin gaps, dur≥1s, transitions
+    alternadas, edge cases) + 2 tests `video_rank`.
+  - Python (`pytest tests/test_subtitles_layout.py`): 6 tests sobre
+    el ASS — no-overlap entre chunks, max-chars, header con
+    BorderStyle=3 y Collisions: Reverse, end>start defensivo,
+    timestamp format.
+  - **Auto-defensa en runtime**: ffprobe del output del
+    postProcessCinematic con assert sobre la ratio video/container.
+* **Harness e2e** (`tests/e2e/smoke_pipeline.py`): replica el flujo
+  Rust contra los sidecars Python+Node, genera horizontal/vertical
+  reales, hace ffprobe + frame dump + verdict JSON con assertions.
+
+### Migrations
+
+* **Restaurada `0001_init.sql`** al hash original del commit
+  `64ea299`. La modificación en `500dc17` (seed expandido inline)
+  hacía que SQLx rechazara la DB de cualquier instalación previa
+  con `migration 1 was previously applied but has been modified`,
+  forzando memory-pool fallback y proyectos no persistentes. Las
+  voces nuevas siguen estando en `0002_voices_expanded.sql` con
+  `INSERT OR IGNORE`.
+
 ## [0.1.10] — 2026-05-07
 
 ### Añadido — observabilidad estructurada JSONL

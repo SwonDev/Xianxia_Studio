@@ -12,6 +12,46 @@ use crate::installer::paths;
 const PY_SIDECAR: &str = "http://127.0.0.1:8731";
 const NODE_SIDECAR: &str = "http://127.0.0.1:8732";
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BeatSlot {
+    pub start: f64,
+    pub duration: f64,
+    pub transition: &'static str,
+}
+
+/// Spread `n` beats uniformly across `audio_duration` seconds, with a small
+/// crossfade overlap between adjacent beats. Guarantees:
+///   - The first beat starts at 0.0 (no black at the head of the video).
+///   - The last beat ends exactly at `audio_duration` (no black at the tail).
+///   - All durations are >= 1.0s.
+///   - Transitions cycle through cross/flash/cross/inkwash/whip for variety.
+///
+/// Tested by `tests::beat_timeline_covers_full_audio` and friends below.
+pub fn normalise_beat_timeline(n: usize, audio_duration: f64) -> Vec<BeatSlot> {
+    if n == 0 || audio_duration <= 0.0 {
+        return Vec::new();
+    }
+    const TRANS: &[&str] = &["cross", "flash", "cross", "inkwash", "whip"];
+    let segment = audio_duration / (n as f64);
+    let overlap = (segment * 0.15).clamp(0.4, 1.5).min(segment * 0.5);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let start = (i as f64) * segment;
+        let end = if i + 1 == n {
+            audio_duration
+        } else {
+            ((i as f64) + 1.0) * segment + overlap
+        };
+        let duration = (end - start).max(1.0);
+        out.push(BeatSlot {
+            start,
+            duration,
+            transition: TRANS[i % TRANS.len()],
+        });
+    }
+    out
+}
+
 /// Best-effort VRAM unload between phases. Never fails the pipeline.
 async fn unload(client: &reqwest::Client, target: &str) {
     let _ = client
@@ -378,6 +418,15 @@ async fn run(
         .json()
         .await?;
     let narration_audio = tts["audio_path"].as_str().unwrap_or("").to_string();
+    // Real audio duration (seconds). The LLM produces image markers with
+    // timestamps based on a hard-coded 150 wpm assumption, but Qwen3-TTS
+    // narrates at its own pace — combined with the LLM's tendency to put
+    // markers in the second half of a script, the marker timestamps end
+    // up far off the actual audio. We use the TTS's reported duration to
+    // redistribute beats UNIFORMLY across the whole audio in Phase 4
+    // instead of trusting the marker timestamps. Result: no 17 s of black
+    // at the start, no 34 s of black at the end, no last image clipped.
+    let narration_duration = tts["duration_seconds"].as_f64().unwrap_or(0.0);
     persist_step(pool, pid, 3, "done", &tts).await?;
     emit(app, pid, 3, "done", 100.0, "Voz lista");
     // Free Qwen3-TTS VRAM before Z-Image loads (~4-5 GB recovered).
@@ -396,7 +445,6 @@ async fn run(
         let total = image_markers.len().max(1);
         for (i, m) in image_markers.iter().enumerate() {
             let prompt = m["prompt"].as_str().unwrap_or("");
-            let ts = m["timestamp_seconds"].as_f64().unwrap_or(0.0);
             let img: serde_json::Value = client
                 .post(format!("{}/image", PY_SIDECAR))
                 .json(&serde_json::json!({
@@ -411,10 +459,12 @@ async fn run(
                 .json()
                 .await?;
             let img_path = img["image_path"].as_str().unwrap_or("").to_string();
+            // Placeholder start/duration — replaced below by uniform
+            // distribution over the real audio duration.
             beats.push(serde_json::json!({
                 "path": img_path.clone(),
-                "start": ts,
-                "duration": 8.0,
+                "start": 0.0,
+                "duration": 0.0,
             }));
             // Live preview: emit a per-image event so the wizard can show
             // thumbnails as they finish rendering. UI subscribes to
@@ -434,6 +484,28 @@ async fn run(
             emit(app, pid, 4, "running", pct, &format!("Imagen {}/{}", i + 1, total));
         }
     }
+    // ─── Beat timeline normalisation ────────────────────────────────
+    // Replace whatever start/duration the per-beat loop set with a uniform
+    // distribution over the REAL narration audio duration. Each beat
+    // covers `audio / N` seconds, with a small overlap to enable the
+    // GSAP cross/flash/whip/inkwash transitions in narrative.html. The
+    // last beat is clamped to the end of the audio so no image is
+    // truncated and no black tail remains.
+    if !beats.is_empty() && narration_duration > 0.0 {
+        let n = beats.len();
+        let normalised = normalise_beat_timeline(n, narration_duration);
+        for (i, slot) in normalised.iter().enumerate() {
+            beats[i]["start"] = serde_json::json!(slot.start);
+            beats[i]["duration"] = serde_json::json!(slot.duration);
+            beats[i]["transition"] = serde_json::json!(slot.transition);
+        }
+        tracing::info!(
+            beats = n,
+            audio_seconds = narration_duration,
+            "beat timeline normalised over real audio duration",
+        );
+    }
+
     persist_step(pool, pid, 4, "done", &serde_json::json!({"beats": beats})).await?;
     emit(app, pid, 4, "done", 100.0, "Imágenes listas");
 
@@ -1077,7 +1149,7 @@ fn emit(app: &AppHandle, pid: &str, phase: u8, status: &str, progress: f64, msg:
 
 #[cfg(test)]
 mod tests {
-    use super::GenerateRequest;
+    use super::{normalise_beat_timeline, GenerateRequest};
 
     #[test]
     fn deserializes_minimal_payload_from_frontend() {
@@ -1121,5 +1193,76 @@ mod tests {
         assert_eq!(req.voice_speaker.as_deref(), Some("Cherry"));
         assert!(req.use_musicgen);
         assert!(req.vertical);
+    }
+
+    // ─── Beat-timeline regression tests ────────────────────────────────
+    // These exist because the user observed the rendered video was
+    // 17 s of black, then 1-2 images at the end. Root cause: the per-beat
+    // start/duration came straight from LLM marker timestamps (computed
+    // at a hard-coded 150 wpm) which had no relation to the real TTS
+    // audio length. After the fix, normalise_beat_timeline() distributes
+    // beats uniformly over the actual audio duration. These tests pin
+    // that behaviour so a future refactor cannot reintroduce gaps.
+
+    #[test]
+    fn beat_timeline_starts_at_zero_no_head_gap() {
+        let slots = normalise_beat_timeline(3, 90.0);
+        assert_eq!(slots[0].start, 0.0, "first beat must start at t=0");
+    }
+
+    #[test]
+    fn beat_timeline_last_beat_ends_at_audio_end() {
+        let slots = normalise_beat_timeline(3, 90.0);
+        let last = slots.last().unwrap();
+        let end = last.start + last.duration;
+        assert!(
+            (end - 90.0).abs() < 0.001,
+            "last beat must end at audio_duration, got end={end}",
+        );
+    }
+
+    #[test]
+    fn beat_timeline_covers_full_audio_with_overlap() {
+        // 4 beats over 60s → ~15s per slot, with a small crossfade overlap.
+        // Verifies (a) no gaps, (b) overlaps stay positive, (c) all slots
+        // are at least 1s.
+        let slots = normalise_beat_timeline(4, 60.0);
+        assert_eq!(slots.len(), 4);
+        for w in slots.windows(2) {
+            let prev_end = w[0].start + w[0].duration;
+            let next_start = w[1].start;
+            assert!(prev_end >= next_start, "no gap between consecutive beats");
+        }
+        for slot in &slots {
+            assert!(slot.duration >= 1.0, "duration too small: {}", slot.duration);
+        }
+    }
+
+    #[test]
+    fn beat_timeline_handles_short_audio() {
+        // 3 images over a 6 s clip — small but valid. Each beat should
+        // still be at least 1s.
+        let slots = normalise_beat_timeline(3, 6.0);
+        for s in &slots {
+            assert!(s.duration >= 1.0);
+        }
+        let last = slots.last().unwrap();
+        assert!((last.start + last.duration - 6.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn beat_timeline_empty_inputs_return_empty() {
+        assert!(normalise_beat_timeline(0, 60.0).is_empty());
+        assert!(normalise_beat_timeline(3, 0.0).is_empty());
+    }
+
+    #[test]
+    fn beat_timeline_alternates_transitions() {
+        let slots = normalise_beat_timeline(5, 50.0);
+        let kinds: Vec<&str> = slots.iter().map(|s| s.transition).collect();
+        // Must be a non-trivial mix — at least 2 distinct kinds in any
+        // reasonable run so the rendered video doesn't feel monotonous.
+        let unique_count = kinds.iter().collect::<std::collections::HashSet<_>>().len();
+        assert!(unique_count >= 2, "transitions too repetitive: {:?}", kinds);
     }
 }

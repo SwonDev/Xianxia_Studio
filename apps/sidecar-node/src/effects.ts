@@ -87,8 +87,17 @@ export function musicDuckingFilterComplex(opts: {
     threshold = 0.04, ratio = 10, attackMs = 20, releaseMs = 350,
     musicVolume = 0.32,
   } = opts;
+  // `[${musicIdx}:a]volume=...` produces the levelled music stream `[m1]`.
+  // We split the narration in two with `asplit=2` so one copy drives the
+  // sidechain compressor (ducking the music when speech is present) and
+  // the other copy is mixed back into the final track at full volume.
+  // We do NOT split the music — only one copy is needed (it goes through
+  // the sidechain compressor and out to the mix). A previous version
+  // wrote `asplit=2[m1][m_pad]` and never consumed `[m_pad]`; ffmpeg
+  // rejected the graph with EINVAL because every output of an asplit
+  // must be consumed downstream. Keep this single-output.
   return (
-    `[${musicIdx}:a]volume=${musicVolume},asplit=2[m1][m_pad];` +
+    `[${musicIdx}:a]volume=${musicVolume}[m1];` +
     `[${narrationIdx}:a]asplit=2[n1][n2];` +
     `[m1][n1]sidechaincompress=` +
     `threshold=${threshold}:ratio=${ratio}:attack=${attackMs}:release=${releaseMs}` +

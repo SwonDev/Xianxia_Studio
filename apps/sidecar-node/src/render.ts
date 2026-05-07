@@ -369,55 +369,146 @@ async function postProcessCinematic(opts: {
     : encoder === 'h264_amf'
     ? ['-quality', 'quality', '-rc', 'vbr_peak', '-qp_i', '20', '-qp_p', '22', '-pix_fmt', 'yuv420p']
     : ['-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p'];
-  const decodeArgs =
-    encoder === 'h264_nvenc' ? ['-hwaccel', 'cuda']
-    : encoder === 'h264_qsv' ? ['-hwaccel', 'qsv']
-    : encoder === 'h264_amf' ? ['-hwaccel', 'd3d11va']
-    : [];
+  // Software decode for the post-pass — `-hwaccel cuda` was producing
+  // truncated video streams (3 s of frames stretched over a 22 s container)
+  // when chained with a `-filter_complex` graph + `-vf` on the same command.
+  // FFmpeg's NVDEC↔libavfilter glue doesn't reliably honour the audio
+  // filter graph timing in that combo; the symptom was a corrupted moov
+  // atom on every render. Keeping decode on CPU is ~5–8 % slower for this
+  // step but produces correct output. Only the ENCODE side benefits from
+  // GPU acceleration here, which we keep via `encoder === 'h264_nvenc'`.
 
+  // ── Build a single -filter_complex graph that covers BOTH video and
+  //    audio. Mixing `-vf` with `-filter_complex` on the same command
+  //    has been the silent-failure source since v0.1.7: FFmpeg routes
+  //    the implicit -vf through a different pipeline that desynchronises
+  //    with the explicit complex graph, producing a video stream that
+  //    decodes to ~3 s of frames against a 22 s audio track. Putting the
+  //    cinematic look filters into the same graph (as a labelled `[v]`
+  //    output) keeps the muxer's timing aligned with the audio map.
+  //
+  //    Inputs: 0=baseSilent (video+silent_audio), 1=narration. If music
+  //    is present it goes in as input 2.
   const inputs = ['-i', baseSilent, '-i', narrationPath];
-  let filterComplex: string[] = [];
-  let audioMap: string[];
+  const videoChain = `[0:v]${vf}[v]`;
+  let audioChain: string;
+  let audioOut = '[a]';
 
   if (musicPath && musicDucking) {
     inputs.push('-i', musicPath);
-    filterComplex = [
-      '-filter_complex',
-      musicDuckingFilterComplex({ narrationIdx: 1, musicIdx: 2, musicVolume }),
-    ];
-    audioMap = ['-map', '0:v:0', '-map', '[mixed]'];
+    audioChain = musicDuckingFilterComplex({
+      narrationIdx: 1,
+      musicIdx: 2,
+      musicVolume,
+      outLabel: 'a',
+    });
   } else if (musicPath) {
     inputs.push('-i', musicPath);
-    filterComplex = [
-      '-filter_complex',
-      `[2:a]volume=${musicVolume}[m];[1:a][m]amix=inputs=2:duration=first:dropout_transition=0[mixed]`,
-    ];
-    audioMap = ['-map', '0:v:0', '-map', '[mixed]'];
+    audioChain = `[2:a]volume=${musicVolume}[m];[1:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]`;
   } else {
-    audioMap = ['-map', '0:v:0', '-map', '1:a:0'];
+    audioChain = `[1:a]anull[a]`;
   }
+
+  const filterComplex = [`${videoChain};${audioChain}`].join('');
 
   const cmd = [
     '-y',
-    ...decodeArgs,
     ...inputs,
-    ...filterComplex,
-    '-vf', vf,
+    '-filter_complex', filterComplex,
+    '-map', '[v]',
+    '-map', audioOut,
     '-c:v', encoder,
     ...encodeArgs,
-    ...audioMap,
     '-c:a', 'aac', '-b:a', '192k',
+    // -shortest so the file ends with the shortest of (video, narration).
+    // baseSilent encodes the full HyperFrames composition with a silent
+    // padding audio track, so its duration is always the visual length.
     '-shortest',
+    // Move the moov atom to the front so players can seek immediately
+    // and we never produce a "duration stays at 0" file when ffmpeg is
+    // killed mid-write.
+    '-movflags', '+faststart',
     out,
   ];
 
-  logger.info({ encoder, profile }, 'ffmpeg cinematic post-pass');
+  logger.info({ encoder, profile, filterComplex }, 'ffmpeg cinematic post-pass');
   // preferLocal: true lets execa find `ffmpeg` from sidecar-node/node_modules/
   // .bin/ when the system PATH inherited from Tauri does not include it
   // (Windows users running ffmpeg via WinGet hit this case). Without this
   // the cinematic post-pass fails silently and the Rust pipeline falls back
   // to the FFmpeg-direct Python render, losing parallax 2.5D + atmospherics.
-  await execa('ffmpeg', cmd, { stdio: 'inherit', preferLocal: true });
+  // We also capture stdout/stderr so a failure surfaces in the JSONL log
+  // instead of disappearing into the supervisor stdout.
+  try {
+    await execa('ffmpeg', cmd, { preferLocal: true, all: true });
+  } catch (err: unknown) {
+    const e = err as { all?: string; stderr?: string; stdout?: string; message?: string };
+    logger.error(
+      {
+        cmd: ['ffmpeg', ...cmd].join(' '),
+        stderr: e?.stderr ?? null,
+        stdout: e?.stdout ?? null,
+        all: e?.all ?? null,
+        message: e?.message ?? String(err),
+      },
+      'postProcessCinematic ffmpeg failed',
+    );
+    throw err;
+  }
+
+  // Self-validation: probe the output and refuse to ship a file whose
+  // video stream duration diverges from the container by more than 5%.
+  // This was the silent-failure mode in v0.1.7..v0.1.9 — ffmpeg returned
+  // 0 even though the moov atom said the video lasted 3 s while the audio
+  // and container were 22 s, leaving the user staring at a frozen frame
+  // for most of the runtime. The Rust caller treats this throw as a
+  // signal to fall back to the FFmpeg-direct render path.
+  const probe = await ffprobeDurations(out);
+  if (probe.video !== null && probe.container !== null) {
+    const ratio = probe.video / probe.container;
+    if (ratio < 0.95 || ratio > 1.05) {
+      logger.error(
+        { out, probe, ratio },
+        'postProcessCinematic produced a desynchronised file (video ≠ container duration)',
+      );
+      throw new Error(
+        `postProcessCinematic output desync: video=${probe.video.toFixed(2)}s ` +
+        `container=${probe.container.toFixed(2)}s (ratio=${ratio.toFixed(3)})`,
+      );
+    }
+  }
+}
+
+/**
+ * Probe an MP4's video stream + container durations with ffprobe.
+ * Used as the post-render self-validation. Returns nulls if either probe
+ * fails, in which case the caller treats the result as inconclusive
+ * rather than as a failure.
+ */
+async function ffprobeDurations(file: string): Promise<{ video: number | null; container: number | null }> {
+  try {
+    const { stdout: vs } = await execa('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=duration',
+      '-of', 'default=nw=1:nk=1',
+      file,
+    ], { preferLocal: true });
+    const { stdout: cs } = await execa('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=nw=1:nk=1',
+      file,
+    ], { preferLocal: true });
+    const video = parseFloat(vs.trim());
+    const container = parseFloat(cs.trim());
+    return {
+      video: Number.isFinite(video) ? video : null,
+      container: Number.isFinite(container) ? container : null,
+    };
+  } catch {
+    return { video: null, container: null };
+  }
 }
 
 async function pickEncoder(): Promise<'h264_nvenc' | 'h264_qsv' | 'h264_amf' | 'libx264'> {

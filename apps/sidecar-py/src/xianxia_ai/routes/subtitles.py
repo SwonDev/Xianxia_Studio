@@ -90,14 +90,17 @@ def _style_palette(style: str) -> dict:
             "shadow_size": 4.0,
             "bold": -1,
         }
-    # xianxia (default)
+    # xianxia (default) — high-contrast white text on translucent black box.
+    # Earlier versions used gold-fill on jade-green outline, which lost
+    # legibility on bright/jade-heavy frames (most of the xianxia palette).
+    # White + dense black box is broadcast-grade: readable on any frame.
     return {
-        "primary":   GOLD_FILL,
-        "secondary": GOLD_HIGHLIGHT,
-        "outline":   JADE_OUTLINE,
-        "back":      SHADOW,
-        "outline_size": 4.5,
-        "shadow_size": 2.5,
+        "primary":   "&H00FFFFFF",  # white fill
+        "secondary": "&H0080FFFF",  # gold-tinted active word for karaoke fill
+        "outline":   "&H00000000",  # black outline (BorderStyle 3 turns this into the box)
+        "back":      "&HE0000000",  # ~88% opaque black box behind text
+        "outline_size": 5.0,
+        "shadow_size": 1.5,
         "bold": -1,
     }
 
@@ -523,13 +526,25 @@ def _ass_header(font: str, size: int, vertical: bool = False, style: str = "xian
       - MarginV = 360 (≈ 18% of 1920 height — TikTok bottom safe zone where
         the like/comment/share column lives + caption + UI)
       - Bigger Outline + Shadow so SF Pro-Bold-style text reads on mobile.
+
+    Horizontal:
+      - MarginV = 130 lifts captions out of the very-bottom safe-zone; 90
+        used to leave them clipping on TVs/projectors with minor over-scan.
+      - BorderStyle = 3 (opaque box) instead of 1 (outline+shadow) — keeps
+        captions readable over busy frames AND over lossy/corrupted video
+        streams (e.g. chroma artefacts) that previously turned outlines
+        into illegible noise.
+
+    Collisions:Reverse + WrapStyle 2 stops libass from stacking adjacent
+    Dialogue events on different rows when their start/end times overlap by
+    a few hundred ms (the source of the "two stacked subtitle lines" bug).
     """
     if vertical:
         play_x, play_y = 1080, 1920
         margin_l, margin_r, margin_v = 140, 140, 360
     else:
         play_x, play_y = 1920, 1080
-        margin_l, margin_r, margin_v = 80, 80, 90
+        margin_l, margin_r, margin_v = 120, 120, 130
 
     palette = _style_palette(style)
     # Vertical Shorts get +20% outline/shadow for mobile legibility.
@@ -541,18 +556,18 @@ def _ass_header(font: str, size: int, vertical: bool = False, style: str = "xian
         f"[Script Info]\n"
         f"Title: Xianxia Studio · {style}\n"
         f"ScriptType: v4.00+\n"
-        f"Collisions: Normal\n"
+        f"Collisions: Reverse\n"
         f"PlayResX: {play_x}\n"
         f"PlayResY: {play_y}\n"
         f"Timer: 100.0000\n"
-        f"WrapStyle: 0\n\n"
+        f"WrapStyle: 2\n\n"
         f"[V4+ Styles]\n"
         f"Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
         f"OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
         f"ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
         f"MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Xianxia,{font},{size},{palette['primary']},{palette['secondary']},"
-        f"{palette['outline']},{palette['back']},{palette['bold']},0,0,0,100,100,0,0,1,"
+        f"{palette['outline']},{palette['back']},{palette['bold']},0,0,0,100,100,0,0,3,"
         f"{outline:.1f},{shadow:.1f},2,"
         f"{margin_l},{margin_r},{margin_v},1\n\n"
         f"[Events]\n"
@@ -562,16 +577,23 @@ def _ass_header(font: str, size: int, vertical: bool = False, style: str = "xian
 
 
 def _word_karaoke_ass(
-    words: list[dict], font: str, size: int, max_chars: int = 42, vertical: bool = False,
+    words: list[dict], font: str, size: int, max_chars: int = 28, vertical: bool = False,
     style: str = "xianxia",
 ) -> str:
     """Word-level karaoke ASS for source language (exact timestamps).
 
-    Vertical Shorts get a tighter line wrap (24 chars/line) so captions fit
-    inside the safe zone instead of wrapping into the side columns.
+    Tighter chunking (28 chars horizontal / 22 vertical) keeps captions to
+    a single readable line. The previous default (42 chars) wrapped onto
+    two lines AND triggered libass collision-stacking when adjacent chunks
+    overlapped by even a few ms — the source of the "two subtitles on top
+    of each other, half-cropped" defect.
+
+    Adjacent chunks are now FORCED non-overlapping: chunk N+1 cannot
+    start before chunk N's end. Combined with `Collisions: Reverse` in
+    the header, this guarantees only one caption is visible at a time.
     """
     if vertical:
-        max_chars = 24
+        max_chars = 22
     chunks: list[list[dict]] = []
     cur, cur_len = [], 0
     for w in words:
@@ -585,35 +607,72 @@ def _word_karaoke_ass(
         chunks.append(cur)
 
     events = []
+    prev_end = 0.0
     for chunk in chunks:
-        start = chunk[0]["start"]
-        end = chunk[-1]["end"] + 0.15
+        # Force monotonic non-overlap with the previous chunk so libass
+        # never stacks two captions in the same frame.
+        start = max(chunk[0]["start"], prev_end + 0.01)
+        end = chunk[-1]["end"]
+        if end <= start:
+            end = start + 0.6  # sane minimum dwell time
+        prev_end = end
         parts = []
         for w in chunk:
             dur_cs = max(1, int(round((w["end"] - w["start"]) * 100)))
             parts.append(f"{{\\kf{dur_cs}}}{w['word'].strip()}")
         text = " ".join(parts)
         events.append(
-            f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Xianxia,,0,0,0,,{{\\fad(180,180)}}{text}"
+            f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Xianxia,,0,0,0,,{{\\fad(140,140)}}{text}"
         )
     return _ass_header(font, size, vertical=vertical, style=style) + "\n".join(events) + "\n"
 
 
 def _segment_karaoke_ass(entries, font: str, size: int, vertical: bool = False, style: str = "xianxia") -> str:
-    """Segment-level karaoke for translated text (no exact word timing)."""
+    """Segment-level karaoke for translated text (no exact word timing).
+
+    Long entries are split into chunks of ~max_chars characters so a single
+    line never spans the whole screen, and adjacent entries are forced
+    non-overlapping (same rationale as `_word_karaoke_ass`).
+    """
+    max_chars = 22 if vertical else 28
     events = []
-    for start, end, body in entries:
+    prev_end = 0.0
+    for seg_start, seg_end, body in entries:
         words = body.split()
         if not words:
             continue
-        total_chars = sum(len(w) for w in words) or 1
-        total_secs = max(0.1, end - start)
-        parts = []
+        # Pack words into chunks of ~max_chars characters.
+        chunks: list[list[str]] = []
+        cur, cur_len = [], 0
         for w in words:
-            dur_cs = max(1, int(round((len(w) / total_chars) * total_secs * 100)))
-            parts.append(f"{{\\kf{dur_cs}}}{w}")
-        text = " ".join(parts)
-        events.append(
-            f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end + 0.15)},Xianxia,,0,0,0,,{{\\fad(180,180)}}{text}"
-        )
+            wl = len(w)
+            if cur and cur_len + wl + 1 > max_chars:
+                chunks.append(cur)
+                cur, cur_len = [], 0
+            cur.append(w)
+            cur_len += wl + 1
+        if cur:
+            chunks.append(cur)
+        # Distribute the segment's [start, end] proportionally to chunk length.
+        total_chars = sum(sum(len(w) for w in ck) for ck in chunks) or 1
+        total_secs = max(0.4, seg_end - seg_start)
+        cursor = max(seg_start, prev_end + 0.01)
+        for ck in chunks:
+            ck_chars = sum(len(w) for w in ck) or 1
+            ck_secs = max(0.5, (ck_chars / total_chars) * total_secs)
+            ck_start = cursor
+            ck_end = min(seg_end, cursor + ck_secs)
+            if ck_end <= ck_start:
+                ck_end = ck_start + 0.5
+            cursor = ck_end + 0.01
+            prev_end = ck_end
+            ck_total = sum(len(w) for w in ck) or 1
+            parts = []
+            for w in ck:
+                dur_cs = max(1, int(round((len(w) / ck_total) * (ck_end - ck_start) * 100)))
+                parts.append(f"{{\\kf{dur_cs}}}{w}")
+            text = " ".join(parts)
+            events.append(
+                f"Dialogue: 0,{_ass_ts(ck_start)},{_ass_ts(ck_end)},Xianxia,,0,0,0,,{{\\fad(140,140)}}{text}"
+            )
     return _ass_header(font, size, vertical=vertical, style=style) + "\n".join(events) + "\n"
