@@ -200,7 +200,17 @@ export interface Project {
 
 export interface GenerateRequest {
   topic: string;
+  /**
+   * Legacy combined languages array (audio in [0], subs in all). The
+   * Rust pipeline still reads this when audio_language /
+   * subtitle_languages are absent so older clients keep working.
+   */
   languages: string[];
+  /** Single IETF tag for the TTS narration (en, es, zh, ja…). */
+  audio_language?: string;
+  /** Multi IETF tags — every entry generates its own SRT + ASS. The
+   *  audio_language entry is the one burned into the rendered MP4. */
+  subtitle_languages?: string[];
   target_minutes: number;
   experimental_llm: boolean;
   /** When true, render at 1080x1920 (vertical/Shorts aspect). Defaults to false. */

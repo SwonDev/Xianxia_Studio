@@ -53,6 +53,8 @@ const PHASES = [
 const STORAGE_KEY = 'xianxia.generator.draft';
 function loadDraft(): {
   topic: string; minutes: number; languages: string[];
+  audio_language?: string;
+  subtitle_languages?: string[];
   voice: string; vertical: boolean;
   animation: 'cinematic' | 'dynamic' | 'minimal' | 'dramatic';
   caption: 'xianxia' | 'hormozi' | 'mrbeast' | 'minimal' | 'neon';
@@ -71,7 +73,25 @@ function GeneratorWizard() {
   const draft = loadDraft();
   const [topic, setTopic] = useState(draft?.topic ?? '');
   const [minutes, setMinutes] = useState(draft?.minutes ?? 14);
-  const [languages, setLanguages] = useState<string[]>(draft?.languages ?? ['en', 'es']);
+  // ─── Idioma del AUDIO (TTS narration) — single select.
+  // Antes había un solo array `languages` que mezclaba idioma del
+  // audio con idiomas de subtítulos. Eso obligaba a que el primer
+  // idioma marcado fuera el del audio sin que el user lo entendiera.
+  // Ahora son selecciones independientes.
+  const [audioLanguage, setAudioLanguage] = useState<string>(
+    draft?.audio_language ?? draft?.languages?.[0] ?? 'en',
+  );
+  // ─── Idiomas de SUBTÍTULOS — multi select. Por defecto incluye
+  //     siempre el del audio + un par adicionales para canales
+  //     internacionales.
+  const [subtitleLanguages, setSubtitleLanguages] = useState<string[]>(() => {
+    const seed = draft?.subtitle_languages ?? draft?.languages ?? ['en', 'es'];
+    const unique = Array.from(new Set([draft?.audio_language ?? draft?.languages?.[0] ?? 'en', ...seed]));
+    return unique;
+  });
+  // Compat: derived `languages` array (audio first) — algunos pipelines
+  // legacy aún consumen esto; lo enviamos también para no romper.
+  const languages = Array.from(new Set([audioLanguage, ...subtitleLanguages]));
   const [experimental, setExperimental] = useState(false);
   const [useMusicgen, setUseMusicgen] = useState(false);
   const [autoShorts, setAutoShorts] = useState(false);
@@ -90,8 +110,8 @@ function GeneratorWizard() {
   const [error, setError] = useState<string | null>(null);
   const [imageThumbs, setImageThumbs] = useState<ImageReadyEvent[]>([]);
 
-  // Primary language drives the voice catalog. Defaults to first selected.
-  const primaryLang = languages[0] ?? 'en';
+  // Primary language drives the voice catalog (audio language).
+  const primaryLang = audioLanguage;
 
   // Fetch voices contextual to the primary language.
   const { data: voices } = useQuery<VoiceProfile[]>({
@@ -104,6 +124,60 @@ function GeneratorWizard() {
     staleTime: 5 * 60_000,
     retry: 1,
   });
+
+  // Voice cloning component status — surfaced as a banner above the
+  // voice picker so the user can install the optional Qwen3-TTS-Base
+  // (~7 GB) without leaving the wizard. Refetched whenever a clone is
+  // selected so the install transition is reflected live.
+  const isCloneVoice = voice.startsWith('clone:');
+  const { data: cloningStatus, refetch: refetchCloningStatus } = useQuery<{
+    base_model_installed: boolean;
+    component_id: string;
+    repo_id: string;
+    download_size_gb: number;
+    registered_clones: number;
+    hint: string;
+  }>({
+    queryKey: ['cloning-status'],
+    queryFn: async () => {
+      const r = await fetch('http://127.0.0.1:8731/tts/cloning/status');
+      if (!r.ok) throw new Error(`cloning status: ${r.status}`);
+      return r.json();
+    },
+    staleTime: 30_000,
+    retry: 1,
+    // Poll every 5 s while the user has a clone selected and the
+    // model isn't installed yet — picks up the install completion
+    // automatically without a page reload.
+    refetchInterval: (q) => {
+      const d = q.state.data;
+      if (!d) return false;
+      if (d.base_model_installed) return false;
+      return 5000;
+    },
+  });
+
+  const [installingVoiceClone, setInstallingVoiceClone] = useState(false);
+  const handleInstallVoiceClone = async () => {
+    if (installingVoiceClone) return;
+    setInstallingVoiceClone(true);
+    toast.info(
+      'Descargando Qwen3-TTS Base (≈7 GB)…',
+      'Esto puede tardar varios minutos en función de tu conexión.',
+    );
+    try {
+      await tauri.installOptionalComponent('model-qwen-tts-base');
+      toast.success(
+        'Voice cloning instalado',
+        'Ahora puedes generar vídeos con voces clonadas.',
+      );
+      await refetchCloningStatus();
+    } catch (e) {
+      toast.error('No se pudo instalar voice cloning', String(e));
+    } finally {
+      setInstallingVoiceClone(false);
+    }
+  };
 
   // Music backend availability — drives the toggle label so the user knows
   // whether ACE-Step v1.5 (preferred) or MusicGen-medium (fallback) will run.
@@ -137,10 +211,13 @@ function GeneratorWizard() {
   // Auto-save form state to localStorage so reload doesn't lose work in progress.
   useEffect(() => {
     saveDraft({
-      topic, minutes, languages, voice, vertical,
+      topic, minutes, languages,
+      audio_language: audioLanguage,
+      subtitle_languages: subtitleLanguages,
+      voice, vertical,
       animation: animationPreset, caption: captionStyle,
     });
-  }, [topic, minutes, languages, voice, vertical, animationPreset, captionStyle]);
+  }, [topic, minutes, languages, audioLanguage, subtitleLanguages, voice, vertical, animationPreset, captionStyle]);
 
   useEffect(() => {
     let unListenProgress: (() => void) | null = null;
@@ -184,7 +261,12 @@ function GeneratorWizard() {
     });
     const req: GenerateRequest = {
       topic: topic.trim(),
+      // `languages` legacy alias, kept for backcompat — Rust pipeline
+      // reads audio_language/subtitle_languages first and falls back
+      // to this when missing.
       languages,
+      audio_language: audioLanguage,
+      subtitle_languages: subtitleLanguages,
       target_minutes: minutes,
       experimental_llm: experimental,
       vertical,
@@ -339,23 +421,28 @@ function GeneratorWizard() {
             </div>
           </Field>
 
-          <Field label="Idiomas">
-            <div className="flex gap-2">
-              {(['en', 'es', 'zh'] as const).map((l) => {
-                const active = languages.includes(l);
+          <Field label="Idioma del audio (narración)">
+            <div className="flex gap-2 flex-wrap">
+              {(['en', 'es', 'zh', 'ja', 'ko', 'de', 'fr', 'it', 'pt', 'ru'] as const).map((l) => {
+                const active = audioLanguage === l;
                 return (
                   <button
                     key={l}
-                    data-testid={`lang-${l}`}
-                    onClick={() =>
-                      setLanguages((prev) =>
-                        active ? prev.filter((x) => x !== l) : [...prev, l],
-                      )
-                    }
+                    data-testid={`audio-lang-${l}`}
+                    onClick={() => {
+                      setAudioLanguage(l);
+                      // Make sure the audio language is always among the
+                      // subtitle languages so the burned-in subs match
+                      // what's heard. The user can still un-toggle it
+                      // afterwards.
+                      setSubtitleLanguages((prev) =>
+                        prev.includes(l) ? prev : [l, ...prev],
+                      );
+                    }}
                     className={cn(
                       'px-3 py-1.5 rounded-md text-sm border transition-all',
                       active
-                        ? 'bg-gold-500/20 border-gold-500 text-gold-300'
+                        ? 'bg-gold-500/20 border-gold-500 text-gold-300 ring-1 ring-gold-500/40'
                         : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-gold-500/40',
                     )}
                   >
@@ -364,7 +451,88 @@ function GeneratorWizard() {
                 );
               })}
             </div>
+            <p className="text-[10px] text-paper-400 mt-1.5">
+              El TTS narrará en este idioma y filtrará el catálogo de voces.
+            </p>
           </Field>
+
+          <Field label="Idiomas de subtítulos (multi)">
+            <div className="flex gap-2 flex-wrap">
+              {(['en', 'es', 'zh', 'ja', 'ko', 'de', 'fr', 'it', 'pt', 'ru'] as const).map((l) => {
+                const active = subtitleLanguages.includes(l);
+                const isAudio = audioLanguage === l;
+                return (
+                  <button
+                    key={l}
+                    data-testid={`sub-lang-${l}`}
+                    onClick={() => {
+                      // Don't let the user un-toggle the audio language
+                      // (the burned-in caption track must exist for it).
+                      if (isAudio && active) return;
+                      setSubtitleLanguages((prev) =>
+                        active ? prev.filter((x) => x !== l) : [...prev, l],
+                      );
+                    }}
+                    className={cn(
+                      'px-3 py-1.5 rounded-md text-sm border transition-all',
+                      active
+                        ? 'bg-emerald-500/15 border-emerald-500/60 text-emerald-300'
+                        : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-emerald-500/40',
+                      isAudio && 'ring-1 ring-gold-500/30',
+                    )}
+                    title={isAudio ? 'Idioma del audio — siempre incluido' : ''}
+                  >
+                    {l.toUpperCase()}
+                    {isAudio && <span className="ml-1 text-[9px] text-gold-400">·audio</span>}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-paper-400 mt-1.5">
+              Se generan SRT y ASS por cada idioma. El idioma del audio se quema en el vídeo final;
+              el resto van como pistas externas para subir a YouTube.
+            </p>
+          </Field>
+
+          {/*
+            Voice cloning availability banner — shows when the user has
+            registered clones (or has selected a clone voice) but the
+            optional Qwen3-TTS-Base component isn't installed yet.
+            One-click install with live polling of /tts/cloning/status
+            so the dropdown unlocks the moment the download completes.
+          */}
+          {cloningStatus && !cloningStatus.base_model_installed && (cloningStatus.registered_clones > 0 || isCloneVoice) && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-400" />
+              <div className="flex-1">
+                <div className="font-semibold text-amber-200 mb-0.5">
+                  Voice cloning aún no está instalado
+                </div>
+                <div className="text-amber-100/80 mb-2">
+                  {cloningStatus.hint}
+                </div>
+                <button
+                  onClick={handleInstallVoiceClone}
+                  disabled={installingVoiceClone}
+                  className={cn(
+                    'px-3 py-1.5 rounded-md text-xs font-semibold border transition-all',
+                    installingVoiceClone
+                      ? 'bg-amber-500/20 border-amber-500/40 text-amber-300 cursor-wait'
+                      : 'bg-amber-500 border-amber-500 text-obsidian-900 hover:bg-amber-400',
+                  )}
+                >
+                  {installingVoiceClone ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Descargando ≈{cloningStatus.download_size_gb} GB…
+                    </span>
+                  ) : (
+                    <>Instalar voice cloning ({cloningStatus.download_size_gb} GB)</>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
 
           <Field label={`Voz narradora (${primaryLang.toUpperCase()})`}>
             <div className="relative">

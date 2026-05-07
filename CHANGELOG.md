@@ -6,6 +6,56 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.17] — 2026-05-07
+
+### Añadido — Selectores separados de idioma audio + idiomas subtítulos en la UI
+
+* `apps/desktop/src/routes/generator.tsx` deja de tener el viejo
+  multi-toggle "Idiomas" (que confundía audio con subs). Ahora son
+  **dos campos independientes**:
+  - **Idioma del audio (narración)** — single-select, 10 idiomas
+    (EN/ES/ZH/JA/KO/DE/FR/IT/PT/RU). Define en qué idioma se genera el
+    script y se sintetiza el TTS, y filtra el catálogo de voces.
+  - **Idiomas de subtítulos (multi)** — multi-select sobre los mismos
+    10 idiomas. Cada uno produce SRT + ASS. El idioma del audio aparece
+    marcado con badge "audio" y no se puede desmarcar (porque es el que
+    se quema en el MP4 final). Los demás van como pistas externas para
+    YouTube.
+* `GenerateRequest` (TypeScript + Rust) gana los campos
+  `audio_language: string` y `subtitle_languages: string[]`. El campo
+  legacy `languages` se sigue enviando con backcompat (audio en `[0]`).
+* `apps/desktop/src-tauri/src/pipeline/mod.rs` lee los nuevos campos
+  primero y cae al `languages` antiguo cuando no están — usuarios con
+  drafts anteriores no pierden nada.
+* `/subtitles` ahora recibe `source_language=audio_language` y
+  `target_languages=subtitle_languages` (con la audio language
+  garantizada en la lista para que el burn-in tenga su pista).
+
+### Añadido — Banner UI con instalación inline de voice cloning
+
+* Cuando hay clones registradas o el usuario selecciona una voz
+  `clone:*`, aparece encima del select un banner ámbar con el texto
+  contextual de `/tts/cloning/status` y un botón **"Instalar voice
+  cloning (≈7 GB)"** que invoca `install_optional_component(
+  "model-qwen-tts-base")` directamente desde el wizard — sin saltar
+  a Ajustes.
+* La query a `/tts/cloning/status` se refresca cada 5 s mientras Base
+  no esté instalado, así que en cuanto la descarga termina el banner
+  desaparece y el dropdown desbloquea las voces clonadas en vivo.
+* Toasts de progreso: "Descargando Qwen3-TTS Base…" → "Voice cloning
+  instalado" o el error específico si algo falló.
+
+### Notas técnicas
+
+* Auto-detección sin reinicio: `tts_base_model.is_available()` escanea
+  el HF cache en cada request, así que en cuanto el installer extrae
+  los pesos el sidecar Python las ve sin necesidad de reload.
+* El selector de audio fuerza la inclusión del idioma elegido en
+  `subtitleLanguages` para que el burn-in nunca se quede sin pista.
+* Backcompat 100 %: el campo `languages` sigue presente en el
+  payload, así que comandos `start_generation` antiguos siguen
+  funcionando idéntico.
+
 ## [0.1.16] — 2026-05-07
 
 ### Corregido — voice cloning real (no más "error decoding response body")

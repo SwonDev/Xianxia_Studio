@@ -190,6 +190,15 @@ async fn try_hyperframes_render(
 pub struct GenerateRequest {
     pub topic: String,
     pub languages: Vec<String>,
+    /// Single IETF tag of the audio TTS language. When absent we fall
+    /// back to `languages[0]` so older callers keep working.
+    #[serde(default)]
+    pub audio_language: Option<String>,
+    /// Multi IETF tags — every entry produces its own SRT + ASS in the
+    /// subtitles phase. The audio_language entry is the one burned
+    /// into the rendered MP4. When absent we fall back to `languages`.
+    #[serde(default)]
+    pub subtitle_languages: Option<Vec<String>>,
     pub target_minutes: u32,
     #[serde(default)]
     pub experimental_llm: bool,
@@ -411,10 +420,12 @@ async fn run(
     // earlier hardcoded "English" silently ignored the user's selection,
     // so even when the UI checked Spanish first the audio came back in
     // English (and only the subtitles honoured the Spanish request).
+    // Audio language: explicit `audio_language` field wins; legacy
+    // path falls back to `languages[0]` for backcompat.
     let audio_lang_tag = req
-        .languages
-        .first()
-        .map(|s| s.as_str())
+        .audio_language
+        .as_deref()
+        .or_else(|| req.languages.first().map(|s| s.as_str()))
         .unwrap_or("en");
     let audio_lang_name = match audio_lang_tag {
         "en" => "English",
@@ -856,14 +867,40 @@ async fn run(
     unload(&client, "image").await;
     unload(&client, "comfyui").await;
 
-    let primary_lang = req.languages.first().cloned().unwrap_or_else(|| "en".to_string());
+    // Subtitles: source = audio language (the one Whisper transcribes
+    // and that gets burned into the MP4); targets = the multi-select
+    // subtitle_languages from the UI (each produces its own SRT+ASS).
+    // Backcompat: when audio_language/subtitle_languages are absent we
+    // fall back to the legacy `languages[0]` + `languages` shape.
+    let primary_lang = req
+        .audio_language
+        .clone()
+        .or_else(|| req.languages.first().cloned())
+        .unwrap_or_else(|| "en".to_string());
+    let target_subs: Vec<String> = req
+        .subtitle_languages
+        .clone()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| {
+            if req.languages.is_empty() {
+                vec![primary_lang.clone()]
+            } else {
+                req.languages.clone()
+            }
+        });
+    // Always make sure the audio language is present so a track exists
+    // for the burned-in caption pass.
+    let mut target_subs_normalised = target_subs.clone();
+    if !target_subs_normalised.iter().any(|x| x == &primary_lang) {
+        target_subs_normalised.insert(0, primary_lang.clone());
+    }
     let subs: serde_json::Value = client
         .post(format!("{}/subtitles", PY_SIDECAR))
         .timeout(std::time::Duration::from_secs(15 * 60))
         .json(&serde_json::json!({
             "audio_path": narration_audio,
             "source_language": primary_lang,
-            "target_languages": req.languages,
+            "target_languages": target_subs_normalised,
             "vertical": req.vertical,
             "out_dir": out_dir,
             "style": req.caption_style.clone().unwrap_or_else(|| "xianxia".to_string()),
