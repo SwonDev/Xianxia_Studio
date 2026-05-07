@@ -1,12 +1,19 @@
 """Prompt templates for the LLM phases."""
 
-SCRIPT_PROMPT_TEMPLATE = """You are a master narrator for a YouTube channel about Chinese mythology, xianxia, wuxia, and cultivation lore. Your tone is epic, mystical, and accessible to Western audiences.
+SCRIPT_PROMPT_TEMPLATE = """RESPONDE EXCLUSIVAMENTE EN {language_name}. WRITE EVERY NARRATION SENTENCE IN {language_name}. NEVER USE ENGLISH FOR THE PROSE.
 
-Write a COMPLETE narration script of approximately {minutes} minutes (~{minutes}50 words at 150 wpm) about: {topic}
+You are a master narrator for a YouTube channel about Chinese mythology, xianxia, wuxia, and cultivation lore. Your tone is epic, mystical, and accessible to a global audience.
+
+Write a COMPLETE narration script in {language_name} of approximately {minutes} minutes (~{minutes}50 words at 150 wpm) about: {topic}
+
+═══ LANGUAGE (NON-NEGOTIABLE) ═══
+- The narration prose MUST be entirely in {language_name}. Not English. Not bilingual. ONLY {language_name}.
+- The ONLY English content allowed is INSIDE the technical marker bodies: [IMAGE: english description], [MUSIC: english label], [CHAPTER: english title]. These are pipeline instructions, the viewer never reads them.
+- If you slip into English at any point, the script is rejected. Stay strictly in {language_name} for everything outside those bracketed markers.
 
 ═══ STRUCTURE (mandatory) ═══
 - Open in medias res — never with "In this video", "Today we'll talk about", "Welcome".
-- Write flowing English prose. Use occasional second-person ("imagine you stand…").
+- Write flowing prose in {language_name}. Use occasional second-person address ("imagine you stand…" — translated to {language_name}).
 - Use ~150 words per minute. Target ≈{minutes}50 words. DO NOT stop early.
 
 ═══ MARKERS (mandatory frequency) ═══
@@ -66,7 +73,10 @@ The tablets answered him before he could speak.
 [IMAGE: a translucent dragon-figure made of swirling mist erupts upward from the frozen lake, scattering ice shards into a low golden sun, epic, photorealistic, cinematic]
 …
 
-Begin the FULL script now (do not stop until you reach ~{minutes}50 words):
+═══ FINAL REMINDER ═══
+Last reminder before you write: every word of narration must be in {language_name}. Markers stay in English. Begin now.
+
+Begin the FULL script now in {language_name} (do not stop until you reach ~{minutes}50 words):
 """
 
 METADATA_PROMPT_TEMPLATE = """Given the following xianxia narration script, produce YouTube metadata as strict JSON with this shape:

@@ -6,6 +6,43 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.14] — 2026-05-07
+
+### Corregido — /script ignoraba el idioma seleccionado en la UI
+
+* `apps/sidecar-py/src/xianxia_ai/routes/script.py::generate_script` ahora
+  acepta `languages[0]` (el primer item del array `languages` enviado por
+  la UI) y mapea IETF tag → nombre completo (en/es/zh/ja/ko/de/fr/it/pt/ru
+  con variantes). El nombre se inyecta en `SCRIPT_PROMPT_TEMPLATE` como
+  `{language_name}` y se refuerza con un **system prompt agresivo en
+  mayúsculas**: `"YOU MUST WRITE THE ENTIRE NARRATION IN {LANGUAGE}."`.
+* `apps/sidecar-py/src/xianxia_ai/prompts.py::SCRIPT_PROMPT_TEMPLATE`
+  reescrito con bloque LANGUAGE no-negociable triplicado (apertura,
+  sección dedicada, recordatorio final): el modelo Gemma 4B abliterated
+  por sí solo ignoraba la instrucción cuando estaba enterrada en el
+  cuerpo del prompt; con la triple capa + system override ya respeta
+  el idioma sin desviarse al inglés.
+* Verificado e2e: pidiendo `language=es` el script sale ahora literalmente
+  en español ("Desde el corazón de las Montañas Ancestrales…"), los
+  marker bodies (`[IMAGE: …]`, etc.) se mantienen en inglés (correcto
+  porque son instrucciones del pipeline, no parte de lo que el viewer
+  oye), y el TTS Qwen3-TTS-1.7B con `language=Spanish` ahora puede
+  leer texto realmente español en lugar de pronunciar inglés "a la
+  española".
+
+### Notas técnicas
+
+* El bug venía de v0.1.12: ese release ya corrigió el TTS hardcoded a
+  "English" → ahora respeta el idioma seleccionado, pero la
+  **generación del script base** seguía siendo en inglés. El TTS
+  recibía `language=Spanish` y leía un script inglés, lo que producía
+  audio raro con palabras inglesas pronunciadas como si fueran
+  españolas. v0.1.14 cierra el círculo.
+* El system prompt mayúsculas + repetición triplicada es necesario
+  porque Gemma 4B abliterated tiene un "default mode" muy fuerte
+  hacia el inglés cuando recibe prompts técnicos largos. La
+  redundancia es deliberada — modelo pequeño, instrucción clara.
+
 ## [0.1.13] — 2026-05-07
 
 ### Mejorado — Smart reframing OpusClip-like en /shorts/from_video

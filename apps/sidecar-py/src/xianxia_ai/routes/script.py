@@ -42,16 +42,42 @@ class ScriptResponse(BaseModel):
     estimated_seconds: float
 
 
+_LANG_TO_NAME = {
+    "en": "English",
+    "es": "Spanish",
+    "zh": "Simplified Chinese",
+    "zh-CN": "Simplified Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "de": "German",
+    "fr": "French",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "pt-BR": "Brazilian Portuguese",
+    "ru": "Russian",
+    "ar": "Arabic",
+}
+
+
 @router.post("", response_model=ScriptResponse)
 async def generate_script(req: ScriptRequest) -> ScriptResponse:
     # `xianxia-llm` is the registered Ollama model created from the
     # supergemma4-e4b-abliterated GGUF (Gemma 4 family). The `experimental`
     # flag is a no-op kept for backwards compatibility — abliterated IS the
     # default, per project spec.
+    #
+    # `languages[0]` drives the narration language. Earlier versions hard-coded
+    # English in the prompt template, so even when the UI selected Spanish the
+    # TTS ended up reading English text with a Spanish voice (jarring
+    # pronunciation). We now substitute {language_name} into the prompt and
+    # ask the model explicitly to write the script in that language.
     model = req.model
+    lang_tag = (req.languages or ["en"])[0]
+    language_name = _LANG_TO_NAME.get(lang_tag, "English")
     prompt = SCRIPT_PROMPT_TEMPLATE.format(
         topic=req.topic,
         minutes=req.target_minutes,
+        language_name=language_name,
     )
     # Headroom for: ~250 tokens prompt + ~{minutes}50 words narration + markers.
     # Without explicit num_ctx/num_predict Ollama defaults to num_ctx=2048,
@@ -61,12 +87,26 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
     #   num_ctx    → 8192 covers prompt + 14-min narration + safety margin.
     #   num_predict→ 4096 lets the model emit ~3000 words + markers without
     #                hitting an early stop.
-    log_event("info", "script_generate_start", topic=req.topic[:60], minutes=req.target_minutes, model=model)
+    log_event(
+        "info", "script_generate_start",
+        topic=req.topic[:60], minutes=req.target_minutes,
+        model=model, language=language_name,
+    )
+    # Gemma 4 4B abliterated tends to default back to English even when the
+    # body of the prompt requests another language. We override the system
+    # role with a non-negotiable single-sentence instruction in capitals so
+    # the model commits to the requested language from token 0.
+    system_prompt = (
+        f"YOU MUST WRITE THE ENTIRE NARRATION IN {language_name.upper()}. "
+        f"Marker bodies (IMAGE, MUSIC, CHAPTER) stay in English; narration "
+        f"prose is in {language_name}. No exceptions."
+    )
     async with httpx.AsyncClient(timeout=900.0) as client:
         resp = await client.post(
             f"{OLLAMA_URL}/api/generate",
             json={
                 "model": model,
+                "system": system_prompt,
                 "prompt": prompt,
                 "stream": False,
                 "options": {
