@@ -20,6 +20,7 @@ import json
 import os
 import re
 import subprocess
+import time as _t
 import uuid
 from pathlib import Path
 from typing import Iterable
@@ -158,40 +159,89 @@ class SubtitleResponse(BaseModel):
 
 @router.post("", response_model=SubtitleResponse)
 async def generate_subtitles(req: SubtitleRequest) -> SubtitleResponse:
+    """Phase 8 of the pipeline: faster-whisper transcription → SRT/ASS
+    karaoke → optional Ollama translation.
+
+    DESIGN NOTE: this endpoint is `async def` BUT the heaviest operation
+    (whisper.transcribe) is sync and CPU/GPU-bound. We MUST off-load it
+    to a worker thread via `asyncio.to_thread`, otherwise the FastAPI
+    event loop is blocked and every other request (including the next
+    pipeline phase invoked by the Rust supervisor) times out with
+    "error sending request". This was the cause of the v0.1.9 run 8
+    deadlock that motivated the v0.1.10 observability work.
+    """
+    import asyncio
+
+    from ..logging_utils import log_event
+
+    log_event(
+        "info",
+        "subtitles_start",
+        audio_path=req.audio_path,
+        source_language=req.source_language,
+        target_languages=req.target_languages,
+        vertical=req.vertical,
+        style=req.style,
+    )
+    t0 = _t.time()
+
     if not Path(req.audio_path).exists():
         raise HTTPException(404, f"audio not found: {req.audio_path}")
 
     out_dir = Path(req.out_dir or os.environ.get("XIANXIA_OUT_DIR", "./out"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) Transcribe with faster-whisper (word-level timestamps required for karaoke)
+    # 1) Load whisper model — synchronous, but cheap on warm cache.
+    #    Run in a thread anyway so the first cold load doesn't block the
+    #    event loop (it can be ~5-10 s on slow disks).
+    log_event("info", "subtitles_whisper_load_start")
     try:
-        model = whisper_model.load()
+        model = await asyncio.to_thread(whisper_model.load)
     except Exception as e:
+        log_event("error", "subtitles_whisper_load_failed", error=str(e))
         raise HTTPException(503, f"whisper not ready: {e}") from e
+    log_event("info", "subtitles_whisper_load_done", duration_ms=int((_t.time() - t0) * 1000))
 
-    segments, info = model.transcribe(
-        req.audio_path,
-        language=req.source_language,
-        word_timestamps=True,
-        beam_size=5,
+    # 2) Transcribe — heavy GPU/CPU work. MUST be threaded so the event
+    #    loop stays responsive (otherwise /health and the next pipeline
+    #    POST hang behind this request).
+    log_event("info", "subtitles_transcribe_start")
+    t_trans = _t.time()
+    def _do_transcribe():
+        segments, info = model.transcribe(
+            req.audio_path,
+            language=req.source_language,
+            word_timestamps=True,
+            beam_size=5,
+        )
+        return list(segments), info
+    segments, info = await asyncio.to_thread(_do_transcribe)
+    log_event(
+        "info",
+        "subtitles_transcribe_done",
+        duration_ms=int((_t.time() - t_trans) * 1000),
+        segments_count=len(segments),
+        audio_duration_seconds=float(info.duration),
+        detected_language=getattr(info, "language", None),
     )
-    segments = list(segments)
 
-    # 2) Source SRT
+    # 3) Source SRT + ASS karaoke
     src_srt = out_dir / f"subs-{req.source_language}.srt"
     src_srt.write_text(_segments_to_srt(segments), encoding="utf-8")
-
-    # 3) Source ASS — word-level karaoke
     words = _flatten_words(segments)
     src_ass = out_dir / f"subs-{req.source_language}.ass"
     base_font, base_size = LANG_FONTS.get(req.source_language, ("Arial", 64))
-    # In vertical Shorts mode, bump the font ~25 % so captions stay legible on
-    # mobile screens without dominating the frame.
     src_size = int(base_size * 1.25) if req.vertical else base_size
     src_ass.write_text(
         _word_karaoke_ass(words, base_font, src_size, vertical=req.vertical, style=req.style),
         encoding="utf-8",
+    )
+    log_event(
+        "info",
+        "subtitles_source_written",
+        srt=str(src_srt),
+        ass=str(src_ass),
+        word_count=len(words),
     )
 
     assets: list[SubtitleAsset] = [
@@ -202,13 +252,23 @@ async def generate_subtitles(req: SubtitleRequest) -> SubtitleResponse:
         )
     ]
 
-    # 4) Translations + per-segment ASS for the rest
+    # 4) Translations + per-language ASS karaoke (no event loop blocking
+    #    because _translate_entries is fully async w/ httpx).
     src_entries = _parse_srt(src_srt.read_text(encoding="utf-8"))
     for lang in req.target_languages:
         if lang == req.source_language:
             continue
+        log_event("info", "subtitles_translate_start", target=lang, entries=len(src_entries))
+        t_tr = _t.time()
         translated_entries = await _translate_entries(
             src_entries, target=LANG_NAMES.get(lang, lang), model=req.model
+        )
+        log_event(
+            "info",
+            "subtitles_translate_done",
+            target=lang,
+            duration_ms=int((_t.time() - t_tr) * 1000),
+            entries=len(translated_entries),
         )
         srt_p = out_dir / f"subs-{lang}.srt"
         srt_p.write_text(_entries_to_srt(translated_entries), encoding="utf-8")
@@ -223,6 +283,12 @@ async def generate_subtitles(req: SubtitleRequest) -> SubtitleResponse:
             SubtitleAsset(language=lang, srt_path=str(srt_p), ass_path=str(ass_p))
         )
 
+    log_event(
+        "info",
+        "subtitles_done",
+        duration_ms=int((_t.time() - t0) * 1000),
+        assets=len(assets),
+    )
     return SubtitleResponse(
         source_language=req.source_language,
         duration_seconds=float(info.duration),

@@ -46,11 +46,29 @@ def _augment_path_for_ffmpeg() -> None:
 
 _augment_path_for_ffmpeg()
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+# Initialize JSONL structured logging BEFORE importing any route handlers
+# so all subsequent log calls (including imports' module-level logging) go
+# through the JSONL formatter. Idempotent.
+from xianxia_ai.logging_utils import (  # noqa: E402
+    log_event,
+    new_request_id,
+    set_phase,
+    set_project_id,
+    set_request_id,
+    setup_logging,
+)
 
-from xianxia_ai.routes import (
+_JSONL_PATH = setup_logging()
+
+import time as _time  # noqa: E402
+
+from fastapi import FastAPI, Request  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
+
+from xianxia_ai.routes import (  # noqa: E402
     depth,
+    diag,
     engagement,
     export,
     health,
@@ -68,18 +86,14 @@ from xianxia_ai.routes import (
     unload,
 )
 
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    level=logging.INFO,
-)
 log = logging.getLogger("xianxia.sidecar")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Xianxia Python sidecar starting on :8731")
+    log_event("info", "sidecar_python_boot", port=8731, jsonl_path=str(_JSONL_PATH))
     yield
-    log.info("Xianxia Python sidecar shutting down")
+    log_event("info", "sidecar_python_shutdown")
 
 
 app = FastAPI(
@@ -87,6 +101,71 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    """Assigns a per-request request_id, captures duration, sets the
+    project_id/phase from request headers if present, and emits one
+    JSONL `http_request` event per finished request.
+
+    The Rust pipeline supervisor will be modified in a follow-up step to
+    propagate `X-Xianxia-Request-Id`, `X-Xianxia-Project-Id` and
+    `X-Xianxia-Phase` headers so cross-source correlation works without
+    body parsing.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip noisy /health polling — we emit a single boot event for those
+        is_health = request.url.path == "/health"
+        rid = request.headers.get("x-xianxia-request-id") or new_request_id()
+        pid = request.headers.get("x-xianxia-project-id")
+        ph_raw = request.headers.get("x-xianxia-phase")
+        try:
+            ph = int(ph_raw) if ph_raw else None
+        except ValueError:
+            ph = None
+
+        rid_token = set_request_id(rid)
+        pid_token = set_project_id(pid)
+        ph_token = set_phase(ph)
+        start = _time.monotonic()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            response.headers["x-xianxia-request-id"] = rid
+            return response
+        except Exception as exc:  # pragma: no cover (re-raised to FastAPI)
+            log_event(
+                "error",
+                "http_handler_unhandled",
+                method=request.method,
+                path=request.url.path,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise
+        finally:
+            duration_ms = int((_time.monotonic() - start) * 1000)
+            if not is_health or status_code >= 400:
+                log_event(
+                    "info" if status_code < 400 else "error",
+                    "http_request",
+                    method=request.method,
+                    path=request.url.path,
+                    status=status_code,
+                    duration_ms=duration_ms,
+                    client_port=request.client.port if request.client else None,
+                )
+            try:
+                set_request_id(None)
+                set_project_id(None)
+                set_phase(None)
+            except Exception:
+                pass
+
+
+app.add_middleware(RequestContextMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -97,10 +176,12 @@ app.add_middleware(
     #   http://asset.localhost — convertFileSrc URLs from the asset protocol
     allow_origin_regex=r"^(http://localhost:1420|tauri://localhost|https?://tauri\.localhost|http://asset\.localhost)$",
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "x-xianxia-request-id", "x-xianxia-project-id", "x-xianxia-phase"],
+    expose_headers=["x-xianxia-request-id"],
 )
 
 app.include_router(health.router)
+app.include_router(diag.router, prefix="/diag", tags=["diag"])
 app.include_router(install.router, prefix="/install", tags=["install"])
 app.include_router(script.router, prefix="/script", tags=["script"])
 app.include_router(tts.router, prefix="/tts", tags=["tts"])

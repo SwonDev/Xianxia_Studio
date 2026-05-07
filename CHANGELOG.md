@@ -6,6 +6,68 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.10] — 2026-05-07
+
+### Añadido — observabilidad estructurada JSONL
+
+* **Sidecar Python (`xianxia_ai/logging_utils.py`)**: cada log es un
+  objeto JSON en `<cache>/logs/sidecar-py.jsonl` con `ts` ISO ms,
+  `level`, `source=python`, `request_id`, `project_id`, `phase` y
+  campos arbitrarios. Middleware FastAPI inyecta `request_id` por
+  petición y emite un evento `http_request` con `duration_ms` y
+  `status` cuando termina.
+* **Sidecar Node (`logger.ts`)**: pino con destino NDJSON a
+  `<cache>/logs/sidecar-node.jsonl`, schema compatible con el
+  Python. Pretty stderr opcional con `XIANXIA_LOG_PRETTY=1`.
+* **Pipeline Rust (`diag.rs`)**: `tracing-subscriber` con layer
+  JSON a `<cache>/logs/pipeline-rust.jsonl` además del console
+  layer dev. `#[instrument]` en cada fase deja un span con
+  duration_ms automático.
+* **Endpoint `POST /diag/snapshot`**: devuelve en una llamada los
+  últimos N MB combinados de los 4 streams (rust + python + node +
+  comfyui + vram), filtrable por `project_id`, `since`, `level`.
+  Permite reconstruir un run completo sin hacer tail manual de
+  varios archivos.
+* **Endpoints `GET /diag/health`, `/diag/vram`, `/diag/list`**:
+  status del sidecar, snapshot VRAM cross-process (ComfyUI
+  /system_stats + Ollama /api/ps + cuda.mem_get_info) y listado
+  de archivos de log con tamaños.
+* **VRAM monitor periódico** (Rust supervisor): cada 30 s captura
+  Comfy + Ollama y escribe línea JSONL en `vram.jsonl`. Permite
+  correlacionar phase transitions con uso real de VRAM al
+  diagnosticar races entre unloads.
+* **Log rotation automática** (`diag::rotate_logs`): al arrancar
+  la app, archivos > 7 días se gzipean a `archive/<name>.gz` y se
+  borran los originales. Archive > 28 días se purgan. Footprint
+  total se mantiene < 80 MB incluso en semanas de testing intenso.
+
+### Corregido — `subtitles` y `tts` bloqueaban el event loop
+
+El run 8 (v0.1.9) se atascó en Phase 8 con "error sending request
+for url 8731/subtitles". Causa raíz: `generate_subtitles` era
+`async def` pero dentro hacía `whisper_model.load()` y
+`model.transcribe()` que son **síncronos CPU/GPU-bound**, lo que
+bloqueaba el event loop entero. Mientras /subtitles procesaba,
+ningún otro request podía progresar y el cliente Rust hacía
+timeout antes de recibir respuesta.
+
+Fix integral:
+* `subtitles.generate_subtitles` ahora envuelve `whisper_model.load()`
+  y `model.transcribe()` en `asyncio.to_thread()` — el evento loop
+  queda libre para servir /health, /unload y la siguiente fase.
+* `tts.synthesize` movido `tts_model.load()` cold-start al
+  threadpool por la misma razón (5-30 s de carga inicial).
+* Ambos endpoints emiten ahora eventos JSONL detallados de cada
+  paso (load_start, load_done, transcribe_start, transcribe_done,
+  translate_start, translate_done) con `duration_ms` para hacer
+  diagnóstico granular sin guesswork.
+
+### Notas de diseño
+
+Esta versión es deuda operacional necesaria antes de v0.2.0
+long-form: sin logs estructurados sería imposible diagnosticar
+fallos en pipelines de 30+ min con múltiples capítulos.
+
 ## [0.1.9] — 2026-05-06
 
 ### Corregido — ComfyUI cache-hit infinito

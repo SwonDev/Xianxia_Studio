@@ -180,8 +180,12 @@ def _do_synthesize_clone(text: str, language: str, ref_audio: str, ref_text: str
 
 @router.post("", response_model=TTSResponse)
 async def synthesize(req: TTSRequest) -> TTSResponse:
+    # tts_model.load() is sync; the first cold load can take 5-30 s while
+    # PyTorch maps the GGUF weights, which would block the event loop and
+    # make every other request (including /health and the next pipeline
+    # POST) time out. Move it to a worker thread.
     try:
-        tts_model.load()
+        await asyncio.get_running_loop().run_in_executor(None, tts_model.load)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"TTS model not ready: {e}") from e
 

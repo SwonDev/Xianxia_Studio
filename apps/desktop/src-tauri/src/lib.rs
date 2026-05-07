@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod diag;
 mod hardware;
 mod installer;
 mod pipeline;
@@ -10,13 +11,17 @@ mod youtube;
 
 use std::sync::Arc;
 use tauri::Manager;
-use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .init();
+    // Structured JSONL logging (writes to <cache_dir>/logs/pipeline-rust.jsonl)
+    // plus a console layer for dev. Replaces the previous fmt-only setup so
+    // pipeline runs leave a machine-readable audit trail that the
+    // Python /diag/snapshot endpoint can merge with sidecar logs.
+    let _ = diag::init();
+    if let Err(e) = diag::rotate_logs() {
+        tracing::warn!(error = %e, "log rotation failed at boot");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -91,6 +96,12 @@ pub fn run() {
             if let Err(e) = sidecars::extract_bundled_sidecars(app.handle()) {
                 tracing::warn!(error = %e, "sidecar extraction failed — falling back to dev workspace if available");
             }
+
+            // Periodic VRAM snapshot writer — appends to vram.jsonl every 30 s
+            // for cross-process VRAM correlation when diagnosing pipeline races.
+            tauri::async_runtime::spawn(async move {
+                diag::vram_monitor_loop().await;
+            });
 
             // Bring up the sidecar supervisor IMMEDIATELY (independent of DB) so
             // the topbar dots and other service-level UI work even if the DB
