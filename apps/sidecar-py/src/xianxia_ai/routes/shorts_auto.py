@@ -193,6 +193,89 @@ def _cut_short(
     duration: float,
     burn_ass_path: Path | None,
 ) -> None:
+    """Cut a vertical Short out of a horizontal source.
+
+    OpusClip-style smart reframing: per-frame ROI tracking (mediapipe
+    face detection + OpenCV saliency fallback), EMA-smoothed pan
+    trajectory, adaptive zoom (1.0×–1.4× depending on ROI size). Falls
+    back to the legacy center-crop when the source is already vertical
+    or when CV libs aren't available.
+
+    The subtitle burn-in runs as a SECOND ffmpeg pass so the karaoke
+    text always sits in the safe zone of the reframed video, not on
+    the original 1920×1080 coordinate system (which would clip).
+    """
+    src_w, src_h = _probe_dimensions(video_path)
+    target_ar = 9.0 / 16.0
+    src_ar = src_w / src_h if src_h else 1.0
+
+    if src_ar <= target_ar * 1.05:
+        # Source is already 9:16 (or close). Center crop is fine here.
+        _cut_short_center_crop(video_path, out_path, start, duration, burn_ass_path)
+        return
+
+    try:
+        # First try the smart path (mediapipe + saliency tracking).
+        # On any failure (missing libs, codec issue, etc.) we fall
+        # through to the legacy center-crop so a Short is always
+        # produced — never silently broken.
+        intermediate = out_path.with_suffix(".reframed.mp4")
+        _smart_reframe_to_vertical(
+            video_path,
+            intermediate,
+            start=start,
+            duration=duration,
+            src_w=src_w,
+            src_h=src_h,
+        )
+        if not intermediate.exists() or intermediate.stat().st_size < 1024:
+            raise RuntimeError("smart reframe produced empty file")
+        # Burn-in pass on the already-vertical reframed clip.
+        if burn_ass_path is not None and burn_ass_path.exists():
+            _burn_subs_into_vertical(intermediate, out_path, burn_ass_path)
+            try:
+                intermediate.unlink()
+            except OSError:
+                pass
+        else:
+            intermediate.replace(out_path)
+        return
+    except Exception as exc:
+        log.warning(
+            "smart reframe failed (%s); falling back to center crop", exc
+        )
+        _cut_short_center_crop(video_path, out_path, start, duration, burn_ass_path)
+
+
+def _probe_dimensions(video_path: str) -> tuple[int, int]:
+    """Return (width, height) of the source. Uses ffprobe to avoid
+    spinning up an OpenCV cap for a single property read."""
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "csv=p=0",
+                video_path,
+            ],
+            text=True,
+        ).strip()
+        w, h = (int(x) for x in out.split(","))
+        return w, h
+    except Exception:
+        return 1920, 1080
+
+
+def _cut_short_center_crop(
+    video_path: str,
+    out_path: Path,
+    start: float,
+    duration: float,
+    burn_ass_path: Path | None,
+) -> None:
+    """Legacy fallback — naive center crop. Kept for safety when smart
+    reframing isn't available (no mediapipe / no saliency / etc.)."""
     enc = best_video_encoder()
     if enc.codec_name == "h264_nvenc":
         encode_args = [
@@ -203,16 +286,10 @@ def _cut_short(
     else:
         encode_args = ["-preset", "slow", "-crf", "19", "-pix_fmt", "yuv420p"]
 
-    # Vertical crop: take center column 9:16 from the source 16:9.
-    # ih*9/16 = 1080 * 9/16 = 607.5 -> rounded by ffmpeg. For 1920×1080 source,
-    # crop is 607x1080 then scale to 1080x1920.
     vf = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920:flags=lanczos+full_chroma_int+accurate_rnd"
     if burn_ass_path is not None and burn_ass_path.exists():
-        # libass needs the file by basename + cwd workaround for Windows drive letters.
         vf += f",subtitles={burn_ass_path.name}"
 
-    # Master loudness for mobile + sidechain ducking (no separate music track here,
-    # source already has the mix; we just normalise).
     af = "loudnorm=I=-14:TP=-1.5:LRA=11"
 
     cmd = [
@@ -233,6 +310,261 @@ def _cut_short(
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
     if proc.returncode != 0:
         raise HTTPException(500, f"shorts cut failed: {proc.stderr[-500:]}")
+
+
+def _smart_reframe_to_vertical(
+    src_video: str,
+    out_video: Path,
+    *,
+    start: float,
+    duration: float,
+    src_w: int,
+    src_h: int,
+) -> None:
+    """OpusClip-style smart vertical reframe.
+
+    Pass 1: sample ~5 fps, detect dominant ROI (face → saliency fallback),
+    record (cx, cy, roi_size) per sample.
+    Smooth: EMA alpha=0.15 on (cx, cy, zoom). Zoom = 1.0 + 0.4*(1-ROI),
+    clamped to [1.0, 1.45].
+    Pass 2: re-read frames in order, crop window = (src_h/zoom)*9/16 ×
+    (src_h/zoom), centered on smoothed (cx, cy), Lanczos-resize to
+    1080×1920, pipe rawvideo into ffmpeg which muxes the source audio
+    slice. NVENC encoded; the burn-in is a separate ffmpeg pass on the
+    output of this function.
+
+    All vertical ROI vertical movement clamped to inside the source frame
+    (no black bars, no stretching).
+    """
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
+
+    OUT_W, OUT_H = 1080, 1920
+    TARGET_AR = OUT_W / OUT_H  # 0.5625
+
+    cap = cv2.VideoCapture(src_video)
+    if not cap.isOpened():
+        raise RuntimeError(f"cv2 cannot open {src_video}")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    if fps <= 0 or fps > 240:
+        fps = 30.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    start_f = max(0, int(round(start * fps)))
+    end_f = min(total - 1 if total > 0 else int((start + duration) * fps),
+                int(round((start + duration) * fps)))
+
+    # ── Optional ROI detectors. We tolerate their absence so the
+    #    function still works on a stripped-down install.
+    face_det = None
+    try:
+        import mediapipe as mp  # type: ignore
+        face_det = mp.solutions.face_detection.FaceDetection(
+            model_selection=1, min_detection_confidence=0.45,
+        )
+    except Exception:
+        face_det = None
+    saliency = None
+    try:
+        if hasattr(cv2, "saliency"):
+            saliency = cv2.saliency.StaticSaliencyFineGrained_create()
+    except Exception:
+        saliency = None
+
+    # ─── Pass 1: ROI sampling ─────────────────────────────────────
+    sample_every = max(1, int(round(fps / 5.0)))  # ~5 Hz
+    samples: list[tuple[int, float, float, float]] = []  # (frame, cx, cy, roi_area)
+    cur = start_f
+    while cur <= end_f:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, cur)
+        ok, frame = cap.read()
+        if not ok:
+            break
+        cx = src_w * 0.5
+        cy = src_h * 0.5
+        roi_area = 0.0
+        roi_score = 0.0
+        if face_det is not None:
+            try:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                res = face_det.process(rgb)
+                if res.detections:
+                    biggest = max(
+                        res.detections,
+                        key=lambda d: d.location_data.relative_bounding_box.width
+                        * d.location_data.relative_bounding_box.height,
+                    )
+                    bb = biggest.location_data.relative_bounding_box
+                    cx = max(0.0, min(1.0, bb.xmin + bb.width / 2.0)) * src_w
+                    cy = max(0.0, min(1.0, bb.ymin + bb.height / 2.0)) * src_h
+                    roi_area = float(bb.width * bb.height)
+                    roi_score = float(biggest.score[0]) if biggest.score else 0.7
+            except Exception:
+                pass
+        if roi_score < 0.4 and saliency is not None:
+            try:
+                ok2, sal_map = saliency.computeSaliency(frame)
+                if ok2:
+                    sal_u8 = (sal_map * 255).astype(np.uint8)
+                    m = cv2.moments(sal_u8)
+                    if m["m00"] > 100:
+                        cx = float(m["m10"] / m["m00"])
+                        cy = float(m["m01"] / m["m00"])
+                        # Normalise the saliency mass to a "roi_area" proxy
+                        # so zoom still reacts to scenes with a single
+                        # localised hot spot.
+                        roi_area = max(0.02, min(0.5, float(m["m00"]) / (sal_u8.size * 255.0)))
+            except Exception:
+                pass
+        samples.append((cur, cx, cy, roi_area))
+        cur += sample_every
+
+    if not samples:
+        cap.release()
+        raise RuntimeError("no frames could be sampled for ROI detection")
+
+    # Smooth trajectory + zoom with EMA. Initial state seeded from the
+    # first sample so the very first frame doesn't snap.
+    alpha = 0.15
+    sm_x, sm_y, sm_zoom = samples[0][1], samples[0][2], 1.0
+    smoothed: list[tuple[int, float, float, float]] = []
+    for f, x, y, roi in samples:
+        # ROI -> target zoom: small ROI = zoom in. roi=0 → 1.4×; roi≥0.18 → 1.0×.
+        target_zoom = 1.0 + max(0.0, 0.4 * (1.0 - min(1.0, roi / 0.18)))
+        target_zoom = max(1.0, min(1.45, target_zoom))
+        sm_x = alpha * x + (1 - alpha) * sm_x
+        sm_y = alpha * y + (1 - alpha) * sm_y
+        sm_zoom = alpha * target_zoom + (1 - alpha) * sm_zoom
+        smoothed.append((f, sm_x, sm_y, sm_zoom))
+
+    # Frame-idx → (cx, cy, zoom) lookup with linear interp.
+    def _lookup(fidx: int) -> tuple[float, float, float]:
+        if fidx <= smoothed[0][0]:
+            return smoothed[0][1], smoothed[0][2], smoothed[0][3]
+        if fidx >= smoothed[-1][0]:
+            return smoothed[-1][1], smoothed[-1][2], smoothed[-1][3]
+        # binary search
+        lo, hi = 0, len(smoothed) - 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if smoothed[mid][0] <= fidx:
+                lo = mid
+            else:
+                hi = mid
+        f0, x0, y0, z0 = smoothed[lo]
+        f1, x1, y1, z1 = smoothed[hi]
+        t = (fidx - f0) / max(1, f1 - f0)
+        return (
+            x0 + (x1 - x0) * t,
+            y0 + (y1 - y0) * t,
+            z0 + (z1 - z0) * t,
+        )
+
+    # ─── Pass 2: render frames + pipe to ffmpeg ─────────────────
+    enc = best_video_encoder()
+    if enc.codec_name == "h264_nvenc":
+        encode_args = [
+            "-preset", "p7", "-tune", "hq", "-rc", "vbr", "-cq", "19",
+            "-spatial-aq", "1", "-temporal-aq", "1", "-bf", "4",
+            "-pix_fmt", "yuv420p",
+        ]
+    else:
+        encode_args = ["-preset", "slow", "-crf", "19", "-pix_fmt", "yuv420p"]
+
+    cmd = [
+        "ffmpeg", "-y",
+        # Input 0: rawvideo from stdin (the smart-reframed BGR24 frames)
+        "-f", "rawvideo", "-pix_fmt", "bgr24",
+        "-s", f"{OUT_W}x{OUT_H}", "-r", f"{fps:.6f}",
+        "-i", "-",
+        # Input 1: original video sliced [start, start+duration] for audio
+        "-ss", f"{start:.3f}",
+        "-i", src_video,
+        "-t", f"{duration:.3f}",
+        "-map", "0:v",
+        "-map", "1:a:0?",
+        "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+        "-c:v", enc.codec_name,
+        *encode_args,
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        "-movflags", "+faststart",
+        "-shortest",
+        str(out_video),
+    ]
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
+    fidx = start_f
+    try:
+        while fidx <= end_f:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            cx, cy, zoom = _lookup(fidx)
+            ch = max(64, int(round(src_h / zoom)))
+            cw = max(36, int(round(ch * TARGET_AR)))
+            if cw > src_w:
+                cw = src_w
+                ch = int(round(cw / TARGET_AR))
+            x1 = int(round(cx - cw / 2))
+            y1 = int(round(cy - ch / 2))
+            x1 = max(0, min(src_w - cw, x1))
+            y1 = max(0, min(src_h - ch, y1))
+            cropped = frame[y1: y1 + ch, x1: x1 + cw]
+            resized = cv2.resize(
+                cropped, (OUT_W, OUT_H), interpolation=cv2.INTER_LANCZOS4
+            )
+            try:
+                proc.stdin.write(resized.tobytes())
+            except (BrokenPipeError, OSError):
+                break
+            fidx += 1
+    finally:
+        cap.release()
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        ret = proc.wait(timeout=300)
+        if ret != 0:
+            stderr = proc.stderr.read().decode("utf-8", errors="ignore") if proc.stderr else ""
+            raise RuntimeError(
+                f"ffmpeg reframe encode failed (rc={ret}): "
+                f"{stderr[-400:] if stderr else 'no stderr'}"
+            )
+
+
+def _burn_subs_into_vertical(
+    src_vertical: Path,
+    out_path: Path,
+    ass_path: Path,
+) -> None:
+    """Second pass: burn ASS karaoke into the already-reframed vertical
+    short. Kept separate from the reframe so the subtitles always sit in
+    the 1080×1920 coordinate system, not the original 16:9."""
+    enc = best_video_encoder()
+    if enc.codec_name == "h264_nvenc":
+        encode_args = [
+            "-preset", "p7", "-tune", "hq", "-rc", "vbr", "-cq", "19",
+            "-pix_fmt", "yuv420p",
+        ]
+    else:
+        encode_args = ["-preset", "slow", "-crf", "19", "-pix_fmt", "yuv420p"]
+    vf = f"subtitles={ass_path.name}"
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(src_vertical),
+        "-vf", vf,
+        "-c:v", enc.codec_name,
+        *encode_args,
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ass_path.parent))
+    if proc.returncode != 0:
+        raise HTTPException(500, f"vertical burn-in failed: {proc.stderr[-500:]}")
 
 
 class ShortsFromVideoRequest(BaseModel):

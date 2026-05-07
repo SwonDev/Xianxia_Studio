@@ -6,6 +6,52 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.13] — 2026-05-07
+
+### Mejorado — Smart reframing OpusClip-like en /shorts/from_video
+
+* `apps/sidecar-py/src/xianxia_ai/routes/shorts_auto.py::_cut_short` ya
+  no es un center crop tonto. Cuando el source es 16:9 (o cualquier
+  aspect > 9:16) ahora corre `_smart_reframe_to_vertical()`:
+  - **Pass 1 — ROI tracking**: muestrea el clip a ~5 fps y, por cada
+    frame, busca el sujeto dominante usando mediapipe FaceDetection
+    (modelo de larga distancia, conf > 0.45). Si no detecta cara,
+    cae a `cv2.saliency.StaticSaliencyFineGrained` y toma el centroide
+    de masa del mapa de saliencia (cubre screencasts, paisajes, UI,
+    etc.).
+  - **Smooth pan trajectory**: EMA con α=0.15 sobre `(cx, cy, zoom)`.
+    El primer frame parte del primer sample para que no haya snap
+    inicial. Todas las posiciones quedan clamped dentro del frame
+    original — no se introducen barras negras.
+  - **Adaptive zoom 1.0×–1.45×**: ROI pequeño (cara distante o icon)
+    aumenta el zoom hasta 1.45×; ROI grande mantiene 1.0×. Suaviza
+    también con la misma EMA.
+  - **Pass 2 — render**: re-lee frames en orden, calcula ventana
+    `(src_h/zoom × 9/16, src_h/zoom)` centrada en `(cx, cy)`,
+    Lanczos-resize a 1080×1920 y emite BGR24 raw por stdin a ffmpeg
+    que lo muxea con el slice de audio del source y el master loudnorm
+    (-14 LUFS / -1.5 dBTP).
+  - **Burn-in en pasada separada** sobre el vertical ya reframeado
+    para que el ASS quede en el sistema de coordenadas 1080×1920 (no
+    en el original) y nunca se salga de la zona segura.
+  - **Fallback**: si mediapipe / saliency no están disponibles, o si el
+    source ya es ≤9:16, conserva el viejo center-crop como
+    `_cut_short_center_crop()`. Un Short se produce SIEMPRE.
+* `_probe_dimensions()` con ffprobe (en lugar de abrir cap OpenCV
+  para una sola property) para decidir si el reframe inteligente
+  aplica.
+
+### Notas técnicas
+
+* Aspect ratio target: 9:16 = 0.5625. El umbral `src_ar > target_ar*1.05`
+  evita reprocesar vídeos que ya son verticales o casi-cuadrados.
+* Cada Short tarda ~2× tiempo real con NVENC en RTX 4060 8 GB
+  (limitado por mediapipe + cv2.read; el encode es prácticamente
+  gratis). Para un Short de 45 s eso son ~90 s de procesamiento.
+* mediapipe + opencv-contrib están en el runtime instalado de la
+  app (`apps/sidecar-py/requirements-vision.txt`). No requiere
+  instalación adicional para usuarios upgradeados.
+
 ## [0.1.12] — 2026-05-07
 
 ### Corregido — multi-idioma audio (TTS hardcodeaba inglés)
