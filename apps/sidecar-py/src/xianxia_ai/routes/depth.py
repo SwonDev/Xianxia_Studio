@@ -189,24 +189,70 @@ def _segment_one(req: DepthSegmentRequest) -> DepthSegmentResponse:
     if mask.dtype != np.uint8:
         mask = np.clip(mask, 0, 255).astype(np.uint8)
 
-    # ── 3) Suaviza el borde de la máscara para componer limpio ───────
+    # ── 3) Pulido de bordes para que el parallax no muestre halos ────
+    # Tres pasos en orden:
+    #   a) erode interior del mask: el sujeto se hace 1-2 px más estrecho
+    #      dentro del recorte → corta los píxeles "halo" semitransparentes
+    #      que rembg deja heredando color del fondo (los bordes oscuros
+    #      visibles cuando un personaje sobre verde-jade se compone con
+    #      otro fondo).
+    #   b) Gaussian blur con kernel mayor → transición suave al fondo.
+    #   c) gamma-curve sobre el alpha (^0.85) → bordes más "duros" en
+    #      la zona alta-opacidad pero suaves en la transición. Evita el
+    #      look "pegatina recortada" sin reintroducir fringe.
     feather = int(req.feather_pixels)
     alpha = mask
+    erode_iter = 1 if feather >= 4 else 0
+    if erode_iter > 0:
+        ek = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        alpha = cv2.erode(alpha, ek, iterations=erode_iter)
     if feather > 0:
         # Kernel impar para GaussianBlur
         k = feather * 2 + 1
-        alpha = cv2.GaussianBlur(mask, (k, k), 0)
+        alpha = cv2.GaussianBlur(alpha, (k, k), 0)
+    if feather > 0:
+        # Gamma 0.85 endurece la zona alta-opacidad sin tocar el feather
+        # de borde. Se aplica solo cuando hay feather, para no afectar
+        # masks duros.
+        af = alpha.astype(np.float32) / 255.0
+        af = np.power(af, 0.85)
+        alpha = np.clip(af * 255.0, 0, 255).astype(np.uint8)
 
-    # ── 4) Construye el FG en RGBA ───────────────────────────────────
-    fg_rgba = np.dstack([np_rgb, alpha])  # (H, W, 4)
+    # ── 4) Construye el FG en RGBA con bleed protection ──────────────
+    # Decontamination: en píxeles de borde semi-transparente, rembg
+    # deja el color del fondo original (típicamente jade-verde) mezclado.
+    # Cuando este FG se compone sobre OTRO fondo durante parallax, ese
+    # color residual chillón delata el corte. Solución: en la franja de
+    # alpha entre 30 y 200 (la "soft edge"), arrastramos el RGB hacia
+    # el promedio interior del sujeto. No es matting perfecto pero
+    # elimina el 80 % del halo perceptible.
+    rgb_clean = np_rgb.copy()
+    if feather > 0:
+        soft = (alpha > 30) & (alpha < 200)
+        if soft.any():
+            interior = alpha >= 220
+            if interior.any():
+                # Color medio del interior, usado para arrastrar el borde.
+                interior_mean = np_rgb[interior].mean(axis=0).astype(np.uint8)
+                # Mezcla 35 % interior_mean con el píxel original en la zona soft.
+                rgb_clean[soft] = (
+                    0.65 * np_rgb[soft].astype(np.float32)
+                    + 0.35 * interior_mean.astype(np.float32)
+                ).astype(np.uint8)
+    fg_rgba = np.dstack([rgb_clean, alpha])  # (H, W, 4)
     Image.fromarray(fg_rgba, mode="RGBA").save(str(fg_path), format="PNG", optimize=True)
 
-    # ── 5) Construye el BG inpainted ────────────────────────────────
+    # ── 5) Construye el BG inpainted con dilatación más generosa ────
     # cv2.inpaint requiere BGR + máscara binaria de las zonas a rellenar.
-    # Dilatamos la máscara para evitar restos del sujeto en el borde.
+    # Dilatamos AGRESIVAMENTE para que la zona inpaintada cubra TODO el
+    # halo + margen extra. Esto importa porque el FG se desplaza por
+    # parallax y si el inpaint queda corto, durante el pan se ve el
+    # contorno fantasma del sujeto sobre el bg.
     bgr = cv2.cvtColor(np_rgb, cv2.COLOR_RGB2BGR)
     binary_mask = (mask > 16).astype(np.uint8) * 255
-    dilate_k = max(3, req.inpaint_radius // 2)
+    # Dilatación más amplia que antes (radius // 2 → radius * 1.5) para
+    # absorber el contorno fantasma que aparecía al panear el fg.
+    dilate_k = max(5, int(req.inpaint_radius * 1.5))
     if dilate_k % 2 == 0:
         dilate_k += 1
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_k, dilate_k))

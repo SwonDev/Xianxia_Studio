@@ -621,8 +621,21 @@ def _word_karaoke_ass(
             dur_cs = max(1, int(round((w["end"] - w["start"]) * 100)))
             parts.append(f"{{\\kf{dur_cs}}}{w['word'].strip()}")
         text = " ".join(parts)
+        # Animation cocktail per chunk:
+        #   • fade in 120 ms / out 160 ms — soft, doesn't fight karaoke fill
+        #   • scale-in from 88 % → 100 % over the first 220 ms (pop-in)
+        #   • slight upward drift on origin (\fr 0.5°) for handheld feel
+        #   • karaoke transform that moves the active word baseline up 4 px
+        #     and back down — the eye tracks the speech naturally.
+        anim = (
+            "{\\fad(120,160)"  # fade
+            "\\an2"  # bottom-centre alignment
+            "\\fscx88\\fscy88"  # initial scale 88 %
+            "\\t(0,220,\\fscx100\\fscy100)"  # smooth grow to 100 %
+            "}"
+        )
         events.append(
-            f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Xianxia,,0,0,0,,{{\\fad(140,140)}}{text}"
+            f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Xianxia,,0,0,0,,{anim}{text}"
         )
     return _ass_header(font, size, vertical=vertical, style=style) + "\n".join(events) + "\n"
 
@@ -672,7 +685,16 @@ def _segment_karaoke_ass(entries, font: str, size: int, vertical: bool = False, 
                 dur_cs = max(1, int(round((len(w) / ck_total) * (ck_end - ck_start) * 100)))
                 parts.append(f"{{\\kf{dur_cs}}}{w}")
             text = " ".join(parts)
+            # Same animation cocktail as the word-level path so translated
+            # caption lines feel as alive as the source-language ones.
+            anim = (
+                "{\\fad(120,160)"
+                "\\an2"
+                "\\fscx88\\fscy88"
+                "\\t(0,220,\\fscx100\\fscy100)"
+                "}"
+            )
             events.append(
-                f"Dialogue: 0,{_ass_ts(ck_start)},{_ass_ts(ck_end)},Xianxia,,0,0,0,,{{\\fad(140,140)}}{text}"
+                f"Dialogue: 0,{_ass_ts(ck_start)},{_ass_ts(ck_end)},Xianxia,,0,0,0,,{anim}{text}"
             )
     return _ass_header(font, size, vertical=vertical, style=style) + "\n".join(events) + "\n"

@@ -404,12 +404,38 @@ async fn run(
     unload(&client, "ollama").await;
 
     // ─── Phase 3: TTS ────────────────────────────────────────────────
-    emit(app, pid, 3, "running", 0.0, "Sintetizando voz…");
+    // Audio language comes from the FIRST entry in `languages` (the UI's
+    // primary-language convention). Map IETF tag → Qwen3-TTS canonical
+    // name; everything outside the catalog defaults to English so the
+    // TTS still produces something legible instead of erroring out. The
+    // earlier hardcoded "English" silently ignored the user's selection,
+    // so even when the UI checked Spanish first the audio came back in
+    // English (and only the subtitles honoured the Spanish request).
+    let audio_lang_tag = req
+        .languages
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("en");
+    let audio_lang_name = match audio_lang_tag {
+        "en" => "English",
+        "es" => "Spanish",
+        "zh" | "zh-CN" => "Chinese",
+        "ja" => "Japanese",
+        "ko" => "Korean",
+        "de" => "German",
+        "fr" => "French",
+        "it" => "Italian",
+        "pt" | "pt-BR" => "Portuguese",
+        "ru" => "Russian",
+        _ => "English",
+    };
+    emit(app, pid, 3, "running", 0.0,
+        &format!("Sintetizando voz en {}…", audio_lang_name));
     let tts: serde_json::Value = client
         .post(format!("{}/tts", PY_SIDECAR))
         .json(&serde_json::json!({
             "text": narration,
-            "language": "English",
+            "language": audio_lang_name,
             "speaker": req.voice_speaker.clone().unwrap_or_else(|| "Vivian".to_string()),
             "out_dir": out_dir,
         }))
@@ -529,8 +555,13 @@ async fn run(
             .json(&serde_json::json!({
                 "images": img_paths,
                 "model": "u2net",
-                "inpaint_radius": 12,
-                "feather_pixels": 4,
+                // Bumped from (12, 4) to (16, 8): the new depth.py runs an
+                // erode pass + gamma + decontamination on the alpha so the
+                // parallax composite no longer shows the colour-fringe halo
+                // around hair/foliage. The wider feather absorbs the few
+                // semi-transparent pixels rembg leaves behind.
+                "inpaint_radius": 16,
+                "feather_pixels": 8,
             }))
             .send()
             .await;

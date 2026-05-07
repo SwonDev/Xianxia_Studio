@@ -6,6 +6,66 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.1.12] — 2026-05-07
+
+### Corregido — multi-idioma audio (TTS hardcodeaba inglés)
+
+* `apps/desktop/src-tauri/src/pipeline/mod.rs` Phase 3 hardcodeaba
+  `"language": "English"` en la llamada a `/tts`, ignorando el idioma
+  marcado en la UI. Ahora mapea `languages[0]` (IETF tag) → nombre
+  Qwen3 ("en"→English, "es"→Spanish, "zh"→Chinese, "ja"→Japanese,
+  "ko"→Korean, "de"→German, "fr"→French, "it"→Italian, "pt"→Portuguese,
+  "ru"→Russian) y se lo pasa al TTS. La fase emite ahora "Sintetizando
+  voz en {idioma}…" para feedback visual. Los subtítulos ya estaban
+  bien (source = primary, targets = lista completa); el bug afectaba
+  solo al audio.
+
+### Añadido — animación de subtítulos más expresiva
+
+* `_word_karaoke_ass` y `_segment_karaoke_ass` ahora emiten cada
+  Dialogue con un cocktail de animaciones libass:
+  - `\fad(120,160)` — fade asimétrico (entrada rápida, salida suave).
+  - `\fscx88\fscy88` inicial + `\t(0,220,\fscx100\fscy100)` — pop-in
+    desde 88 % a 100 % en los primeros 220 ms (la línea "salta" a
+    pantalla en lugar de aparecer cortada).
+  - `\an2` explícito para anclar al borde inferior.
+  Mantiene la legibilidad y las reglas anti-overlap de v0.1.11.
+
+### Mejorado — bordes parallax (rembg sin halos)
+
+* `apps/sidecar-py/src/xianxia_ai/routes/depth.py`:
+  - Pre-erode del mask antes del Gaussian blur: el sujeto se hace
+    1-2 px más estrecho dentro del recorte, eliminando los píxeles
+    semi-transparentes que arrastraban color del fondo original
+    (los halos verdes/dorados visibles cuando el FG se compone sobre
+    otro fondo durante el parallax).
+  - Curva gamma 0.85 sobre el alpha tras el blur: endurece la zona
+    alta-opacidad sin tocar el borde de transición. Evita el look
+    "pegatina recortada".
+  - **Decontamination del FG**: en píxeles con alpha entre 30 y 200
+    (la franja soft-edge), se mezcla 35 % el color medio del interior
+    del sujeto. Reemplaza el color residual del fondo original que
+    rembg deja en bordes semitransparentes — el principal causante
+    visible de los halos.
+  - Dilatación del mask de inpaint subida de `radius/2` a `radius*1.5`,
+    así la zona reconstruida del bg cubre todo el contorno fantasma
+    cuando el fg se desplaza por parallax.
+* Pipeline Rust sube los defaults de `/depth/batch` de
+  `inpaint_radius=12, feather_pixels=4` a `(16, 8)` para aprovechar
+  los nuevos pasos de pulido.
+
+### Corregido — DB upgrade hazard (auto-heal)
+
+* `apps/desktop/src-tauri/src/db/mod.rs::init_pool` ahora detecta el
+  error específico "migration N was previously applied but has been
+  modified", archiva la DB rota como `xianxia.broken-{ts}.db` (con
+  sus -wal/-shm), y crea una limpia. Era el síntoma que dejaba a los
+  usuarios upgradeados desde v0.1.7+ con `db init failed` permanente
+  y proyectos no-persistentes (memory-pool fallback).
+* Los proyectos previos pierden sus rows de DB, pero los assets en
+  disco (MP4 + thumbnails) siguen ahí y reaparecen via `library_list_videos`
+  (que lee del filesystem, no de la DB).
+
 ## [0.1.11] — 2026-05-07
 
 ### Corregido — defectos visuales severos en el output final
