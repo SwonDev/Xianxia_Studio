@@ -46,6 +46,8 @@ pub struct StackSummary {
     pub rembg_installed: bool,
     pub mediapipe_installed: bool,
     pub ultralytics_installed: bool,
+    // Kept (always false) for backwards compatibility with older UI builds
+    // that still reference it. Removed entirely in v0.2.7.
     pub acestep_installed: bool,
     pub musicgen_installed: bool,
     pub tribe_installed: bool,
@@ -272,31 +274,23 @@ pub async fn verify_stack() -> Result<StackReport, String> {
         group: "Herramientas".into(),
     });
 
-    // ─── Group: Música (auto-detect ACE-Step + MusicGen) ─────────────
-    let (acestep, ace_detail) = check_python_pkg("acestep").await;
-    s.acestep_installed = acestep;
-    checks.push(CheckItem {
-        id: "acestep".into(),
-        label: "ACE-Step v1.5 (música cinematográfica · preferido)".into(),
-        ok: acestep,
-        detail: if acestep {
-            ace_detail
-        } else {
-            "no instalado — opcional. Instala con `pip install -r requirements-music.txt`".into()
-        },
-        group: "Música".into(),
-    });
+    // ─── Group: Música (MusicGen GPU-only · v0.2.6) ──────────────────
+    // ACE-Step v1.5 was removed in v0.2.6: it needs cpu_offload=True on
+    // 8 GB VRAM (per its README) which violates the project's GPU-only
+    // rule, and on Windows the offload-disabled path hangs indefinitely.
+    // MusicGen-medium fp16 fits comfortably under 4 GB.
+    s.acestep_installed = false;
 
     let (audiocraft, ac_detail) = check_python_pkg("audiocraft").await;
     s.musicgen_installed = audiocraft;
     checks.push(CheckItem {
         id: "musicgen".into(),
-        label: "MusicGen (audiocraft · fallback)".into(),
+        label: "MusicGen-medium (audiocraft · GPU-only)".into(),
         ok: audiocraft,
         detail: if audiocraft {
             ac_detail
         } else {
-            "no instalado — opcional. Si no tienes ACE-Step, este es el fallback".into()
+            "no instalado — opcional. Sin él, /music usa la biblioteca local".into()
         },
         group: "Música".into(),
     });

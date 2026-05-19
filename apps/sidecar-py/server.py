@@ -68,22 +68,27 @@ from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 
 from xianxia_ai.routes import (  # noqa: E402
     depth,
+    depthflow,
     diag,
     engagement,
     export,
     health,
     image,
     install,
+    models,
     music,
     reframe,
     render,
     script,
+    seo,
     shorts,
     shorts_auto,
     subtitles,
     transcribe,
     tts,
     unload,
+    voice_acquisition,
+    watermark,
 )
 
 log = logging.getLogger("xianxia.sidecar")
@@ -92,6 +97,31 @@ log = logging.getLogger("xianxia.sidecar")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_event("info", "sidecar_python_boot", port=8731, jsonl_path=str(_JSONL_PATH))
+    # v0.2.13 — the v0.2.8 boot-time xformers auto-install warmup was
+    # REMOVED. xformers has no installable wheel for this runtime and is
+    # not needed: routes/music.py forces audiocraft's native torch SDPA
+    # attention backend (set inline in _musicgen, zero-cost, no pip).
+    import threading
+
+    # v0.2.9 — ACE-Step v1.5 is the PRINCIPAL music generator (no toggle,
+    # no manual wizard component). Auto-bootstrap its isolated venv in
+    # the background here at every boot. Idempotent + fully best-effort:
+    # while it installs (first launch only) the music phase falls back
+    # MusicGen → library; once ready a later run uses ACE-Step
+    # automatically. Never blocks the pipeline.
+    def _warm_acestep() -> None:
+        try:
+            scripts_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "scripts"
+            )
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            import acestep_bootstrap  # type: ignore
+            acestep_bootstrap.ensure_async()
+        except Exception:
+            pass
+
+    threading.Thread(target=_warm_acestep, daemon=True).start()
     yield
     log_event("info", "sidecar_python_shutdown")
 
@@ -183,8 +213,10 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(diag.router, prefix="/diag", tags=["diag"])
 app.include_router(install.router, prefix="/install", tags=["install"])
+app.include_router(models.router, prefix="/models", tags=["models"])
 app.include_router(script.router, prefix="/script", tags=["script"])
 app.include_router(tts.router, prefix="/tts", tags=["tts"])
+app.include_router(voice_acquisition.router, prefix="/voices", tags=["voices"])
 app.include_router(image.router, prefix="/image", tags=["image"])
 app.include_router(music.router, prefix="/music", tags=["music"])
 app.include_router(transcribe.router, prefix="/transcribe", tags=["transcribe"])
@@ -193,10 +225,13 @@ app.include_router(render.router, prefix="/render", tags=["render"])
 app.include_router(shorts.router, prefix="/shorts", tags=["shorts"])
 app.include_router(shorts_auto.router, prefix="/shorts", tags=["shorts"])
 app.include_router(depth.router, prefix="/depth", tags=["depth"])
+app.include_router(depthflow.router, prefix="/depthflow", tags=["depthflow"])
 app.include_router(unload.router, prefix="/unload", tags=["unload"])
 app.include_router(reframe.router, prefix="/reframe", tags=["reframe"])
 app.include_router(export.router, prefix="/export", tags=["export"])
 app.include_router(engagement.router, prefix="/engagement", tags=["engagement"])
+app.include_router(seo.router, prefix="/seo", tags=["seo"])
+app.include_router(watermark.router, prefix="/watermark", tags=["watermark"])
 
 
 if __name__ == "__main__":

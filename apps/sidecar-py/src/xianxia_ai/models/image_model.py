@@ -1,13 +1,18 @@
 """Lazy loader for Z-Image-Turbo (diffusers ZImagePipeline).
 
-Auto-adapts to available VRAM:
+v0.2.4 — REGLA GPU-only del proyecto. Este loader es un FALLBACK para
+el path ComfyUI: solo se usa cuando el caller pide diffusers directo.
+Si la GPU no tiene suficiente VRAM (>=8 GB libres), aborta limpio con
+un RuntimeError y la pipeline cae al path ComfyUI (que es el camino
+preferente y tiene sus propias estrategias de carga).
+
   - >= 16 GB → load in fp16/bf16 directly on CUDA (fastest)
-  - 8–16 GB  → enable_sequential_cpu_offload() (a bit slower, fits the model)
-  - <  8 GB  → enable_sequential_cpu_offload() AND lower precision warnings
-  - no CUDA  → CPU only (very slow but works)
+  - 8–16 GB  → load directly on CUDA (GPU only, sin sequential offload)
+  - <  8 GB  → aborta limpio (RuntimeError); el caller usa ComfyUI
+  - no CUDA  → CPU only (very slow but works, solo dev/test)
 
 Validated end-to-end on RTX 4060 Laptop (8 GB VRAM): 9 inference steps at
-1344×768 take ~55 s with sequential_cpu_offload.
+1344×768 take ~55 s en GPU directo. Si no cabe, NO hay spill a CPU.
 """
 
 from __future__ import annotations
@@ -92,15 +97,23 @@ def load():
             if vram >= 16.0:
                 _pipe.to("cuda")
             elif vram >= 8.0:
-                # ~8–16 GB: keep weights on CPU, swap to GPU per layer.
-                _pipe.enable_sequential_cpu_offload()
+                # v0.2.4 — REGLA GPU-only. Si no cabe en VRAM, abortar limpio en
+                # lugar de spilling a CPU (la pipeline tiene fallback a ComfyUI
+                # cuando este diffusers path falla — ese es el comportamiento
+                # correcto). GPU only, aborta limpio si no cabe.
+                _pipe = None
+                raise RuntimeError(
+                    "VRAM insufficient for diffusers fallback; ComfyUI path will be used"
+                )
             else:
-                # < 8 GB: same offload + attention slicing for tight VRAM
-                _pipe.enable_sequential_cpu_offload()
-                try:
-                    _pipe.enable_attention_slicing()
-                except Exception:
-                    pass
+                # v0.2.4 — REGLA GPU-only. Si no cabe en VRAM, abortar limpio en
+                # lugar de spilling a CPU (la pipeline tiene fallback a ComfyUI
+                # cuando este diffusers path falla — ese es el comportamiento
+                # correcto). GPU only, aborta limpio si no cabe.
+                _pipe = None
+                raise RuntimeError(
+                    "VRAM insufficient for diffusers fallback; ComfyUI path will be used"
+                )
         elif dev == "mps":
             _pipe.to("mps")
         # else: leave on CPU

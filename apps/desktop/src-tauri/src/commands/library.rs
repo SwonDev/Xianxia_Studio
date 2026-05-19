@@ -264,6 +264,37 @@ pub async fn library_open_video_folder() -> Result<String, String> {
     Ok(dir.to_string_lossy().to_string())
 }
 
+/// Reveal a specific produced MP4 in the OS file explorer with the file
+/// pre-selected. Used by the TikTok assisted-publish flow so the user can
+/// drag the rendered Short straight into TikTok's web uploader. Same Rust
+/// `std::process::Command` approach as `library_open_video_folder` (the
+/// shell:open scope rejects raw Windows paths).
+#[tauri::command]
+pub async fn library_reveal_video(video_path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&video_path);
+    if !p.exists() {
+        return Err(format!("El archivo no existe: {video_path}"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,{video_path}"))
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg("-R").arg(&video_path).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // No portable "select" — fall back to opening the containing folder.
+        if let Some(dir) = p.parent() {
+            let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+        }
+    }
+    Ok(())
+}
+
 #[allow(dead_code)]
 fn _unused() -> Result<()> { Err(anyhow!("unused")) }
 

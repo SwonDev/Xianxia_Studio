@@ -46,3 +46,37 @@ def load():
         compute = "float16" if device == "cuda" else "int8"
         _model = WhisperModel(size, device=device, compute_type=compute)
     return _model
+
+
+def transcribe_words(audio_path: str, language: str | None = None, *, vad: bool = False):
+    """Single source of truth for word-level transcription.
+
+    v0.2.16 — consolidates the two previously divergent call sites
+    (subtitles.py vs shorts_auto.py /from_video). The permissive anti-drop
+    thresholds below were tuned in subtitles.py so the FIRST sentence of
+    synthetic narration is never discarded (faster-whisper's defaults
+    sometimes drop the opening utterance when the voice has a soft attack
+    or the no-speech / log-prob filters judge segment 0 low-confidence).
+    Sharing them means Shorts hooks — where the opening words matter most —
+    also stop losing the first utterance.
+
+    `vad` is the only knob: ``False`` (default) for clean TTS narration,
+    ``True`` for arbitrary uploaded video (skips long non-speech stretches).
+    Returns ``(segments_list, info)`` — ``segments`` materialised so the
+    generator is consumed off the FastAPI event loop by the caller's
+    ``asyncio.to_thread`` wrapper.
+    """
+    model = load()
+    segments, info = model.transcribe(
+        audio_path,
+        language=language,
+        word_timestamps=True,
+        beam_size=5,
+        vad_filter=vad,
+        condition_on_previous_text=False,
+        no_speech_threshold=0.05,
+        compression_ratio_threshold=4.0,
+        log_prob_threshold=-2.0,
+        temperature=0.0,
+    )
+    return list(segments), info

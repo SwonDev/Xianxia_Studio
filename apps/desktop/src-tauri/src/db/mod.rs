@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 pub mod projects;
+pub mod scheduled;
 pub mod settings;
 pub mod voices;
 

@@ -124,8 +124,9 @@ def run(mode: str, topic: str, minutes: int, language: str) -> dict:
         # 2. TTS
         step("2. /tts")
         t = time.time()
+        lang_map = {"en":"English","es":"Spanish","zh":"Chinese","ja":"Japanese","de":"German","fr":"French","it":"Italian","pt":"Portuguese","ko":"Korean","ru":"Russian"}
         tts_resp = post(client, f"{PY}/tts", {
-            "text": narration, "language": "English",
+            "text": narration, "language": lang_map.get(language, "English"),
             "speaker": "Vivian", "out_dir": str(out_dir),
         })
         narration_audio = tts_resp["audio_path"]

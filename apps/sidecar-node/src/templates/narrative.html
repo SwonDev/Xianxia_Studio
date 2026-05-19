@@ -108,6 +108,157 @@
         clip-path: circle(0% at 50% 50%);
         opacity: 0;
       }
+      /* v0.1.38 — chapter divider card. Slate-style: opaque dark panel
+         centred over the beat for ~1.0 s, with a thin gold horizontal
+         line and the chapter title in serif gold. NOT a parchment look
+         (avoids HP-Theory copy); tasteful documentary slate instead.
+         Hidden by default; the GSAP timeline fades it in/out at the
+         beat that owns it. */
+      .chapter-card {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: rgba(8, 8, 12, 0.92);
+        opacity: 0;
+        z-index: 6;
+        pointer-events: none;
+        will-change: opacity;
+      }
+      .chapter-card .rule {
+        width: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, #c9a84c, transparent);
+        opacity: 0.85;
+        margin-bottom: 28px;
+      }
+      .chapter-card .title {
+        font-family: 'Cinzel', 'EB Garamond', Georgia, serif;
+        font-weight: 700;
+        font-size: 64px;
+        color: #c9a84c;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        text-align: center;
+        text-shadow: 0 4px 18px rgba(0, 0, 0, 0.9);
+        padding: 0 80px;
+      }
+      .chapter-card .rule.bottom {
+        margin-top: 28px;
+        margin-bottom: 0;
+      }
+      /* v0.1.38 — intro title card (F1). Cinematic full-screen panel
+         shown at ~6-12s while the narrator delivers the hook. NOT a
+         logo animation (we don't ship a brand); just an elegant
+         documentary title plate with our gold-on-obsidian signature.
+         The XS monogram is intentionally tiny so it never reads as
+         a watermark on top of the visual. */
+      /* v0.1.38 (refactor): intro is now a TRUE 6-second segment at the
+         start of the video — opaque black background, music only (no
+         narration), animated gold title card. Beats start AFTER the
+         intro. The audio mix prepends 6 s of silence to the narration. */
+      /* v0.1.38 (refactor 2): more professional intro. Composed of:
+         - Pure black background with subtle radial gold glow building over time
+         - Animated film-grain overlay (CSS-only fractal noise) for cinematic texture
+         - Two gold rules expanding from center with shimmer pass
+         - Big serif title revealed via left-to-right mask sweep
+         - Subtle scale push-in (1.0 → 1.04) over the full 5s for "breathing" feel
+         - Optional eyebrow line (topic / setting tag) above the title in tracked caps */
+      .intro-card {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #050507;
+        opacity: 0;
+        z-index: 7;
+        pointer-events: none;
+        will-change: opacity, transform;
+      }
+      /* Layered radial glows for depth — the larger one is dim warm gold,
+         the smaller one is more saturated and animates in over the title. */
+      .intro-card .intro-glow {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(ellipse 60% 40% at 50% 50%,
+                          rgba(201, 168, 76, 0.18) 0%,
+                          rgba(201, 168, 76, 0.06) 35%,
+                          transparent 70%),
+          radial-gradient(ellipse at center,
+                          rgba(89, 67, 27, 0.22) 0%,
+                          transparent 75%);
+        opacity: 0;
+      }
+      /* Subtle SVG noise overlay for film-grain feel (CSS only). */
+      .intro-card .intro-grain {
+        position: absolute;
+        inset: -10%;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.32'/></svg>");
+        mix-blend-mode: overlay;
+        opacity: 0.55;
+        pointer-events: none;
+      }
+      .intro-card .intro-content {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        z-index: 1;
+        will-change: transform;
+      }
+      .intro-card .intro-eyebrow {
+        font-family: 'Cinzel', 'EB Garamond', Georgia, serif;
+        font-weight: 600;
+        font-size: 18px;
+        letter-spacing: 0.55em;
+        color: rgba(201, 168, 76, 0.78);
+        text-transform: uppercase;
+        opacity: 0;
+        margin-bottom: 4px;
+        padding-left: 0.55em;  /* compensate trailing letter-spacing for visual centering */
+      }
+      .intro-card .intro-rule {
+        width: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, #c9a84c 30%, #c9a84c 70%, transparent);
+        opacity: 0.95;
+        margin: 22px 0;
+      }
+      .intro-card .intro-rule.shimmer {
+        position: relative;
+        overflow: visible;
+      }
+      .intro-card .intro-rule.shimmer::after {
+        content: '';
+        position: absolute;
+        top: -1px;
+        left: 0;
+        width: 30%;
+        height: 3px;
+        background: radial-gradient(ellipse 50% 100% at center, rgba(255, 230, 160, 0.85), transparent);
+        opacity: 0;
+      }
+      .intro-card .intro-title {
+        font-family: 'Cinzel', 'EB Garamond', Georgia, serif;
+        font-weight: 700;
+        font-size: 86px;
+        line-height: 1.06;
+        color: #f1e4b8;
+        letter-spacing: 0.035em;
+        text-align: center;
+        text-shadow:
+          0 6px 38px rgba(0, 0, 0, 0.95),
+          0 1px 0 rgba(255, 220, 140, 0.18);
+        max-width: 86%;
+        padding: 0 60px;
+        clip-path: inset(0 100% 0 0);  /* hidden initially, mask-swept open */
+        position: relative;
+      }
     </style>
   </head>
   <body>
@@ -124,6 +275,22 @@
         <div class="vignette"></div>
         <div class="flash clip" id="flash" data-start="0" data-duration="__DURATION__"></div>
         <div class="inkwash clip" id="inkwash" data-start="0" data-duration="__DURATION__"></div>
+        <!-- v0.1.38 — TRUE intro segment (F1, refactor 2).
+             0..6 s: black + animated grain + radial gold glow + two gold rules
+             with shimmer pass + serif title revealed via left-to-right mask
+             sweep. Subtle scale push-in (0.98 → 1.04) for breathing feel.
+             Beats start at t=6 s. Narration audio is silenced for those 6 s
+             by postProcessCinematic so the first sentence lands cleanly. -->
+        <div class="intro-card" id="intro-card">
+          <div class="intro-glow"></div>
+          <div class="intro-grain"></div>
+          <div class="intro-content" id="intro-content">
+            <div class="intro-eyebrow" id="intro-eyebrow">__INTRO_EYEBROW__</div>
+            <div class="intro-rule shimmer"></div>
+            <div class="intro-title" id="intro-title">__TITLE__</div>
+            <div class="intro-rule shimmer"></div>
+          </div>
+        </div>
       </div>
       <audio
         id="narration-track"
@@ -224,33 +391,53 @@
         // and every image rendered as a static still — visible to the
         // user as "parallax only on the first image" because the only
         // motion the eye picked up was the opacity fade-in/out.
+        // v0.1.20: pan ranges tightened. Previous ±90 px on fg pushed
+        // foreground subjects past the frame edge — visible to the user
+        // as swords, hands, and weapon tips clipped near the borders.
+        // bg and fg both render at scale ≥ 1.22 / 1.08, which gives a
+        // small overhang on every side; the new ranges stay strictly
+        // inside that overhang so the subject is never chopped.
+        // v0.1.38: tighter parallax delta. Previous fg ±55 vs bg ±18 left a
+        // 73-px gap that exposed the rembg-inpainted area where the original
+        // foreground was — the user saw it as blurry / nonsense smearing
+        // around the subject. Reducing fg to ±26 drops that gap to 11 px,
+        // small enough that bg overhang (scale 1.22) hides the inpaint
+        // artefacts entirely. Parallax depth is still readable but no longer
+        // unmasks the seams.
         if (bg) {
           tl.fromTo(bg,
-            { x: -25 * panX, y: -10 * panY, scale: 1.20 },
-            { x: 25 * panX, y: 10 * panY, scale: 1.22, duration: dur, ease: 'none' },
+            { x: -16 * panX, y: -7 * panY, scale: 1.22 },
+            { x: 16 * panX, y: 7 * panY, scale: 1.24, duration: dur, ease: 'none' },
             start
           );
         }
         if (mid) {
           tl.fromTo(mid,
-            { x: -55 * panX, y: -22 * panY, scale: 1.06 },
-            { x: 55 * panX, y: 22 * panY, scale: 1.08, duration: dur, ease: 'none' },
+            { x: -22 * panX, y: -10 * panY, scale: 1.08 },
+            { x: 22 * panX, y: 10 * panY, scale: 1.10, duration: dur, ease: 'none' },
             start
           );
         }
         if (fg) {
           tl.fromTo(fg,
-            { x: -90 * panX, y: -38 * panY, scale: 0.96 },
-            { x: 90 * panX, y: 38 * panY, scale: 1.02, duration: dur, ease: 'none' },
+            { x: -26 * panX, y: -11 * panY, scale: 1.06 },
+            { x: 26 * panX, y: 11 * panY, scale: 1.10, duration: dur, ease: 'none' },
             start
           );
         }
         if (!bg && !mid && !fg && single) {
-          tl.fromTo(single,
-            { scale: 1.05, x: -30 * panX, y: -12 * panY },
-            { scale: 1.18, x: 30 * panX, y: 12 * panY, duration: dur, ease: 'none' },
-            start
-          );
+          // v0.1.38 — when the single element is a DepthFlow parallax MP4
+          // (.dfclip) it already has the camera move + parallax baked into
+          // the video itself. Stacking GSAP KenBurns on top would double
+          // the motion and look juddery. Skip the KenBurns tween in that
+          // case; the video plays its own animation.
+          if (!single.classList.contains('dfclip')) {
+            tl.fromTo(single,
+              { scale: 1.05, x: -28 * panX, y: -11 * panY },
+              { scale: 1.18, x: 28 * panX, y: 11 * panY, duration: dur, ease: 'none' },
+              start
+            );
+          }
         }
 
         var atmos = el.querySelector('.atmos');
@@ -264,7 +451,61 @@
           tl.to(rays, { x: '20%', duration: dur, ease: 'none' }, start);
           tl.to(rays, { opacity: 0, duration: 0.8, ease: 'power2.in' }, start + dur - 0.8);
         }
+
+        // v0.1.38 — chapter divider card animation (F3). When the beat
+        // owns a chapter_title, fade the slate in for 0.45s, hold for
+        // 1.2s with the gold rule expanding from a point to full width,
+        // then fade out for 0.45s. Total ~2.1s — the beat's image
+        // continues running underneath, so when the slate clears the
+        // first frames of the new section are already on screen.
+        var chapter = el.querySelector('.chapter-card');
+        if (chapter) {
+          var rules = chapter.querySelectorAll('.rule');
+          var chTitle = chapter.querySelector('.title');
+          tl.set(rules, { width: 0 }, start);
+          tl.set(chTitle, { opacity: 0, y: 12 }, start);
+          tl.to(chapter, { opacity: 1, duration: 0.45, ease: 'power2.out' }, start);
+          tl.to(rules, { width: '52%', duration: 0.7, ease: 'power3.out' }, start + 0.15);
+          tl.to(chTitle, { opacity: 1, y: 0, duration: 0.55, ease: 'power2.out' }, start + 0.3);
+          tl.to(chapter, { opacity: 0, duration: 0.45, ease: 'power2.in' }, start + 1.65);
+        }
       });
+
+      // v0.1.38 (refactor 2) — professional intro animation. 6 s total.
+      //   0.0 → 0.5 s  : card fades in from black (opacity)
+      //   0.3 → 1.5 s  : gold rules grow from 0 → 38 % width
+      //   0.6 → 1.4 s  : eyebrow tracked-caps fades in
+      //   0.8 → 2.2 s  : title revealed via left-to-right mask sweep
+      //   0.6 → 5.0 s  : radial gold glow eases in
+      //   1.5 → 2.0 s  : shimmer highlight passes along each gold rule
+      //   0.0 → 5.3 s  : intro-content scales 0.98 → 1.04 for breathing feel
+      //   5.3 → 6.0 s  : entire card fades out so beat 0 lands cleanly
+      var introCard = document.getElementById('intro-card');
+      var totalDuration = parseFloat(document.getElementById('root').dataset.duration) || 0;
+      if (introCard && totalDuration >= 12) {
+        var introContent = document.getElementById('intro-content');
+        var introRules = introCard.querySelectorAll('.intro-rule');
+        var introShimmer = introCard.querySelectorAll('.intro-rule.shimmer::after');
+        var introTitle = document.getElementById('intro-title');
+        var introEyebrow = document.getElementById('intro-eyebrow');
+        var introGlow = introCard.querySelector('.intro-glow');
+
+        tl.set(introCard, { opacity: 0 }, 0);
+        tl.set(introContent, { scale: 0.98 }, 0);
+        tl.set(introRules, { width: 0 }, 0);
+        tl.set(introTitle, { clipPath: 'inset(0 100% 0 0)' }, 0);
+        tl.set(introEyebrow, { opacity: 0 }, 0);
+        tl.set(introGlow, { opacity: 0 }, 0);
+
+        tl.to(introCard, { opacity: 1, duration: 0.5, ease: 'power2.out' }, 0);
+        tl.to(introContent, { scale: 1.04, duration: 5.3, ease: 'sine.inOut' }, 0);
+        tl.to(introRules, { width: '38%', duration: 1.2, ease: 'power3.out' }, 0.3);
+        tl.to(introEyebrow, { opacity: 1, duration: 0.8, ease: 'power2.out' }, 0.6);
+        tl.to(introGlow, { opacity: 1, duration: 1.6, ease: 'power2.out' }, 0.6);
+        tl.to(introTitle, { clipPath: 'inset(0 0% 0 0)', duration: 1.4, ease: 'power3.out' }, 0.8);
+
+        tl.to(introCard, { opacity: 0, duration: 0.7, ease: 'power2.in' }, 5.3);
+      }
 
       window.__timelines['narrative'] = tl;
 

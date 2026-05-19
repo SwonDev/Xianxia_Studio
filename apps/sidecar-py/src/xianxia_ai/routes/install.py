@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -10,6 +12,95 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter()
+
+
+# ── /install/hardware ──────────────────────────────────────────────
+# Mirrors apps/desktop/src-tauri/src/hardware.rs:detect_hardware so
+# browser-mode (the tauri-shim) sees the SAME CPU/RAM/GPU values the
+# Tauri webview gets from the Rust sysinfo crate. Without this the
+# top-bar widget shows "0 cores · 0.0 / 0.0 GB" in dev.
+@router.get("/hardware")
+def hardware() -> dict:
+    info: dict = {
+        "os": platform.system().lower(),
+        "arch": platform.machine().lower(),
+        "cpu_brand": "Unknown",
+        "cpu_cores": 0,
+        "cpu_logical_cores": 0,
+        "total_ram_gb": 0.0,
+        "available_ram_gb": 0.0,
+        "free_disk_gb": 0.0,
+        "gpu": None,
+    }
+    # CPU + RAM via psutil (already in the sidecar's deps).
+    try:
+        import psutil
+        info["cpu_cores"] = psutil.cpu_count(logical=False) or 0
+        info["cpu_logical_cores"] = psutil.cpu_count(logical=True) or 0
+        vm = psutil.virtual_memory()
+        info["total_ram_gb"] = round(vm.total / 1024 / 1024 / 1024, 2)
+        info["available_ram_gb"] = round(vm.available / 1024 / 1024 / 1024, 2)
+    except Exception:
+        pass
+    # CPU brand (Windows: cpuinfo; cross-platform fallback platform.processor)
+    try:
+        info["cpu_brand"] = (platform.processor() or "Unknown").strip()
+        if not info["cpu_brand"] or info["cpu_brand"] == "":
+            info["cpu_brand"] = "Unknown"
+    except Exception:
+        pass
+    # Free disk on the install drive (current working drive).
+    try:
+        usage = shutil.disk_usage(os.path.abspath(os.sep))
+        info["free_disk_gb"] = round(usage.free / 1024 / 1024 / 1024, 2)
+    except Exception:
+        pass
+    # GPU — nvidia-smi (already required for ComfyUI / Z-Image). One-shot
+    # query; failure is fine — UI shows "Sin GPU dedicada" tier.
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace",
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            first_line = proc.stdout.strip().splitlines()[0]
+            parts = [p.strip() for p in first_line.split(",")]
+            if len(parts) >= 2:
+                info["gpu"] = {
+                    "vendor": "nvidia",
+                    "name": parts[0],
+                    "vram_gb": round(float(parts[1]) / 1024.0, 2) if parts[1] else None,
+                    "driver": parts[2] if len(parts) > 2 else None,
+                }
+    except Exception:
+        pass
+    # Tiering — mirrors hardware.rs::recommend_models heuristic.
+    vram = (info["gpu"] or {}).get("vram_gb") or 0.0
+    ram = info["total_ram_gb"]
+    if vram >= 24 and ram >= 32:
+        tier = "ultra"
+    elif vram >= 12:
+        tier = "high"
+    elif vram >= 8:
+        tier = "medium"
+    elif vram >= 6:
+        tier = "medium-safe"
+    elif vram >= 4:
+        tier = "low"
+    else:
+        tier = "cpu-only" if ram >= 16 else "low"
+    info["recommendation"] = {
+        "llm_hf_repo": "mradermacher/supergemma4-e4b-abliterated-i1-GGUF",
+        "llm_gguf_file": "supergemma4-e4b-abliterated.i1-Q4_K_M.gguf",
+        "llm_label": "Gemma 4 E4B abliterated Q4_K_M",
+        "llm_abliterated": True,
+        "image": "Z-Image-Turbo",
+        "tts": "Qwen3-TTS",
+        "tier": tier,
+        "estimated_download_gb": 17.0,
+    }
+    return info
 
 
 class HfDownloadRequest(BaseModel):

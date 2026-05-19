@@ -6,7 +6,654 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
-## [0.1.19] — 2026-05-07
+## [0.4.0] — 2026-05-19
+
+### Cero datos mock: el Planificador ahora es real (E1)
+
+El único dato simulado que quedaba en toda la app era el calendario del
+Planificador (`MOCK_SCHEDULED`). Se elimina y se cablea de verdad:
+
+- Nueva tabla-consumidora real: `db/scheduled.rs` (`ScheduledUpload`,
+  `NewScheduled`, `record/list/cancel`) sobre la tabla `scheduled_uploads`
+  que ya existía pero **no tenía productor** (la función de publicación
+  programada estaba dormida — el cron `scheduler::run_loop` ya volteaba
+  `uploaded`→`published` pero nadie insertaba filas).
+- Productor añadido en la **Fase 9** del pipeline (subida a YouTube),
+  best-effort (un `warn!` si falla, nunca rompe la generación): si la
+  privacidad es `public` → `published`; si hay `publish_at` programado →
+  `uploaded`; si queda privado → `held`.
+- Comandos `list_scheduled` / `cancel_scheduled` + bindings en `tauri.ts`.
+- `scheduler.tsx` reescrito: consume `tauri.listScheduled` real
+  (`refetchInterval` 8 s), estados con su meta (Programado/Publicado/
+  Subido·privado/Error), marcadores de calendario y lista derivados de
+  datos reales, cancelación con confirmación. «Programar nuevo» → Generador.
+
+### TikTok — publicación asistida, honesta y opt-in (E2)
+
+TikTok no ofrece API de subida libre para creadores individuales y el
+método comunitario de cookie `sessionid` viola sus ToS, está protegido
+anti-bot y se rompe constantemente. Fabricar un auto-uploader contra
+endpoints adivinados sería deshonesto y contra la regla del proyecto
+(«verificar upstream, nunca inventar endpoints»). Por eso es **publicación
+asistida** real, no un bot:
+
+- `tiktok/` (espejo del patrón de `youtube/`): `creds.rs` guarda el
+  `sessionid` en el **llavero del SO** (nunca en claro), comandos
+  `tiktok_status` / `tiktok_set_session` / `tiktok_clear_session`.
+- Ajustes → nueva sección «TikTok (publicación asistida)»: panel con nota
+  honesta de qué es y qué no es, input opcional de `sessionid` (reservado
+  para una futura ruta oficial Content Posting API).
+- Biblioteca: en vídeos **verticales** (Shorts), botón «Publicar en
+  TikTok» → `library_reveal_video` revela el MP4 ya renderizado
+  preseleccionado en el explorador + abre el subidor web de TikTok, listo
+  para arrastrar. Útil, real, sin endpoints inventados ni mock.
+
+### Fix (integración): el cron de publicación escribía a una columna inexistente
+
+Al verificar E1 extremo a extremo se halló un bug **pre-existente** que E1
+acaba de hacer visible (la tabla estaba dormida): `scheduler::process_due`
+hacía `UPDATE scheduled_uploads SET last_error = ?` pero esa columna nunca
+existió en el esquema (es `error_message`). El `.ok()` se tragaba el error
+en silencio, así que el motivo del fallo de publicación se perdía y el
+estado «Error» del Planificador jamás mostraría la causa. Corregido al
+nombre real `error_message` + se sella `last_attempt_at`. El `status`
+permanece `'uploaded'` a propósito (el diseño original reintenta cada tick;
+`process_due` solo selecciona `'uploaded'`) — sin regresión de
+comportamiento. `sqlx::query()` no valida en compile-time, por eso `cargo
+check` no lo detectó; verificado a mano contra `0001_init.sql`.
+
+Validado: `tsc -b && vite build` verde, `cargo check` + `cargo test`
+(11/11) sin errores, parity-check (todas las invariantes OK). Sin tocar el
+cableado existente.
+
+## [0.3.1] — 2026-05-19
+
+### Repaleta: fuera el jade verde → Oro champán sobre grafito azulado (DESIGN.md v2.1.0)
+
+A petición del usuario se elimina por completo el acento Jade Imperial verde
+y el lienzo verdoso. Nueva gama (la del modal de búsqueda, que contrasta
+mejor): acento **Oro champán** `#d4b85a`/`#e8c96d`, lienzo **grafito azulado**
+`#15151c` con washes oro tenues, status "running/ok" en **azul sereno**
+`#7fa8d8` (sin verde). Hecho vía tokens en `globals.css` (`--accent*`,
+`--green`/status, `--bg-base`, body washes) + sustitución de literales jade
+en chrome y pantallas. Verificado: 0 ocurrencias de jade/verde en `src`,
+`tsc -b && vite build` verde. DESIGN.md → v2.1.0. Sin tocar cableado.
+
+### Fix: artefacto gráfico "se ilumina zona random" + transparencia de overlays + feedback de click
+
+Depuración sistemática (reproducción en dev server + Playwright). **Causa raíz**
+del destello aleatorio al clicar/procesar en el Generador: `mix-blend-mode:
+screen` + `filter: blur` + `backdrop-filter` en elementos **interactivos/
+animados** (`.btn*::after`, `.lg-tile::after`, `.btn`, `.segmented-btn.active`)
+— bajo WebView2/Chromium esa capa con blend se recompone contra el backdrop
+equivocado en cada repaint (click, re-render, animación `pulse`) → flash en una
+zona arbitraria. Regresión introducida por el rediseño v0.3.0 (antes, con
+Tailwind, no existía). Fix de raíz, no de síntoma:
+
+- Eliminado `mix-blend-mode: screen` de todos los `::after` de botones y
+  `.lg-tile`; quitado el `filter: blur` del `.lg-tile::after` (la baldosa
+  contiene el spinner que gira cada frame). Estética de gema preservada por el
+  `::before` especular + box-shadows (verificado: idéntico sobre el lienzo
+  oscuro). Verificado en runtime: `mix-blend-mode:screen` count 20 → **0**.
+- Quitado `backdrop-filter` de `.btn` y `.segmented-btn.active` (muestrear el
+  backdrop cada repaint en un elemento interactivo es el mismo hazard);
+  sustituido por un gradiente translúcido más opaco, idéntico sobre el lienzo
+  fijo. `backdrop-filter` se mantiene solo en vidrio estático grande.
+- **Transparencia de desplegables**: `--bg-popover` pasaba 0.42 de opacidad y
+  el `backdrop-filter` NO opacifica de forma fiable sobre el `<main>` que
+  scrollea detrás (otro stacking context) en WebView2 → el texto traspasaba.
+  Subido a `rgba(22,22,28,0.985)` (casi opaco); System popover y Command
+  Palette ya no dejan ver el contenido. Verificado visualmente.
+- **Feedback de click marcado**: `:active` de todos los botones ahora
+  `transform: scale(.955)` + `brightness` con transición spring (antes
+  `translateY(.5px)` imperceptible).
+
+### Mejoras de UX pedidas
+
+- **Sidebar colapsable** (rail 64 px ↔ 232 px): botón "Colapsar", persistencia
+  en `localStorage`, iconos `lg-tile` en modo rail, transición spring.
+  Verificado: 232→64→232 + persistencia.
+- **Animaciones Motion.dev reales** (la dep `motion` ya estaba): transición de
+  ruta coordinada (`AnimatePresence` en `__root`), stagger de entrada de los
+  ítems del sidebar, System popover y Command Palette con spring real +
+  stagger de filas. Todo `transform/opacity`, guardado por
+  `prefers-reduced-motion` (`useReducedMotion`).
+
+### Revertido
+
+- **Partículas/canvas decorativo eliminadas por completo**: se habían añadido
+  por interpretar mal "shaders"; el usuario las prohíbe en este proyecto desde
+  el inicio. Componente borrado, 0 referencias. Regla dura registrada en
+  memoria para no repetirlo jamás. (El prototipo macOS canónico ya las excluía;
+  "más vida visual" se resuelve con micro-interacciones + Motion, nunca
+  partículas.)
+
+`parity-check.mjs` 100 % verde (cambios solo-frontend). `tsc -b && vite build`
+verde. Backend Rust/Python intacto.
+
+## [0.3.0] — 2026-05-18
+
+### Rediseño completo de UI/UX — "Liquid Glass" (macOS / iOS 26)
+
+Transformación integral de la interfaz al nuevo sistema de diseño generado por
+Claude Design (prototipo en `/design`), **sin tocar el backend** (supervisor
+Rust + sidecars Python intactos) y **sin romper cableado** (rutas TanStack,
+`pipelineStore`, IPC Tauri, react-query, `data-testid` y handlers preservados
+verbatim en todas las pantallas). Ejecutado por etapas con build de validación
+entre cada una (la app nunca quedó rota en un paso intermedio).
+
+- **DESIGN.md v2.0.0** "Liquid Glass": lienzo oscuro `#06120e` con washes
+  jade+oro, vidrio translúcido `backdrop-filter`, acento **Jade Imperial
+  `#2eb189`** + **Oro champaña `#d4b85a`**, EB Garamond/Inter/JetBrains Mono,
+  Phosphor Icons. Supersede el "Celestial Dark" v1.
+- **Fundación** (`globals.css`): sistema CSS bespoke portado verbatim del
+  prototipo (`.btn`/`.group`/`.row`/`.lg-tile`/`.toggle`/`.range`/`.segmented`/
+  `.chip`/`.kbd`/`.dot`…), coexistiendo con Tailwind durante la migración.
+  Fuentes Inter + JetBrains Mono; dep `@phosphor-icons/react`. `prefers-
+  reduced-motion` preservado.
+- **Chrome**: shell tipo ventana macOS — Sidebar vidrio (traffic-lights,
+  `lg-tile` tintados por sección, anillo de pipeline **en vivo** desde
+  `usePipelineStore`), Topbar (breadcrumb por ruta + ⌘K + System popover
+  cableado a hardware/sidecars/llama **reales**), nuevo **Command Palette**
+  (⌘K) que navega con el router real. `ensurePipelineSubscription` y
+  `KeyboardShortcuts` intactos.
+- **7 pantallas portadas** preservando toda la lógica/IPC: Resumen
+  (pipeline en vivo + hardware reales; sin métricas inventadas), Generador
+  (todo el wizard, draft, voice cloning autoinstalable, VoiceWizard,
+  `GenerateRequest` exacto, cancelación), Smart Shorts (openDialog + fetch +
+  drag-drop), Biblioteca (engagement TRIBE v2 + SEO pack v0.2.14 + fullscreen),
+  Planificador (calendario), Instalador (wizard + `runInstall` + eventos),
+  Ajustes (servicios, LLM model browser + HF search, OAuth, YouTube, música,
+  voces clonadas, componentes opcionales — todas las queries/mutations/events).
+- Primitivas glass reutilizables `components/ui-glass.tsx` (PageHeader/Group/Row).
+- No se portó el `TweaksPanel` ni datos demo del prototipo (tooling de diseño);
+  las analíticas mock (retención/trending) se omitieron por no tener backend
+  que las alimente (DESIGN.md: no inventar métricas).
+
+Validado: `tsc -b && vite build` verde tras CADA etapa (fundación, chrome,
+y cada una de las 7 pantallas); `parity-check.mjs` 100 % verde (rediseño
+solo-frontend, invariantes backend intactos).
+
+## [0.2.17] — 2026-05-18
+
+### Mejora: marca de agua de procedencia IA (Meta AudioSeal) en el vídeo final
+
+Segunda técnica adoptada de `debpalash/OmniVoice-Studio`: marca de agua neuronal **imperceptible** en el audio del MP4 publicado, para que el artefacto sea verificablemente generado por IA (disclosure de IA de YouTube; complementa el SEO pack v0.2.14). Fase 13 best-effort, **espejo exacto** de la fase 12 SEO: el vídeo ya está hecho, nunca bloquea, nunca propaga error (siempre HTTP 200 con `watermarked:false` + motivo si algo falla).
+
+- Nuevo `routes/watermark.py` (`POST /watermark`) + `scripts/watermark_runner.py` (proceso hijo aislado, misma disciplina que el aligner v0.2.16) + Fase 13 en `pipeline/mod.rs`.
+- **El stream de vídeo se copia bit-idéntico** (`-c:v copy`); solo se re-encodea el audio (AAC). Verificado: h264 1280×720 360 frames idénticos antes/después.
+- `audioseal>=0.2` añadido a `requirements-ai.txt` (wheel puro-Python ~63 KB; deps ya presentes) → autoinstalable sin botón. La ruta además **self-healea** vía `pip install` si falta (instalaciones existentes que no re-ejecutan el wizard).
+- Hallazgos integration-only resueltos (capturados por la validación, no por test directo): (1) AudioSeal dispara `torch.compile`/inductor que necesita MSVC `cl` ausente en el runtime → se fuerza ejecución eager (`TORCHDYNAMO_DISABLE`/`torch._dynamo.config.disable`); (2) AudioSeal 0.2 **no resamplea** internamente → generar Y detectar al **mismo SR nativo** (dominios distintos ⇒ detección 0); (3) marca aplicada al audio 48 k estéreo a SR nativo, misma marca mono sumada a todos los canales, sin degradar la fidelidad (el watermark está enmascarado psicoacústicamente, ~27 dB SNR es su punto de operación, no ruido blanco).
+
+Validado: **experimento de viabilidad** (roundtrip AAC real: detección 1.000, control 0.001, vídeo bit-idéntico) + **Capa 2 (servidor bundled real)** — POST `/watermark` → `watermarked:true`, vídeo bit-idéntico, detección **1.000** en el MP4 publicado, `watermark_applied` en el log. `parity-check.mjs`: 5 invariantes nuevos (dep autoinstalable, runner aislado dynamo-off SR-nativo, ruta vídeo-intacto/never-500/self-heal, router montado, Fase 13 best-effort sin `?`).
+
+## [0.2.16] — 2026-05-18
+
+### Mejora: alineación de subtítulos y cortes de Shorts con precisión WhisperX (técnica de OmniVoice-Studio)
+
+Tras revisar el repo `debpalash/OmniVoice-Studio` (misma familia arquitectónica: Tauri 2 + Rust + FastAPI + React), se adopta su técnica de mayor valor: **alineación forzada wav2vec2** (lo que WhisperX hace internamente sobre faster-whisper). Se reproduce **sin dependencias nuevas** con `torchaudio.pipelines.MMS_FA`, ya presente en el runtime bundled (torchaudio 2.5.1+cu121, verificado). Descartado de OmniVoice: su auto-offload a CPU con ≤8 GB (viola la regla dura GPU-only del proyecto).
+
+Capa **puramente aditiva con fallback duro**: refina los timings palabra-a-palabra que produce faster-whisper. Ante cualquier problema (VRAM baja, modelo no descargable offline, error) devuelve `None` y el llamador conserva los timings originales → salida byte-idéntica a v0.2.15. El texto se preserva verbatim; solo se ajustan start/end.
+
+- Nuevo `models/aligner.py` + `scripts/aligner_runner.py`. Aplicado en `subtitles.py` (subtítulos/karaoke ASS) y `shorts_auto.py /from_video` (mejor agrupado en frases, snap a cortes de escena y guard de cold-open negro v0.2.15, que re-deriva el texto de las palabras supervivientes).
+- **Aislamiento por subproceso obligatorio** (descubierto por la validación 3 capas, no por test directo): cargar el wav2vec2 de torchaudio en el mismo proceso que faster-whisper/ctranslate2 aborta con `cudnnGetLibConfig (error 127)` — **incluso descargando whisper antes** (probado empíricamente). Choque de símbolos cuDNN a nivel de DLL/proceso; descargar el modelo Python no libera la DLL. Solución: proceso hijo limpio (patrón ACE-Step/DepthFlow) que importa solo torchaudio; su salida libera todos los handles CUDA. Gateado por VRAM, timeout acotado (8 min, cubre la descarga única de ~1,18 GB del modelo), fallback duro en cualquier fallo del hijo.
+
+### Consolidación faster-whisper (única fuente de verdad)
+
+Nuevo `whisper_model.transcribe_words(audio, language, *, vad)`: los thresholds permisivos anti-drop (que protegen la PRIMERA frase de la narración, antes solo en `subtitles.py`) viven ahora en un único sitio. `shorts_auto.py /from_video` migra a él conservando `vad=True` (vídeo arbitrario) pero heredando esos thresholds → los Shorts dejan de perder las primeras palabras (las que llevan el gancho).
+
+### Auditoría aditiva (cero cambio de comportamiento observable)
+
+- Fase 12 SEO en `pipeline/mod.rs`: captura y registra **por qué** se omite (HTTP status / error de request) en vez de tragarlo en silencio; el motivo llega al log y al mensaje de UI. Sigue siendo best-effort, nunca bloquea.
+- Verificado que `/shorts/auto` ya tenía guard de `req.words` vacío (no se añade código redundante).
+
+Validado: **Capa 1 (directo)** — narración real española con tildes, 96/96 palabras refinadas, texto verbatim, timings monotónicos, 100 % afinados. **Capa 2 (sidecar bundled real)** — POST `/subtitles` en el servidor FastAPI real con ctranslate2 residente en su proceso: `aligner_refined 96/96` + SRT/ASS escritos, **sin error-127** → aislamiento confirmado en el contexto real del servidor. `parity-check.mjs`: 8 invariantes nuevos (aislamiento del aligner, runner limpio sin imports de transcripción, helper consolidado, fallback duro en subs/Shorts, export del módulo, diagnóstico Fase 12).
+
+## [0.2.15] — 2026-05-16
+
+### Fix: los Shorts abrían en negro (cold-open sobre la intro oscura)
+
+Reportado con captura: el clip #1 mostraba ~1-6 s de imagen casi negra con un leve resplandor antes de aparecer contenido. Diagnóstico con frames reales extraídos de los MP4 generados: el short en sí está bien a partir de los ~2 s (Sun Wukong nítido, captions Hormozi), pero **arranca en negro**. Causa raíz: `render.ts` añade un segmento de intro `INTRO_SEC = 6.0` — los primeros 6 s de TODO vídeo narrativo son una title card animada **sobre negro puro** (con música underscore, sin narración). Al cortar un Short desde el inicio, el clip hereda ese cold-open negro — letal para la retención (el espectador desliza en el primer segundo). `blackdetect` confirmó negro de 0.02 s → 5.99 s en el short.
+
+Fix (`routes/shorts_auto.py`, **guard en Shorts**, sin tocar el render long-form):
+- Nuevo `_black_leadin_seconds()`: sondea con ffmpeg `blackdetect` (umbral por píxel `pix_th=0.10`) cuántos segundos near-black hay AL INICIO del candidato (solo cuenta una racha que empieza en el corte, no un beat oscuro a mitad).
+- Nuevo `_guard_black_open()`: adelanta el `start` del candidato hasta el primer frame brillante. Topado para no comerse el contenido (≤ mitad del clip, ≤ 8 s, el resto debe seguir ≥ `min_duration`); re-deriva el `text` de las palabras supervivientes para que el hook del LLM refleje la apertura real; clips < 8 s intactos; cualquier fallo de ffmpeg → candidato sin tocar (best-effort).
+- Se aplica a cada candidato elegido **antes** de generar hooks y cortar, en **ambos** endpoints (`/shorts/from_video` y `/shorts/auto`).
+- Como la narración del vídeo narrativo empieza justo cuando acaba la intro de 6 s, recortar el negro **alinea el Short para abrir en el primer frame brillante exactamente cuando empieza la primera palabra** — no se pierde nada.
+
+Validado contra un vídeo real con el bug (intro de 6 s): @0 detecta 6.12 s y adelanta el corte; @12 (imagen brillante) → no-op; clip corto → intacto. `parity-check.mjs`: 2 invariantes (helpers + blackdetect pix_th + `import re`; guard en ambos endpoints antes del cut).
+
+100 % local, content-agnóstico (sirve para cualquier MP4 subido, no solo los nuestros). El render narrativo / la intro de marca no se tocan.
+
+## [0.2.14] — 2026-05-16
+
+### SEO metadata pack local — del MP4 a "listo para subir" (100 % local, sin APIs)
+
+Hueco real del flujo: la app producía el vídeo pero el usuario escribía a mano título, descripción, tags y capítulos antes de subir a YouTube. Inspirado en la *capa de operaciones* de herramientas públicas de automatización de YouTube — pero con la filosofía **opuesta**: cero APIs cloud. La única llamada a modelo es el LLM local que ya escribió el guion; el resto es Python determinista (reproducible y gratis).
+
+Nueva ruta sidecar **`POST /seo`** (`routes/seo.py`) + `SEO_PROMPT_TEMPLATE` en `prompts.py`:
+- **Título + 3 variantes**: el LLM propone 6 candidatos; post-proceso determinista elige el óptimo (45-70 car., keyword principal presente, Title Case, tope duro 100).
+- **Descripción por idioma**: hook en los primeros ~125 caracteres (lo que indexa YouTube), "📺 LO QUE VERÁS", "⏱️ CAPÍTULOS", "📝 SOBRE ESTE VÍDEO", hashtags, crédito de música. Cabeceras localizadas (en/es/pt/fr/de/it/zh/ja/ko/ru/hi/ar).
+- **Capítulos con timestamps REALES**: derivados de los marcadores `[CHAPTER:]` del guion (los mismos tiempos que usa el vídeo), respetando las reglas de YouTube (primero en 0:00, ≥3, ≥10 s). Si el guion no los cumple → **no se inventan** (la deshonestía de timestamps fijos del repo de referencia se descarta a propósito).
+- **Tags** con presupuesto de 500 caracteres, dedupe y priorización (keyword principal > secundarias > tema > long-tail).
+- **Hashtags** ≤15, slug Unicode-safe.
+- **SEO score** (0-100) con rúbrica honesta (longitud de título, keyword en título y en primeros 125 car., longitud/estructura de descripción, nº de tags, capítulos, hashtags).
+- Degradación robusta: si el LLM falla o devuelve JSON inválido, **nunca rompe** — cae a keywords minadas de la narración.
+
+Integración:
+- **Pipeline (Fase 12, best-effort)**: tras el render, `wake_llm` + `POST /seo`; escribe `seo.json` + `seo.txt` (listo para copiar/pegar) junto al MP4. Nunca bloquea el pipeline (el vídeo ya está hecho). La Fase 1 ahora persiste `script.txt` para poder regenerar SEO retroactivamente.
+- **Biblioteca**: panel "Generar metadatos SEO" en cada tarjeta (mismo patrón que el panel de engagement) con score, título+variantes, descripción multi-idioma con pestañas, tags, hashtags y capítulos — cada bloque con botón **Copiar**.
+- `parity-check.mjs`: 5 invariantes (ruta local sin APIs + chapters de markers, router montado, prompt, fase 12 best-effort + script.txt, panel UI con copiar).
+
+ACE-Step/MusicGen y el resto del pipeline no se tocan.
+
+## [0.2.13] — 2026-05-16
+
+### Fix DEFINITIVO de xformers: eliminado, MusicGen usa atención torch SDPA nativa
+
+xformers se intentó autoinstalar en v0.2.7/0.2.8/0.2.9 (cada versión falló en el paso `pip`). Investigación definitiva contra el runtime real (Python 3.11.15, torch 2.5.1+cu121, win_amd64, 2026-05-16):
+
+- **PyPI por defecto** → `xformers==0.0.28.post3` solo tiene **sdist** (no wheel Windows) → pip compila desde fuente en un entorno aislado sin torch → `ModuleNotFoundError: No module named 'torch'`.
+- **Índice PyTorch cu121** (`--index-url`, el "fix" de v0.2.9) → solo hospeda xformers **hasta 0.0.27.post2**; `0.0.28.post3` no existe ahí → `No matching distribution found` (fallo inmediato).
+- **`--only-binary=:all:` en PyPI** → las versiones saltan de `0.0.27.post2` a `0.0.29.post2`: **no existe NINGÚN wheel precompilado de xformers** que empareje con torch 2.5.1+cu121 en py3.11/Windows, en ningún índice.
+
+Conclusión: xformers es **estructuralmente ininstalable** para este runtime — y **no hace falta**. Es solo un acelerador *opcional* de audiocraft 1.3.0. Pero `MusicGen` construye su LM con `memory_efficient=True`, y audiocraft mezcla esa flag con imports duros de xformers que **NO están protegidos por el switch de backend** y disparan en cadena al construir/generar (verificado en la fuente real, traza a traza):
+1. `transformer.py:193/731` `_verify_xformers_memory_efficient_compat()` — guard de import en `__init__` (revienta al construir el modelo).
+2. `transformer.py:241-242` `_get_mask` → `from xformers.ops import LowerTriangularMask` (cada paso de generación).
+3. `transformer.py:54` `_is_profiled()` → `from xformers.profiler import profiler; profiler._Profiler._CURRENT_PROFILER` (cada capa).
+4. `transformer.py:377` `q,k,v = ops.unbind(packed, dim=2)` — `ops` se fija al importar `transformer.py` (`from xformers import ops` → `None` si falta) → `None.unbind` peta a mitad de generación.
+
+**Solo** la *llamada* final de atención respeta el backend (`transformer.py:415-419`): con `'torch'` corre `torch.nn.functional.scaled_dot_product_attention`; el `LowerTriangularMask` se usa únicamente como centinela causal truthy y `memory_efficient_attention` jamás se llama.
+
+Fix (`_force_torch_attention()` en `routes/music.py`):
+- Registra un **shim no-op de xformers en `sys.modules`** (`xformers`, `xformers.ops`, `xformers.profiler`) con `LowerTriangularMask` (centinela), `unbind`=`torch.unbind`, `memory_efficient_attention`/`profile` que lanzan si se llaman (nunca con backend torch), y `profiler._Profiler._CURRENT_PROFILER=None`. Satisface TODOS los imports duros sin xformers real.
+- `set_efficient_attention_backend("torch")` → el cómputo real va por SDPA nativo de PyTorch.
+- Rebind defensivo `_axt.ops = sys.modules["xformers.ops"]` (cubre el caso en que `transformer.py` ya se importó con `ops=None` antes del shim).
+- Se invoca en `_musicgen` **antes** del `from audiocraft.models import MusicGen`, así el shim ya está en `sys.modules` cuando `transformer.py` fija su `ops` global. `XFORMERS_DISABLED=1` a nivel módulo.
+- Eliminados `_XFORMERS_PIN` y toda la maquinaria `_ensure_xformers()` (pip).
+- **`requirements-music.txt`**: `xformers==` eliminado (con comentario de por qué NO re-añadirlo).
+- **`server.py`**: eliminado el warmup `_warm_xformers` del lifespan (dead code que lanzaba un pip fallido en cada arranque).
+- **`parity-check.mjs`**: invariantes reescritas (shim `sys.modules`, rebind `ops`, backend torch, sin `_ensure_xformers`, requirements sin xformers, server sin warmup).
+
+Validado **end-to-end contra el runtime real** (2026-05-16, RTX 4060): con xformers totalmente ausente, MusicGen-medium **construye Y genera** audio real — `wav (1,1,128000)`, 4 s @ 32 kHz, RMS 0.205, peak 0.974, no-silente. ACE-Step (generador principal) corre en su venv aislado cu128 y no se ve afectado; MusicGen es el fallback GPU y ahora es autosuficiente sin dependencias ininstalables.
+
+## [0.2.12] — 2026-05-16
+
+### Fix Shorts: "no candidate segments found in transcript" (HTTP 400)
+
+El pipeline completo (incl. ACE-Step) generó perfecto, pero los Shorts fallaban con `HTTP 400: no candidate segments found in transcript`. Causa raíz confirmada en logs (`shorts.from_video: whisper unloaded after transcription` → error inmediato): la narración TTS-clone es muy fluida y casi no tiene pausas ≥0.4 s, así que `_group_into_sentences` (que solo partía por silencios) colapsaba un vídeo de ~4 min en 1-3 "frases" gigantes, cada una más larga que el `max_duration` de un short (60 s). `_candidate_segments` no podía formar ninguna ventana [25-60 s] → lista vacía → 400 que mataba toda la función de Shorts.
+
+Fix (`routes/shorts_auto.py`, afecta a `/shorts/auto` y `/shorts/from_video`):
+- **`_group_into_sentences` ahora parte por TRES señales** en vez de solo silencios: (1) gap ≥0.4 s, (2) la palabra previa termina en puntuación terminal (`. ! ? … 。！？`, robusto a ES/CJK), (3) cap de duración `max_sentence_dur`=12 s. La puntuación da fronteras de frase reales aunque el TTS no haga pausas; el cap es red de seguridad content-agnóstica.
+- **`_candidate_segments` red de seguridad**: si aun así no hay candidatos pero existe transcript, emite UN candidato best-effort acumulando desde el inicio hasta `max_d` (o todo) si supera `min_d`. Nunca devuelve vacío con transcript usable → ya no hay 400 que tumbe los Shorts.
+
+## [0.2.11] — 2026-05-16
+
+### Fix: el pipeline "se reseteaba" al cambiar de sección
+
+Bug reportado: iniciar una generación y navegar a otra sección hacía que, al volver, el progreso del pipeline apareciera reseteado (fases, thumbnails, proyecto activo). Causa: la generación corre en el backend Rust y NUNCA se detiene, pero el estado de progreso vivía en `useState` de `generator.tsx`; TanStack Router desmonta el componente al cambiar de ruta → estado borrado → al volver, componente remontado vacío (parecía reseteado aunque el backend seguía trabajando).
+
+Fix (state architecture):
+- **`apps/desktop/src/lib/pipelineStore.ts`** (NUEVO): store Zustand a nivel módulo (vive fuera del árbol de componentes) con `activeProjectId / phaseState / imageThumbs / error` + acciones. Filtro de project-id idéntico al anterior (`!aid || id===aid`).
+- **`__root.tsx`**: `ensurePipelineSubscription()` registra los listeners de eventos del pipeline UNA vez en el layout raíz (que nunca se desmonta al navegar) → los eventos siguen actualizando el store aunque la ruta del generador no esté montada.
+- **`generator.tsx`**: ahora es un lector puro del store. Eliminados sus `useState` de progreso, su `useEffect` de suscripción a eventos y el `activeRef`. `handleStart`/abort usan acciones del store.
+
+Resultado: cambiar de sección y volver muestra el estado real y vivo de la generación en curso. (La recuperación tras recargar la app entera — no solo navegar — requiere una query al backend del run activo; queda como mejora separada, no es el bug reportado.) Parity-check: 3 invariantes nuevas que blindan que el progreso viva en el store y la suscripción esté en el root.
+
+## [0.2.10] — 2026-05-15
+
+### Seguridad del stack + limpieza dead-code (sin romper nada)
+
+**Auditoría de dependencias** (`pnpm audit`): 4 vulnerabilidades, todas en deps **transitivas** de `apps/sidecar-node` (servidor local 127.0.0.1, no expuesto → riesgo real bajo, pero se parchea por higiene):
+- **high** `fast-uri ≤3.1.1` (host confusion vía auth percent-encoded) — vía `fastify › @fastify/ajv-compiler`.
+- **moderate** `hono <4.12.18` (CSS Declaration Injection en JSX SSR) — vía `hyperframes`.
+- **moderate** `hono <4.12.18` (Cache Middleware ignora Vary: Authorization/Cookie).
+- **low** `hono <4.12.18` (validación NumericDate de claims JWT).
+
+Fix: `pnpm.overrides` en el root pinando `fast-uri ≥3.1.2` y `hono ≥4.12.18`. Ambos bumps **dentro del mismo major** → API-compatibles (`hyperframes` ya requiere `hono ^4.0.0`; `fast-uri` 3.1.1→3.1.2 es solo patch de seguridad). Blast radius mínimo: no toca ninguna dep directa. `pnpm audit` post-fix → **"No known vulnerabilities found"**. sidecar-node recompila sin errores (hyperframes intacto).
+
+**Python**: runtime ya al día (fastapi 0.115, starlette 0.46.2, aiohttp 3.13.5, requests 2.32.5, urllib3 2.6.3, pillow 11.3) — sin CVEs conocidos, sin acción.
+
+**Dead-code eliminado** (`cargo check` pasa de "2 warnings" a **cero**):
+- `Supervisor::unload_llama()` (sidecars/mod.rs) — superseded por el flag `.llamacpp_suspended` + `_kill_llamacpp_process` (Python). Nunca cableado.
+- `write_active_config()` (installer/llamacpp.rs) — superseded por `routes/models.py` que escribe `active.json` (contrato T3). `active_config_path()` / `read_active_config()` siguen en uso (ruta de lectura) → sin huérfanos.
+
+## [0.2.9] — 2026-05-15
+
+### ACE-Step v1.5 = generador PRINCIPAL de música (sin toggle, autoinstalable)
+
+Corrección de diseño: v0.2.8 dejó ACE-Step como opt-in con componente manual del wizard — eso exigía 2 pasos manuales y contradecía el principio del proyecto (todo auto-detectable/instalable/configurable). v0.2.9 lo hace **principal e incondicional**:
+
+- **`scripts/acestep_bootstrap.py`** (NUEVO): auto-instala el venv aislado en background — idempotente, crea `runtime/acestep-venv` (torch 2.7.1+cu128) + clona `ACE-Step-1.5@v0.1.7` en `runtime/acestep-repo` + nano-vllm `-e` + repo `-e --no-deps`. `is_ready()` / `ensure_async()` (daemon thread, lock).
+- **`server.py`**: hilo de boot que llama `acestep_bootstrap.ensure_async()` (junto al warmup de xformers). Se instala durante las fases largas previas a música; cero acción del usuario.
+- **`routes/music.py`**: ACE-Step es el primer intento SIEMPRE que se pide música IA (`want_ai_music = use_musicgen or use_acestep`). `_acestep_v15` nunca lanza: si el venv aún se instala / falla → None → MusicGen → biblioteca. Además dispara el bootstrap on-demand si el venv no está listo (no bloquea ese run).
+- **Eliminado todo el opt-in**: `app_settings.acestep_enabled` + comando + registro lib.rs + `AcestepServiceRow` Settings + helper tauri.ts + flag `use_acestep` del pipeline. ACE-Step no tiene toggle. El componente installer Rust se mantiene como acelerador opcional de pre-instalación.
+- `generator.tsx`: el toggle de música ahora dice "Generar música con IA" y explica que ACE-Step se autoinstala en segundo plano.
+
+### Fix xformers auto-install (#241)
+
+`pip install --no-deps xformers==0.0.28.post3` fallaba con `ModuleNotFoundError: No module named 'torch'` (no había wheel prebuilt en PyPI default → pip compilaba desde sdist en build-isolation sin torch). Fix: `--index-url https://download.pytorch.org/whl/cu121` (wheel prebuilt para torch 2.5.1+cu121). Aplica al boot warmup y on-demand. MusicGen (fallback de ACE-Step) ahora sí genera real.
+
+### Fix imágenes: setting_tag fino, sin objetos omnipresentes (#242)
+
+Causa confirmada con prompts reales (run Dioses olímpicos): el setting_tag completo — con objetos concretos `(deep ultramarine and gold, marble temples, olive groves, thunderbolts, celestial feasts)` — se inyectaba **prefijo + sufijo en CADA imagen** → todas compartían rayo/templo/olivos pese a que el beat narrara otra cosa. Fix: `_style_anchor()` extrae solo época+cultura+**paleta** (descarta los nombres de objeto) e inyecta **solo prefijo** (sin la duplicación sufijo). Mantiene anti-drift y cohesión de color; cada imagen ahora fiel a su momento narrado (el distiller ya varía sujeto/cámara/luz por beat). Aplicado a las dos rutas de construcción de prompt.
+
+## [0.2.8] — 2026-05-15
+
+### ACE-Step v1.5 (mejor generador música open-source) — opt-in, venv aislado
+
+`ace-step/ACE-Step-1.5` v0.1.7 pinea `torch==2.7.1+cu128` (choca con la torch 2.5.1+cu121 del sidecar) + `nano-vllm` local. Integrado con el **patrón DepthFlow** (venv aislado + runner por subprocess), NO en el venv del sidecar:
+
+- **Componente installer `python-deps-acestep`** (`AssetKind::AceStepVenv`, `acestep_venv_install` en runner.rs): crea `runtime/acestep-venv` con torch 2.7.1+cu128, clona `ACE-Step-1.5@v0.1.7` en `runtime/acestep-repo`, instala `nano-vllm -e` + repo `-e --no-deps`, smoke-test. flash-attn omitido (runner usa `use_flash_attention=False`).
+- **`scripts/acestep_runner.py`**: corre en el venv aislado, API verificada (`AceStepHandler.initialize_service(config_path="acestep-v15-sft", offload_*=False)` + `generate_music(... thinking=False, instrumental=True)`), GPU-only (sin offload, 2B SFT <4 GB), checkpoint `ACE-Step/Ace-Step1.5` se baja solo al primer uso.
+- **`routes/music.py` `_acestep_v15()`**: opt-in vía `use_acestep`. Detecta venv+repo+runner, pre-check VRAM ≥4.5 GB, subprocess con timeout 40 min. **NUNCA lanza excepción**: ante cualquier problema (venv ausente, VRAM, error, timeout) devuelve None → cae a MusicGen → biblioteca. El pipeline jamás se bloquea.
+- **Opt-in gateado** como Ollama: `app_settings.acestep_enabled` (default false) + comando `app_settings_set_acestep_enabled` + toggle en Settings + flag `use_acestep` que el pipeline Rust lee fresco cada generación. `/music/backends` reporta `acestep_available` real.
+
+Calidad: ACE-Step v1.5 supera objetivamente a MusicGen en instrumental cinematográfico multi-minuto (benchmark SongEval 8.09). Por defecto sigue MusicGen (zero-config) hasta que el usuario active el opt-in.
+
+### Imágenes cohesivas (setting_tag robusto) + MusicGen autoinstalable
+
+Validado v0.2.7 end-to-end OK (run Sun Wukong → `video.subs.mp4`). Dos mejoras de calidad/robustez sobre esa base estable:
+
+**A — `_generate_setting_tag` robusto** (`routes/script.py`). Gemma 4B abliterated fallaba ~50% (`setting_tag_all_attempts_failed`) → caía a un placeholder genérico ("period-correct iconography, scene-appropriate palette") → imágenes que convergían visualmente aunque el rotador shot/palette/tod variara la composición (queja real del usuario: "imágenes muy parecidas entre sí"; el run que "lo hizo bien" fue uno donde el LLM acertó el tag — no-determinismo, no regresión). Fix de 3 partes:
+- Prompt con **3 ejemplos few-shot** concretos (Journey to the West, Egipto, cyberpunk) mostrando el formato exacto — Gemma necesita ejemplos, no solo reglas.
+- **Picker de línea inteligente** (prefiere la que tiene `setting` + paréntesis, no la primera) + criterio relajado (≥18 con paréntesis vs ≥15 ciego) + 4º intento con temperatura escalada.
+- **Fallback temático determinista**: deriva era/cultura de la 1ª-2ª frase del brief Wikipedia ya descargado en vez del placeholder genérico → ancla CLIP fuerte aunque el LLM falle.
+
+**B — xformers auto-install** (`routes/music.py` + `server.py`). MusicGen necesita xformers; faltaba → `ImportError` → 500 → SIEMPRE fallback a librería (MusicGen nunca generaba). Pedir "reinstala el componente" viola el principio del proyecto (todo autoinstalable). Solución de 2 capas, sin acción del usuario:
+- **Boot warmup**: hilo background al arrancar el sidecar instala xformers durante las fases largas previas a música.
+- **On-demand**: si aún falta en `/music`, `pip install xformers==0.0.28.post3 --no-deps` en el venv runtime (no toca la torch existente) + reintento.
+- Si ambas fallan → fallback limpio a librería; la instalación persiste → siguiente run MusicGen funciona.
+
+### Parity-check
+Invariantes nuevas: whisper-evict ya cubierto en v0.2.7; v0.2.8 añade music.py auto-install xformers + server.py boot warmup. (setting_tag mantiene la invariante de rotación shot/palette/tod existente.)
+
+## [0.2.7] — 2026-05-15
+
+### Fix definitivo del deadlock de subtítulos + MusicGen real + TTS robusto
+
+Validando v0.2.6 end-to-end (run Sun Wukong) se confirmó: thumbnail ✅ (Fix 1+2, sin cuelgue 30 min), carga de whisper ✅ (Fix 3, 6.9 s vs deadlock 15 min). Pero apareció un fallo más profundo en la misma fase y dos problemas de calidad:
+
+**A — Whisper residente durante la traducción (causa del `pipeline failed`)**
+La ruta `/subtitles` hacía transcribe + translate en la misma request **sin descargar whisper**. Durante la traducción ES→EN: whisper (~3 GB) + llama-server (~3 GB) co-residentes en 8 GB → CUDA Sysmem-fallback thrash → cada una de las 41 llamadas LLM tardaba 15-46 s en vez de ~3 s → 882 s totales → el timeout rust de 15 min mataba el pipeline aunque la ruta Python completaba a los 16.9 min. Fix: `routes/subtitles.py` descarga whisper de VRAM (`whisper_model.unload()` + `gc` + `empty_cache` + `synchronize`) tras `subtitles_source_written` y antes del bucle de traducción. Evento nuevo `subtitles_whisper_unloaded_pre_translate`.
+
+**B — Timeout rust `/subtitles` 15 → 30 min** (`pipeline/mod.rs`). Red de seguridad: un long-form con muchas entradas × varios idiomas es legítimamente minutos de LLM aunque esté sano.
+
+**C — Traducción batcheada** (`routes/subtitles.py` `_translate_entries`). Era 1 llamada LLM por entrada, secuencial (41 round-trips). Ahora `XIANXIA_TRANSLATE_BATCH` (12) entradas por llamada con protocolo numerado estricto y escalera de robustez: batch → 1 reintento → fallback per-entrada → fallback inglés. Nunca falla; siempre produce SRT/ASS.
+
+**D — xformers para MusicGen** (`requirements-music.txt`). MusicGen lanzaba `ImportError: xformers is not installed` → HTTP 500 → SIEMPRE caía a librería (nunca generaba música real). Añadido `xformers==0.0.28.post3` (build exacto para torch 2.5.1+cu121 del runtime; declara `torch==2.5.1` así que pip no mueve torch).
+
+**E — TTS clone robusto** (`pipeline/mod.rs`). El TTS clone (~7 GB) tardó 17 min vs ~2.5 normales por presión VRAM de apps de escritorio → thrash. La POST `/tts` **no tenía timeout** (un cuelgue real colgaría el pipeline para siempre). Añadido: `ensure_comfyui_vram` best-effort antes (reclaim de lo que controlamos; nunca aborta porque TTS es obligatorio) + timeout 25 min en `/tts` (acota un hang real → falla limpio en vez de colgar infinito).
+
+### Parity-check
+
+Invariantes nuevas: whisper unload antes de traducir, timeout `/subtitles` 30 min, `_translate_entries` batcheado, xformers en requirements-music, timeout `/tts`.
+
+## [0.2.6] — 2026-05-15
+
+### Drop completo de ACE-Step v1.5 → MusicGen-only GPU-only
+
+ACE-Step v1.5 queda **retirado del pipeline**. Razones (investigación del repo oficial https://github.com/ace-step/ACE-Step y testing en RTX 4060 8 GB Windows):
+
+- En 8 GB VRAM ACE-Step necesita `cpu_offload=True` (lo dice el README oficial). Sin offload, en Windows el driver entra en *thrash* WDDM y el sampler nunca termina — síntoma idéntico al [issue #87 "stuck at 0%"](https://github.com/ace-step/ACE-Step/issues/87) (abierto sin respuesta desde mayo 2025) y al [#344](https://github.com/ace-step/ACE-Step/issues/344) (OOM en 8 GB).
+- Con offload, partes del modelo viven en RAM y rompen la **regla dura GPU-only** del proyecto (engram `feedback_no_cpu_offload`).
+- El repo upstream no tiene release tag ni mantiene el inference loop desde enero 2026. Las dependencias se rompen con cada bump de `transformers` ([issue #354](https://github.com/ace-step/ACE-Step/issues/354)).
+
+**Backend único v0.2.6**: MusicGen-medium fp16 GPU-only.
+
+- Cabe en ~3.5 GB VRAM sin offload.
+- Long-form vía chunks de 30 s con crossfade 4 s (ya implementado).
+- Pre-check VRAM ≥ 4 GB antes de cargar → 503 limpio + fallback a librería local si no hay margen.
+- Pipeline rust mantiene timeout 12 min + fallback a librería local. Cero stalls posibles en fase de música.
+
+### Cambios concretos
+
+- `apps/sidecar-py/src/xianxia_ai/routes/music.py` — eliminado `_acestep()`, `_have_acestep()`, `_ACESTEP_MIN_FREE_VRAM_GB`, `mood_to_prompt_acestep()`, `_MOOD_BASE_ACESTEP`. `_musicgen()` ahora con pre-check VRAM 4 GB y `set_device(0)`. `/music/backends` devuelve `acestep_available: false` por compatibilidad wire (eliminado del response en v0.2.7).
+- `apps/sidecar-py/requirements-music.txt` — eliminada línea `acestep @ git+...`, solo queda `audiocraft>=1.3.0`.
+- `apps/desktop/src-tauri/src/installer/manifest.rs` — componente `python-deps-music` renombrado a "MusicGen-medium (música cinematográfica generada en GPU)", tamaño 6 GB → 4 GB.
+- `apps/desktop/src-tauri/src/installer/verify.rs` — `acestep_installed` siempre `false` (campo se mantiene un release más por compat), check de paquete `acestep` removido.
+- `apps/desktop/src/lib/tauri-shim.ts` — check ACE-Step removido del browser-mode summary.
+- `apps/desktop/src/routes/generator.tsx`, `settings.tsx`, `install.tsx` — labels y descripciones actualizadas.
+- `apps/desktop/src-tauri/src/pipeline/mod.rs` — comentarios actualizados (el timeout 12 min ahora cubre MusicGen, no ACE-Step).
+- `apps/sidecar-py/src/xianxia_ai/routes/unload.py`, `scripts/depthflow_runner.py`, `installer/{manifest,runner}.rs` — comentarios limpiados.
+- README.md fila Música actualizada.
+
+### Plan de retirada total (v0.2.7)
+
+- Eliminar `acestep_available` del response `/music/backends`.
+- Eliminar campo `acestep_installed` de `StackSummary`.
+- Tras este release queda sin trazas en el code base.
+
+## [0.2.0] — 2026-05-12
+
+### Migración mayor — llama.cpp como runtime LLM primario (Ollama queda como fallback)
+
+v0.1.x usaba Ollama (con `xianxia-llm` = Gemma 4 abliterated GGUF) como única ruta para script + metadata + shorts detection + traducción. v0.2.0 introduce **llama.cpp** (https://github.com/ggml-org/llama.cpp) como runtime alternativo: comparte los mismos GGUFs (descarga cero adicional para usuarios v0.1.x), corre en `:8733` paralelo a Ollama, y se autodetecta vía health probe. La abstracción `LLMBackend` desacopla los call sites de cualquier runtime concreto.
+
+**Por qué llama.cpp**:
+* Soporte directo de GGUF arbitrarios sin tener que envolverlos en un Modelfile de Ollama.
+* OpenAI-compatible `/v1/chat/completions` + `response_format: json_schema` con GBNF (garantía estructural, no solo "valid JSON").
+* Menor footprint en VRAM (sin keep_alive, sin daemon residente — el proceso muere cuando se cierra la app).
+* Releases binarios por flavor de hardware (CUDA / Vulkan / Metal / CPU) sin compilar nada.
+
+### Añadido
+
+* **`apps/sidecar-py/src/xianxia_ai/llm_backend.py`** — abstracción `LLMBackend` ABC con dos impls: `OllamaBackend` (legacy `/api/chat`) y `LlamaCppBackend` (`/v1/chat/completions`). `get_backend()` con modo `"auto"` (default): probe a `:8733/health`, fallback Ollama. Selector vía env `XIANXIA_LLM_BACKEND={llamacpp,ollama,auto}`.
+* **`apps/desktop/src-tauri/src/installer/llamacpp.rs`** — installer Rust del binario llama-server. 6 flavors auto-detectados desde `crate::hardware::detect_hardware()`: WindowsCuda12, WindowsVulkan, WindowsCpu, MacosArm64, LinuxVulkan, LinuxCpu. Tag pinned `b9114` (configurable de un solo punto). Para Windows CUDA descarga ADEMÁS el bundle cudart (DLLs runtime) y lo extrae junto al binario. Tauri commands `llamacpp_status` + `llamacpp_install` expuestos al frontend.
+* **`apps/desktop/src-tauri/src/installer/llamacpp.rs::LlmModelConfig`** — esquema de configuración del modelo activo (`<data_dir>/models/active.json`). Campos: gguf_path, context_size, gpu_layers, flash_attention, chat_template, threads/batch/ubatch, parallel, extra_args, model_id/architecture/quantization. `to_args()` genera el argv estable para `llama-server`.
+* **`apps/sidecar-py/src/xianxia_ai/gguf_meta.py`** — parser KV del header GGUF, **cero deps externas** (no requiere el pip package `gguf`). Extrae `general.architecture`, `tokenizer.chat_template` (Jinja embedded — CRÍTICO), context_length, embedding_length, block_count, eos/bos. `quantization_from_filename()` regex captura Q4_K_M / Q5_K_S / IQ3_XS / F16 / BF16 desde el nombre.
+* **`apps/sidecar-py/src/xianxia_ai/llm_recommender.py`** — reglas estilo llmfit (https://github.com/AlexsJones/llmfit) reimplementadas en Python. Computa `gpu_layers` desde VRAM disponible × bytes-por-capa, `context_size` capped a training ctx, `flash_attention` si vram_gb≥6 + GPU NVIDIA/Apple. Sampling defaults por familia tomados de `generation_config.json` oficiales: Gemma (temp 1.0, top_p 0.95, top_k 64), Qwen3 (0.7/0.8/20), Llama 3.1 (0.6/0.9/50), Mistral (0.7/0.95/50), Phi-3 (greedy), DeepSeek (0.6/0.95). Cada recomendación incluye `rationale: list[str]` que la UI muestra.
+* **`apps/sidecar-py/src/xianxia_ai/routes/models.py`** — endpoints `/models/*` montados en server.py:
+  * GET /models/local — escanea `<data_dir>/models/` + legacy `hf-cache/hub` (cero re-descargas para v0.1.x users).
+  * POST /models/inspect — dump completo de metadata GGUF con KV bounded.
+  * POST /models/recommend — auto-config dado un GGUF (probe `/install/hardware`).
+  * GET /models/search?q= — HuggingFace API `/api/models?filter=gguf&sort=downloads`.
+  * GET /models/files?repo_id= — lista quants disponibles en un repo HF con sizes.
+  * POST /models/download — `huggingface_hub.hf_hub_download` resume-friendly, también baja README.md.
+  * POST /models/activate — calcula recomendación + escribe `active.json` atomically + llama `llm_backend.reset_backend()`.
+  * GET /models/active, POST /models/delete.
+* **Supervisor en `apps/desktop/src-tauri/src/sidecars/mod.rs`** — `spawn_llama_server` con `LlmModelConfig.to_args()`. CWD = dir del binario (Windows CUDA encuentra cudart DLLs adyacentes sin tocar PATH). `spawn_llama_if_needed()` skip silencioso si no hay install o GGUF descubierto. `probe_llamacpp` acepta 200/503 (llama.cpp emite 503 durante warmup mmap). `unload_llama()` público para `/unload?target=llm`. `XIANXIA_LLM_BACKEND` propagado al Python sidecar.
+* **`apps/desktop/src/routes/settings.tsx::LlmModelPanel`** — nueva sección "Modelo LLM (llama.cpp)" con: runtime status + botón "Instalar llama.cpp", tarjeta del modelo activo, lista de GGUFs locales con "Activar", buscador HF inline con resultados expandibles + "Descargar + activar".
+
+### Migración v0.1.x → v0.2.0
+
+* **Zero-config**: el default `XIANXIA_LLM_BACKEND=auto` hace que el backend probe llama.cpp primero y caiga en Ollama si no responde. Sin acción del usuario, todo sigue funcionando como v0.1.x.
+* **GGUFs reutilizados**: `discover_default_config()` escanea `<data_dir>/hf-cache/hub/models--*/snapshots/*/*.gguf` (la cache HF que ya tienes de v0.1.x). El supervisor spawns llama-server con el primer GGUF que encuentre, sin re-descargar nada.
+* **UI**: para forzar llama.cpp el usuario instala el runtime y activa un modelo desde Settings → Modelo LLM. Una vez activo, `models/active.json` declara la elección y `reset_backend()` lo reflecta en caliente.
+
+### Refactor
+
+* 10 callsites Python que hacían `httpx.post("…:11434/api/generate")` directo migrados a `llm_generate(...)` que rutea por el backend abstracto:
+  * `routes/script.py` (7 sites: /script principal, /metadata, key_facts extraction, setting_tag, visual distillation, /suggest, /hooks)
+  * `routes/shorts_auto.py` (2: scoring + viral hook generation)
+  * `routes/subtitles.py` (1: translation pipeline)
+  * `routes/shorts.py` (ya usaba `llm.generate()` desde v0.1.10 — re-encajado en la nueva abstracción)
+* `routes/unload.py` — `_unload_llm()` reemplaza `_unload_ollama()`. Acepta target `"llm"` (canónico v0.2.0) y `"ollama"` (alias retrocompat).
+* `routes/diag.py` — `_llm_running()` reemplaza `_ollama_running()`. Campo `/diag/vram::llm_running` con tag de backend.
+
+### Parity check
+
+`scripts/parity-check.mjs` ampliado de 22 a **35 invariantes**. Las 13 nuevas validan:
+* T2: `llamacpp.rs` define LLAMACPP_TAG + pick_flavor + active config; lib.rs registra los Tauri commands.
+* T3: supervisor implementa spawn/probe/respawn de llama-server; `XIANXIA_LLM_BACKEND` propagado al Python con default "auto".
+* T4: gguf_meta.py + llm_recommender.py existen; routes/models.py expone los 5 endpoints clave; server.py monta el router; active.json es el contrato compartido con T3.
+* T5: tauri.ts exporta los 4 helpers críticos; settings.tsx renderiza LlmModelPanel; tauri-shim.ts stub para browser-mode.
+* T6: llm_backend.py implementa el routing "auto".
+* T1: ningún route POSTea a `/api/generate` directo (debe usar `llm_generate`).
+
+## [0.1.23] — 2026-05-07
+
+### Corregido — transición `inkwash` horrible en narrative pipeline
+
+* `apps/desktop/src-tauri/src/pipeline/mod.rs::normalise_beat_timeline`
+  cicleba transitions cross / flash / cross / **inkwash** / whip. El
+  inkwash es un *clip-path circle iris* que cierra con círculo negro
+  y vuelve a abrir. En videos donde dos beats consecutivos muestran
+  composiciones similares (mismo personaje, mismo escenario, mismo
+  prompt → ComfyUI genera imágenes muy parecidas), el iris se abre
+  sobre una imagen casi idéntica → "cierre y apertura sobre la misma
+  imagen" — el usuario lo describió como "extremadamente horrible".
+* Cycle nuevo: `cross / flash / cross / whip`. Cross-fade domina (3
+  de 4 slots) que es la transición más segura cuando dos beats son
+  visualmente similares. Flash y whip se intercalan para acento.
+* El test `transitions too repetitive` sigue pasando (≥ 2 kinds
+  distintos en el ciclo).
+
+## [0.1.22] — 2026-05-07 (sprint completo OpusClip-grade)
+
+### Smart shorts OpusClip-grade — basado en research, no en suposiciones
+
+Investigación previa con 4 agentes paralelos (Playwright sobre opusclip.com,
+github-research-expert sobre clones OS, Context7 sobre HyperFrames + faster-whisper,
+Explore sobre código actual) reveló que el "dinamismo" de OpusClip no viene de
+zoom punches forzados — viene de active speaker tracking + Hormozi captions
+auténticos + segments coherentes con el contenido visual del source.
+
+* **Captions Mozi-style**: 2-3 palabras por grupo, una activa en amarillo +
+  scale-punch, outline negro grueso de 8 direcciones (no pill background),
+  font 96 px, hard-cut entre grupos sin overlap. Refactor del template
+  `apps/sidecar-node/src/templates/short.html` + render.ts groups builder.
+* **Active speaker tracking** vía mouth-region std-dev (lip-movement proxy
+  pure-OpenCV, sin pyannote, sin HF token) que reemplaza `max(area)` cuando
+  hay múltiples caras detectadas.
+* **Dual-mode reframe automático**: tight crop con cinematography para
+  shots con cara dominante (>6 % área, presencia >40 %), blur-fill 16:9
+  para shots cinemáticos wide. Hard cuts entre modos = sensación de edición
+  OpusClip.
+* **Parallax en blur mode**: bg blureado zoom 1.0 → 1.04 + drift ±20 px,
+  fg sharp zoom 1.0 → 1.025 + drift opuesto ±8 px → sensación de profundidad
+  real. Soft-feather 16 px en bordes top/bottom para mezcla suave.
+* **Tight mode = composición fija** (mediana de samples confiables) +
+  Ken Burns slow zoom 1.0 → 1.04 con smoothstep ease. Cero pan dentro
+  del segmento → cero movimientos erráticos.
+* **PySceneDetect threshold 18** (vs 27): detecta los cuts naturales del
+  anime, ningún cut artificial sintético sobre los reales (los sintéticos
+  cortaban shots por la mitad → "imágenes inconexas con audio").
+* **Face-presence scoring** multiplicativo: candidatos con
+  `face_pres < 30 %` se penalizan a 40 % del score; segments con caras
+  visibles consistentemente reciben hasta +10 % boost. Evita elegir
+  segments sin contenido visible.
+* **HyperFrames composición duración** = clip + 1.2 s tail buffer →
+  el CTA card tiene tiempo de aparecer sin truncar el final.
+
+### Corregido — bugs reales, validados e2e
+
+* **Deadlock subprocess.PIPE en stderr** (raíz del cuelgue de v0.1.19/0.1.21).
+  ffmpeg sin `-nostats` escribe progreso por frame; con `stderr=PIPE` y sin
+  drainer, el buffer 64 KB se llena al ~frame 138 y ffmpeg bloquea el
+  `write(stderr)` mientras Python espera dentro de `proc.wait()` → infinito.
+  Fix: `-hide_banner -nostats -loglevel error` + quitado `-movflags +faststart`
+  del encode primario (segundo camino al hang con NVENC + close-stdin).
+* **Mediapipe legacy** (`mp.solutions`) eliminado en 0.10.x → AttributeError
+  silencioso → personajes con cabezas cortadas. Reemplazado por cascadas
+  Haar + perfil de OpenCV (zero-deps, 100 % hit rate validado).
+* **Whisper unload tras transcripción** libera handle cuDNN antes de YOLO
+  load (los dos cargando cuDNN simultáneamente segfaultaba el FastAPI
+  worker con `Could not load symbol cudnnGetLibConfig`).
+* **YOLOv8 tier postponed a v0.1.23** (subprocess-aislado): aun con whisper
+  unloaded el segfault persistía en el mismo proceso. Decisión técnica
+  documentada — Haar + saliency cubren el caso para shorts con caras
+  detectables (60 %+ del video del usuario tiene caras Haar-detectables).
+* **HyperFrames `<video src="">` placeholder**: render.ts ahora valida
+  clip_path antes de stage.copy y `throw` si falla → no más HTTP 500 con
+  cryptic 45 s de espera + "first frame not decoded".
+* **Captions overlap** entre grupos consecutivos (groupOff demasiado tarde,
+  fade out solapaba con fade in del siguiente). Fix: hard-cut cuando
+  gap < 0.25 s, hard-kill `visibility: hidden` 0.15 s después del fade.
+
+### v0.1.23 abierto
+
+Sprint dedicado a artefactos del **narrative pipeline** (parallax 2.5D,
+rembg masks): el video largo que la app genera tiene a veces halos en
+bordes y composición errática. v0.1.20 añadió validación de mask pero
+no es suficiente.
+
+## [0.1.22 RAW] — el verdadero cuelgue de Pass 2 (deadlock subprocess.PIPE)
+
+* **Diagnóstico definitivo**, validado e2e contra el vídeo real del
+  usuario (`01KR14TA79VG8T68ZMFXYGQ430/video.mp4`, 1920×1080 24 fps,
+  segmento 12 s-32 s):
+  * v0.1.19 (lectura secuencial Pass 1) y v0.1.21 (release+reopen del
+    cap antes de Pass 2) **no arreglaron el bug original**. El cap
+    nunca era el problema.
+  * El bug es un deadlock clásico de `subprocess.PIPE`: el comando
+    ffmpeg de Pass 2 se llamaba sin `-nostats`, así que ffmpeg
+    escribía una línea de progreso por cada frame (`frame=N fps=X
+    q=Y...`) al stderr. Como `Popen(stderr=subprocess.PIPE)` no tiene
+    lector en background, el buffer del pipe (~64 KB en Windows) se
+    llena alrededor del frame 138 y ffmpeg bloquea su siguiente
+    `write(stderr)`. Mientras tanto Python está dentro de
+    `proc.wait()`, que sólo lee stderr DESPUÉS de que ffmpeg salga,
+    y ffmpeg no puede salir porque está bloqueado escribiendo:
+    interbloqueo perfecto, infinito.
+  * Combinar `-movflags +faststart` con NVENC + el cierre de stdin
+    es un segundo camino al mismo cuelgue (la fase de mover el moov
+    al inicio del fichero también se atasca).
+* **Fix integral en `apps/sidecar-py/src/xianxia_ai/routes/shorts_auto.py`**:
+  * Añadidos `-hide_banner -nostats -loglevel error` al subprocess
+    de Pass 2 → ffmpeg ya no escribe progreso, pipe nunca se llena.
+  * Eliminado `-movflags +faststart` del encode primario. El MP4
+    resultante deja el moov al final del fichero — formato estándar
+    aceptado por YouTube y todos los players nativos. Si una futura
+    feature necesita streaming progresivo desde el primer byte, se
+    añade un post-pass `ffmpeg -i out.mp4 -c copy -movflags +faststart`
+    que es prácticamente instantáneo.
+* **Validación e2e** (script `test_pass2_fix.py`):
+  * Pass 1: 21.8 s (97 muestras ROI sobre 480 frames)
+  * Pass 2: 6.4 s (481 frames piped + encode NVENC + close limpio)
+  * MP4 final: 37 MB, 481 frames, 20.04 s, h264+aac, rc=0, moov válido
+* La razón por la que no se detectó antes: en una corrida normal con
+  `-progress -` o `stderr=DEVNULL` el bug no aparece. La combinación
+  `stderr=PIPE` + sin `-nostats` es la que lo dispara, y solo
+  importaba para clips suficientemente largos como para superar 138
+  frames de buffer. Los smart shorts del usuario tenían exactamente
+  ese tamaño.
+
+## [0.1.21] — 2026-05-07
+
+### Corregido — smart short se quedaba colgado en Pass 2 (mismo bug de v0.1.10 replicado)
+
+* `apps/sidecar-py/src/xianxia_ai/routes/shorts_auto.py::_smart_reframe_to_vertical`
+  El fix de v0.1.19 sustituyó el random-seek de Pass 1 por lectura
+  secuencial pero **olvidé aplicar el mismo cambio a Pass 2**. Tras
+  terminar Pass 1 el `cv2.VideoCapture` queda con el cursor en EOF;
+  llamar a `cap.set(CAP_PROP_POS_FRAMES, start_f)` para volver al
+  inicio del segmento se cuelga indefinidamente en x264 MP4 con
+  keyframes dispersos (síntoma observado: `pass1 done` aparece en el
+  log, luego 4 + minutos de Python a 128 % CPU sin un solo heartbeat,
+  ffmpeg vivo escribiendo un MP4 de 48 bytes sin `moov` atom).
+  Solución integral: liberar y re-abrir el `VideoCapture` al empezar
+  Pass 2 — un único seek hacia adelante sobre un cap nuevo es
+  instantáneo. Mismo patrón que ya usa Pass 1.
+* Añadido log `pass2 done: N frames in T s (rc=K)` para que cualquier
+  futura regresión sea visible en el JSONL al final del encode.
+
+
+
+### Corregido — recortes mal hechos en parallax 2.5D
+
+* **rembg producía masks rotos en planos detalle** (caras zoom, abstractos,
+  screenshots): cobertura ínfima o saturada, múltiples blobs disjuntos.
+  El composite resultante se veía con cabezas flotantes, fragmentos de
+  ropa sueltos, espadas a la deriva. Ahora `apps/sidecar-py/src/xianxia_ai/routes/depth.py`
+  valida cada mask: si la cobertura cae fuera de `[4%, 92%]` o si hay
+  más de 4 componentes conectados significativos (≥0,4 % de área), el
+  beat se marca como **single-layer** (sin separación bg/fg) y se
+  registra un warning con `coverage` y `components` para diagnóstico.
+* **Pan del foreground excedía los bordes**: el rango previo (`±90 px`)
+  contra una escala de `0.96→1.02` dejaba el sujeto fuera de cuadro en
+  composiciones donde el personaje estaba cerca del borde — visible
+  como espadas/manos cortadas. Reducidos los rangos en
+  `apps/sidecar-node/src/templates/narrative.html` a `bg ±18`, `mid ±38`,
+  `fg ±55`, y subida la escala mínima de fg a `1.06` para garantizar
+  overhang en los cuatro bordes durante todo el pan.
+* **Pipeline Rust** (`apps/desktop/src-tauri/src/pipeline/mod.rs`):
+  cuando el sidecar devuelve `fg_path=""` ya no se asigna
+  `foreground_path` al beat, así el template Node lo renderiza como
+  `<img class="single">` (que la animación trata como Ken Burns suave)
+  en lugar de un composite con un png FG vacío.
+
+
 
 ### Corregido — smart shorts se colgaba indefinidamente
 

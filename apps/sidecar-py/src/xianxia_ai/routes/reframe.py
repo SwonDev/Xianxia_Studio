@@ -80,22 +80,24 @@ def reframe(req: ReframeRequest) -> ReframeResponse:
 
 
 def _track_horizontal_video(path: str) -> dict | None:
-    """Subject tracking via MediaPipe (legacy `mp.solutions` API).
+    """v0.1.36: PyAutoFlip-style multi-subject tracker.
 
-    MediaPipe 0.10+ deprecated `mp.solutions` in favour of `mp.tasks`. The
-    legacy module still ships in many builds — guard with hasattr() and fall
-    through cleanly to blur-extend if not present. For non-human subjects
-    (xianxia monkey/dragon characters) face detection is unreliable anyway,
-    so blur-extend is the better default for this content.
+    Replaces the single-largest-face tracker with a UNION bbox over ALL
+    detected faces / persons per frame. The crop window is centred on
+    the union centroid; when the union is wider than the target crop,
+    we record `union_width_norm > 1.0` so the renderer can zoom-out
+    (scale + letterbox) instead of cutting heads off (the user's
+    Power Rangers complaint).
+
+    Detection cascade per frame:
+      1. OpenCV YuNet face detector (neural, all faces)
+      2. MediaPipe legacy face detection (fallback)
+      3. YOLOv8 'person' class (covers cases where faces aren't visible)
+      4. MediaPipe pose (last resort, single subject)
     """
     try:
         import cv2  # type: ignore
-        import mediapipe as mp  # type: ignore
     except Exception:
-        return None
-
-    if not hasattr(mp, "solutions"):
-        # Newer mediapipe — would need mp.tasks rewrite. Skip for now.
         return None
 
     cap = cv2.VideoCapture(path)
@@ -106,14 +108,34 @@ def _track_horizontal_video(path: str) -> dict | None:
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 1080)
     sample_every = max(1, int(fps / 2))
 
-    detector_face = mp.solutions.face_detection.FaceDetection(
-        model_selection=1, min_detection_confidence=0.4
-    )
-    pose_detector = mp.solutions.pose.Pose(
-        model_complexity=1, min_detection_confidence=0.4
-    )
+    # --- Try MediaPipe face detection (multi-face) ---
+    mp_face = None
+    mp_pose = None
+    try:
+        import mediapipe as mp  # type: ignore
+        if hasattr(mp, "solutions"):
+            mp_face = mp.solutions.face_detection.FaceDetection(
+                model_selection=1, min_detection_confidence=0.35
+            )
+            mp_pose = mp.solutions.pose.Pose(
+                model_complexity=1, min_detection_confidence=0.4
+            )
+    except Exception:
+        pass
 
-    samples: list[tuple[float, float]] = []  # (timestamp_seconds, normalized_x)
+    # --- Try YOLOv8 person detection (handles non-face frames) ---
+    yolo = None
+    try:
+        from ultralytics import YOLO  # type: ignore
+        yolo = YOLO("yolov8n.pt")
+    except Exception:
+        pass
+
+    # samples: list of dicts per frame:
+    #   { "ts": float, "cx": normalized centroid X,
+    #     "union_w": union bbox normalized width,
+    #     "top_y": min normalized top of any subject }
+    samples: list[dict] = []
     idx = 0
     try:
         while True:
@@ -122,35 +144,93 @@ def _track_horizontal_video(path: str) -> dict | None:
                 break
             if idx % sample_every == 0:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                # Try face first
-                res = detector_face.process(rgb)
-                cx = None
-                if res.detections:
-                    best = max(res.detections, key=lambda d: d.location_data.relative_bounding_box.width)
-                    bb = best.location_data.relative_bounding_box
-                    cx = bb.xmin + bb.width / 2.0
-                else:
-                    # Fall back to pose nose
-                    pres = pose_detector.process(rgb)
+                # Collect all subject bboxes in normalized coords (x0, y0, x1, y1).
+                bboxes: list[tuple[float, float, float, float]] = []
+
+                # 1) MediaPipe faces (all detections, not just biggest)
+                if mp_face is not None:
+                    res = mp_face.process(rgb)
+                    if res.detections:
+                        for det in res.detections:
+                            bb = det.location_data.relative_bounding_box
+                            x0 = max(0.0, bb.xmin)
+                            y0 = max(0.0, bb.ymin)
+                            x1 = min(1.0, bb.xmin + bb.width)
+                            y1 = min(1.0, bb.ymin + bb.height)
+                            if x1 > x0 and y1 > y0:
+                                # Expand the bbox 30% upward to ensure HEAD
+                                # (face-only bbox tends to crop forehead).
+                                head_pad = (y1 - y0) * 0.3
+                                y0 = max(0.0, y0 - head_pad)
+                                bboxes.append((x0, y0, x1, y1))
+
+                # 2) YOLO person class — only if no faces found, to keep speed
+                if not bboxes and yolo is not None:
+                    try:
+                        result = yolo.predict(frame, classes=[0], verbose=False)[0]
+                        for b in result.boxes.xyxyn.cpu().numpy() if result.boxes is not None else []:
+                            x0, y0, x1, y1 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+                            if x1 > x0 and y1 > y0:
+                                bboxes.append((x0, y0, x1, y1))
+                    except Exception:
+                        pass
+
+                # 3) Pose nose as last resort
+                if not bboxes and mp_pose is not None:
+                    pres = mp_pose.process(rgb)
                     if pres.pose_landmarks:
                         nose = pres.pose_landmarks.landmark[0]
-                        cx = float(nose.x)
-                if cx is not None:
-                    samples.append((idx / fps, max(0.0, min(1.0, cx))))
+                        nx = float(nose.x)
+                        # Synthetic bbox centred on nose
+                        bboxes.append((max(0.0, nx - 0.08), 0.05, min(1.0, nx + 0.08), 0.55))
+
+                if bboxes:
+                    # UNION bbox covers ALL detected subjects.
+                    ux0 = min(b[0] for b in bboxes)
+                    uy0 = min(b[1] for b in bboxes)
+                    ux1 = max(b[2] for b in bboxes)
+                    uy1 = max(b[3] for b in bboxes)
+                    cx = (ux0 + ux1) / 2.0
+                    samples.append({
+                        "ts": idx / fps,
+                        "cx": max(0.0, min(1.0, cx)),
+                        "union_w": ux1 - ux0,
+                        "top_y": uy0,
+                        "n_subjects": len(bboxes),
+                    })
             idx += 1
     finally:
         cap.release()
-        detector_face.close()
-        pose_detector.close()
+        if mp_face is not None:
+            try: mp_face.close()
+            except Exception: pass
+        if mp_pose is not None:
+            try: mp_pose.close()
+            except Exception: pass
 
     if not samples:
         return None
-    median = sorted(s[1] for s in samples)[len(samples) // 2]
-    return {"width": width, "height": height, "fps": fps, "samples": samples, "median_x": median}
+    sorted_cx = sorted(s["cx"] for s in samples)
+    median = sorted_cx[len(sorted_cx) // 2]
+    max_union_w = max(s["union_w"] for s in samples)
+    avg_subjects = sum(s["n_subjects"] for s in samples) / len(samples)
+    return {
+        "width": width, "height": height, "fps": fps,
+        "samples": samples, "median_x": median,
+        "max_union_width_norm": max_union_w,  # >0 means union; >crop_aspect means too wide
+        "avg_subjects": avg_subjects,
+    }
 
 
 def _render_tracked_crop(req: ReframeRequest, track: dict, enc) -> str:
-    """ffmpeg crop with sendcmd-animated X based on subject samples (EMA-smoothed)."""
+    """v0.1.36: PyAutoFlip-style multi-subject reframer.
+
+    If the union of all detected subjects fits inside the target crop
+    width, do a smooth tracked crop centred on the union centroid.
+    If the union is wider (e.g. several Power Rangers spread across the
+    frame), fall back to `_render_blur_extend` which preserves the full
+    horizontal span on a blurred background — no head-cropping.
+    """
     width = track["width"]
     height = track["height"]
     samples = track["samples"]
@@ -159,15 +239,23 @@ def _render_tracked_crop(req: ReframeRequest, track: dict, enc) -> str:
     crop_w = min(crop_w, width)
     max_x = width - crop_w
 
-    # EMA smoothing of normalized X
+    # v0.1.36: if the union of subjects is wider than what the tight
+    # crop can fit, switch to blur-extend (which keeps everyone visible)
+    # rather than tracking only the centroid and cutting heads off.
+    crop_aspect_norm = crop_w / float(width)  # share of frame width the tight crop sees
+    max_union_norm = float(track.get("max_union_width_norm", 0.0))
+    if max_union_norm > 0 and max_union_norm > crop_aspect_norm * 0.92:
+        # Union too wide → blur-extend keeps all subjects in frame.
+        return _render_blur_extend(req, enc)
+
+    # EMA smoothing of normalized X over the union centroid.
     alpha = float(req.smoothing)
     smoothed: list[tuple[float, float]] = []
-    prev = samples[0][1]
-    for ts, x in samples:
-        prev = alpha * x + (1 - alpha) * prev
-        # Convert to pixel X for crop, clamped
+    prev = samples[0]["cx"]
+    for s in samples:
+        prev = alpha * s["cx"] + (1 - alpha) * prev
         px = max(0.0, min(float(max_x), prev * width - crop_w / 2.0))
-        smoothed.append((ts, px))
+        smoothed.append((s["ts"], px))
 
     # Build ffmpeg `sendcmd` script: at each sample timestamp, set crop@x to value
     cmd_lines: list[str] = []

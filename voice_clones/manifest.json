@@ -1,0 +1,22 @@
+[
+  {
+    "id": "fbb2a3e0b5",
+    "label": "Test pipeline file",
+    "gender": "unknown",
+    "primary": "es",
+    "description": "Test desde archivo local",
+    "ref_audio_path": "voice_clones\\fbb2a3e0b5\\ref.wav",
+    "ref_text": "",
+    "duration_seconds": 79.7600625
+  },
+  {
+    "id": "edb6f35638",
+    "label": "Test pipeline voz",
+    "gender": "unknown",
+    "primary": "es",
+    "description": "Test acquisition desde URL",
+    "ref_audio_path": "voice_clones\\edb6f35638\\ref.wav",
+    "ref_text": "",
+    "duration_seconds": 24.8
+  }
+]

@@ -32,7 +32,7 @@ from pydantic import BaseModel
 from ..codec import best_video_encoder
 from ..effects import EffectsConfig, build_video_filter_chain
 
-from ..models import whisper_model
+from ..models import aligner, whisper_model
 
 router = APIRouter()
 
@@ -145,6 +145,17 @@ class SubtitleRequest(BaseModel):
     #   "minimal"  — clean white, subtle outline, no fancy
     #   "neon"     — cyan + magenta highlight, glow
     style: str = "xianxia"
+    # v0.1.46: seconds of silence/intro card prepended to the final video
+    # by the Node renderer (`INTRO_SEC = 6.0` in render.ts). Whisper
+    # transcribes the RAW narration WAV (no intro), so its timestamps
+    # start at t=0. If we burn the resulting ASS straight onto the
+    # composed video, every caption is shown on top of the intro card
+    # instead of the actual narration — visible as a 6 s desync the
+    # user reported across every long-form video. By accepting an
+    # offset here and adding it to every SRT cue + ASS word/segment
+    # before writing, the captions line up perfectly with the
+    # narration regardless of intro length.
+    intro_offset_seconds: float = 0.0
 
 
 class SubtitleAsset(BaseModel):
@@ -211,13 +222,12 @@ async def generate_subtitles(req: SubtitleRequest) -> SubtitleResponse:
     log_event("info", "subtitles_transcribe_start")
     t_trans = _t.time()
     def _do_transcribe():
-        segments, info = model.transcribe(
-            req.audio_path,
-            language=req.source_language,
-            word_timestamps=True,
-            beam_size=5,
+        # v0.2.16 — single source of truth (whisper_model.transcribe_words).
+        # The permissive anti-drop thresholds that protect the FIRST
+        # narration sentence now live in one place, shared with Shorts.
+        return whisper_model.transcribe_words(
+            req.audio_path, req.source_language, vad=False
         )
-        return list(segments), info
     segments, info = await asyncio.to_thread(_do_transcribe)
     log_event(
         "info",
@@ -228,10 +238,54 @@ async def generate_subtitles(req: SubtitleRequest) -> SubtitleResponse:
         detected_language=getattr(info, "language", None),
     )
 
+    # 2b) v0.2.16 — WhisperX-grade forced alignment (ADDITIVE, hard
+    #     fallback). aligner.refine_segments runs the wav2vec2 model in an
+    #     ISOLATED child process: torchaudio's cuDNN and faster-whisper's
+    #     ctranslate2 cuDNN clash at the DLL level (v0.1.22 error-127 hard
+    #     abort — validation proved it fires even with an in-process whisper
+    #     unload, hence subprocess isolation). We still evict whisper here
+    #     first: this route has no further whisper use and freeing its
+    #     ~3 GB gives the child ample VRAM headroom (the pre-translate
+    #     unload below then becomes a harmless no-op). On ANY problem
+    #     refine_segments() returns None → `segments` byte-identical to
+    #     the pre-v0.2.16 path.
+    def _forced_align():
+        try:
+            whisper_model.unload()
+            import gc as _gc
+
+            import torch as _torch  # type: ignore
+            _gc.collect()
+            if _torch.cuda.is_available():
+                _torch.cuda.empty_cache()
+                _torch.cuda.synchronize()
+        except Exception:
+            pass
+        return aligner.refine_segments(req.audio_path, segments, req.source_language)
+
+    t_align = _t.time()
+    refined = await asyncio.to_thread(_forced_align)
+    if refined is not None:
+        segments = refined
+        log_event(
+            "info",
+            "subtitles_forced_align_applied",
+            duration_ms=int((_t.time() - t_align) * 1000),
+        )
+    else:
+        log_event("info", "subtitles_forced_align_skipped")
+
     # 3) Source SRT + ASS karaoke
+    # v0.1.46: shift all timestamps by the intro offset so they align
+    # with the final composed video (which has an intro card before
+    # the narration audio). When the caller doesn't pass this, the
+    # offset is 0 and behaviour is identical to v0.1.45.
+    intro_off = float(req.intro_offset_seconds or 0.0)
+    if intro_off > 0:
+        log_event("info", "subtitles_intro_offset_applied", seconds=intro_off)
     src_srt = out_dir / f"subs-{req.source_language}.srt"
-    src_srt.write_text(_segments_to_srt(segments), encoding="utf-8")
-    words = _flatten_words(segments)
+    src_srt.write_text(_segments_to_srt(segments, intro_off), encoding="utf-8")
+    words = _flatten_words(segments, intro_off)
     src_ass = out_dir / f"subs-{req.source_language}.ass"
     base_font, base_size = LANG_FONTS.get(req.source_language, ("Arial", 64))
     src_size = int(base_size * 1.25) if req.vertical else base_size
@@ -254,6 +308,43 @@ async def generate_subtitles(req: SubtitleRequest) -> SubtitleResponse:
             ass_path=str(src_ass),
         )
     ]
+
+    # v0.2.6.1 — CRITICAL VRAM fix. Whisper (~3 GB) is no longer needed
+    # once transcription is done; the only remaining GPU work in this
+    # route is the LLM translation, which runs on llama-server (~3 GB).
+    # Before this fix whisper stayed resident THROUGH the translation
+    # loop, so llama-server + whisper co-resided on the 8 GB card →
+    # CUDA Sysmem-fallback thrash → each of the 41 translation calls
+    # took 15-46 s instead of ~3 s → 882 s total → the Rust `/subtitles`
+    # 15-min timeout fired and the whole pipeline failed (2026-05-15
+    # Sun Wukong run, even though the Python route itself completed at
+    # 16.9 min). Evicting whisper here gives llama-server the full card.
+    only_source = all(
+        l == req.source_language for l in req.target_languages
+    )
+    if not only_source:
+        try:
+            freed = whisper_model.unload()
+            try:
+                import gc as _gc
+                import torch as _torch  # type: ignore
+                _gc.collect()
+                if _torch.cuda.is_available():
+                    _torch.cuda.empty_cache()
+                    _torch.cuda.synchronize()
+            except Exception:
+                pass
+            log_event(
+                "info",
+                "subtitles_whisper_unloaded_pre_translate",
+                freed=bool(freed),
+            )
+        except Exception as e:
+            log_event(
+                "warning",
+                "subtitles_whisper_unload_failed",
+                error=str(e)[:200],
+            )
 
     # 4) Translations + per-language ASS karaoke (no event loop blocking
     #    because _translate_entries is fully async w/ httpx).
@@ -360,6 +451,15 @@ def burn_in(req: BurnInRequest) -> BurnInResponse:
 
     cmd = [
         "ffmpeg", "-y",
+        # Silence ffmpeg's default verbose output. Without these flags the
+        # filter (NVENC capability dump + libass warnings + per-frame stats)
+        # can emit > 64 KB to stderr; combined with capture_output=True it
+        # fills the OS pipe buffer and ffmpeg blocks on write() forever
+        # while Python's subprocess.run waits for the process to exit →
+        # classic subprocess.PIPE deadlock. Same bug v0.1.22 F1.2 fixed
+        # for reframe; was never patched for burn-in. Now logs only real
+        # errors → tens of bytes max → buffer never fills.
+        "-hide_banner", "-loglevel", "error", "-nostats",
         *decode_args,
         "-i", str(video_path),
         "-vf", vf,
@@ -406,18 +506,30 @@ def _ass_ts(seconds: float) -> str:
     return f"{int(h)}:{int(m):02d}:{int(s):02d}.{cs:02d}"
 
 
-def _segments_to_srt(segments: Iterable) -> str:
+def _segments_to_srt(segments: Iterable, offset: float = 0.0) -> str:
+    # v0.1.46: `offset` is added to every cue's start/end so the SRT
+    # aligns with the FINAL composed video (which has `INTRO_SEC = 6 s`
+    # of intro card before the narration begins). Whisper gives times
+    # relative to the raw narration WAV.
     out = []
-    for i, seg in enumerate(segments, 1):
-        out.append(f"{i}\n{_srt_ts(seg.start)} --> {_srt_ts(seg.end)}\n{seg.text.strip()}\n")
+    idx = 0
+    for seg in segments:
+        text = (seg.text or "").strip()
+        if not text:
+            continue  # Skip silent / empty segments — they create gaps where the
+                      # viewer sees no caption while audio plays.
+        idx += 1
+        out.append(f"{idx}\n{_srt_ts(seg.start + offset)} --> {_srt_ts(seg.end + offset)}\n{text}\n")
     return "\n".join(out)
 
 
-def _flatten_words(segments) -> list[dict]:
+def _flatten_words(segments, offset: float = 0.0) -> list[dict]:
+    # v0.1.46: words inherit the same intro offset as the segments
+    # they belong to — see _segments_to_srt.
     out = []
     for seg in segments:
         for w in (seg.words or []):
-            out.append({"word": w.word, "start": w.start, "end": w.end})
+            out.append({"word": w.word, "start": w.start + offset, "end": w.end + offset})
     return out
 
 
@@ -450,70 +562,125 @@ def _entries_to_srt(entries) -> str:
 
 
 async def _translate_entries(entries, target: str, model: str):
-    """Translate SRT entries via Ollama, overriding the model's SYSTEM prompt.
+    """Translate SRT entries to `target` via the active LLM backend.
 
-    The xianxia-llm Modelfile baked in a Spanish-leaning narrator system that
-    causes the abliterated model to return empty strings for some target
-    languages (notably CJK). We override `system` per-request to a generic
-    translator instruction so the model focuses on the translation task.
+    v0.2.6.1 — BATCHED. Was one LLM call per entry executed sequentially
+    (Semaphore=1): 41 entries = 41 round-trips. Even healthy that is
+    minutes; with VRAM contention it was the failure amplifier that blew
+    the Rust 15-min `/subtitles` budget (882 s for 41 entries on the
+    2026-05-15 run). Now we send `XIANXIA_TRANSLATE_BATCH` entries per
+    call with a strict numbered protocol and parse the numbered reply.
 
-    Concurrency: defaults to 1 because Ollama on 8 GB VRAM hosts overflows to
-    CPU at OLLAMA_NUM_PARALLEL>=2 with this model (>50 % slowdown per slot).
-    Tune via env XIANXIA_TRANSLATE_CONCURRENCY when running on bigger cards.
+    Robustness ladder (so the SRT/ASS is ALWAYS produced and Phase 8
+    burn-in can proceed — never a hard failure):
+      1. batched call (fast path)
+      2. one batch retry on parse-mismatch / error
+      3. per-entry translation for that batch only (old behaviour)
+      4. keep the original English line for any entry that still fails
+    The xianxia-llm system prompt is overridden per-request to a generic
+    translator instruction (the baked-in narrator system made the
+    abliterated model return empty strings for some CJK targets).
     """
     import asyncio
+    import re as _re
 
-    conc = int(os.environ.get("XIANXIA_TRANSLATE_CONCURRENCY", "1"))
-    sem = asyncio.Semaphore(conc)
+    if not entries:
+        return []
+
     translator_system = (
         "You are a professional cinematic translator for xianxia and wuxia "
-        "narration. Output ONLY the requested translation. No preamble, no "
-        "notes, no explanation, no quotation marks."
+        "narration. Translate faithfully and concisely. Output ONLY the "
+        "translations in the exact numbered format requested — no preamble, "
+        "no notes, no explanation, no quotation marks."
     )
+    from ..llm import generate as llm_generate
 
-    async def translate_one(client, start, end, body, attempt=0):
-        async with sem:
+    batch_size = int(os.environ.get("XIANXIA_TRANSLATE_BATCH", "12"))
+    _STRIP = "\"'`“”‘’「」 "
+
+    async def _per_entry(client, batch):
+        """Fallback: original 1-call-per-entry path (sequential)."""
+        out = []
+        for (s, e, body) in batch:
             prompt = f'Translate this English text to {target}:\n\n"{body}"'
             try:
-                r = await client.post(
-                    f"{OLLAMA_URL}/api/generate",
-                    json={
-                        "model": model,
-                        "system": translator_system,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.3, "num_ctx": 1024, "num_predict": 256},
-                    },
+                result = await llm_generate(
+                    model=model, system=translator_system, prompt=prompt,
+                    options={"temperature": 0.3, "num_ctx": 1024, "num_predict": 256},
+                    think=False, max_continuations=0, client=client, timeout=120.0,
                 )
-                r.raise_for_status()
-                t = r.json().get("response", "").strip()
-                t = t.strip("\"'`“”‘’「」 ")
-                for line in t.split("\n"):
-                    if line.strip():
-                        return start, end, line.strip().strip("\"'`“”‘’「」 ")
-                return start, end, t
-            except (httpx.HTTPStatusError, httpx.HTTPError, Exception) as e:
-                # Self-healing: Ollama 500 typically means the model couldn't
-                # load (VRAM not yet freed by ComfyUI). Wait + retry once,
-                # then fall back to the original English line so the SRT/ASS
-                # still gets produced and Phase 8 burn-in can proceed.
-                if attempt < 1:
-                    await asyncio.sleep(8.0 + attempt * 4.0)
-                    return await translate_one(client, start, end, body, attempt + 1)
-                return start, end, body  # graceful fallback: keep English
+                t = (result.get("response") or "").strip().strip(_STRIP)
+                line = next((ln.strip() for ln in t.split("\n") if ln.strip()), t)
+                out.append((s, e, line.strip(_STRIP) or body))
+            except Exception:
+                out.append((s, e, body))  # keep English
+        return out
 
+    async def translate_batch(client, batch, attempt=0):
+        n = len(batch)
+        numbered = "\n".join(f"{i + 1}. {b[2]}" for i, b in enumerate(batch))
+        prompt = (
+            f"Translate each of the following {n} numbered English subtitle "
+            f"lines to {target}. Output EXACTLY {n} lines, each starting with "
+            f"its number followed by a period, in the same order, one "
+            f"translation per line. Do not merge, split, add or drop lines.\n\n"
+            f"{numbered}"
+        )
+        try:
+            result = await llm_generate(
+                model=model, system=translator_system, prompt=prompt,
+                options={
+                    "temperature": 0.2,
+                    "num_ctx": 4096,
+                    "num_predict": min(2048, 80 * n),
+                },
+                think=False, max_continuations=0, client=client, timeout=180.0,
+            )
+            raw = (result.get("response") or "").strip()
+            parsed: dict[int, str] = {}
+            for ln in raw.split("\n"):
+                m = _re.match(r"\s*(\d+)\s*[.\):\-]\s*(.+)", ln)
+                if m:
+                    txt = m.group(2).strip().strip(_STRIP)
+                    if txt:
+                        parsed[int(m.group(1))] = txt
+            if len(parsed) == n and all((i + 1) in parsed for i in range(n)):
+                return [
+                    (batch[i][0], batch[i][1], parsed[i + 1]) for i in range(n)
+                ]
+            if attempt < 1:
+                await asyncio.sleep(2.0)
+                return await translate_batch(client, batch, attempt + 1)
+            return await _per_entry(client, batch)
+        except Exception:
+            if attempt < 1:
+                await asyncio.sleep(8.0)
+                return await translate_batch(client, batch, attempt + 1)
+            return await _per_entry(client, batch)
+
+    batches = [
+        entries[i:i + batch_size] for i in range(0, len(entries), batch_size)
+    ]
+    out: list = []
+    # Sequential: 8 GB VRAM hosts one LLM slot; parallel batches overflow.
     async with httpx.AsyncClient(timeout=600.0) as client:
-        coros = [translate_one(client, s, e, b) for s, e, b in entries]
-        results = await asyncio.gather(*coros, return_exceptions=True)
-    # Replace any exception slot with the original English entry so the
-    # caller never sees a partial-failure crash.
-    fixed: list = []
-    for orig, res in zip(entries, results):
-        if isinstance(res, BaseException):
-            fixed.append((orig[0], orig[1], orig[2]))  # English fallback
-        else:
-            fixed.append(res)
-    return fixed
+        for b in batches:
+            try:
+                out.extend(await translate_batch(client, b))
+            except Exception:
+                out.extend([(s, e, body) for (s, e, body) in b])
+
+    # Final safety: guarantee 1:1 alignment with the input; English
+    # fallback for any slot that is missing or malformed.
+    if len(out) != len(entries):
+        fixed: list = []
+        for i, orig in enumerate(entries):
+            if i < len(out) and isinstance(out[i], tuple) and len(out[i]) == 3:
+                fixed.append(out[i])
+            else:
+                fixed.append((orig[0], orig[1], orig[2]))
+        return fixed
+    return out
 
 
 def _ass_header(font: str, size: int, vertical: bool = False, style: str = "xianxia") -> str:

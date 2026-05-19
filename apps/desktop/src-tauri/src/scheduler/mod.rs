@@ -36,12 +36,24 @@ async fn process_due(pool: &DbPool) -> anyhow::Result<()> {
                 // Don't mark as published. Leave for retry next tick. After a
                 // few failures the row stays stuck — admin should inspect logs.
                 tracing::warn!(sched = %sched_id, video = %video_id, error = %e, "publish flip failed; will retry");
-                sqlx::query("UPDATE scheduled_uploads SET last_error = ? WHERE id = ?")
-                    .bind(format!("{}", e))
-                    .bind(&sched_id)
-                    .execute(pool)
-                    .await
-                    .ok();  // optional column; ignore if missing
+                // Persist the failure so the Planificador surfaces the real
+                // reason while the row keeps retrying. Status STAYS 'uploaded'
+                // on purpose (process_due only picks 'uploaded' → retry every
+                // tick, as the original design intended). The column is
+                // `error_message`; the schema never had `last_error`, so the
+                // old query silently no-op'd via .ok() and the reason was lost.
+                sqlx::query(
+                    "UPDATE scheduled_uploads
+                        SET error_message = ?,
+                            last_attempt_at = ?
+                      WHERE id = ?",
+                )
+                .bind(format!("{}", e))
+                .bind(chrono::Utc::now().timestamp())
+                .bind(&sched_id)
+                .execute(pool)
+                .await
+                .ok();
             }
         }
     }

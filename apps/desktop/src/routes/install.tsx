@@ -1,10 +1,14 @@
-import { createFileRoute } from '@tanstack/react-router';
-import { useEffect, useState } from 'react';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import { useEffect, useState, type ReactNode, type CSSProperties } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useQuery } from '@tanstack/react-query';
-import { CheckCircle2, Download, AlertTriangle, Cpu, Zap, HardDrive, ScanSearch, XCircle } from 'lucide-react';
+import {
+  CheckCircle, DownloadSimple, Warning, Cpu, Lightning, HardDrives,
+  MagnifyingGlass, XCircle, type Icon as PhosphorIcon,
+} from '@phosphor-icons/react';
 import { tauri, events, type InstallProgress, type DetectedTool } from '@/lib/tauri';
-import { cn, formatBytes } from '@/lib/utils';
+import { formatBytes } from '@/lib/utils';
+import { PageHeader } from '@/components/ui-glass';
 
 export const Route = createFileRoute('/install')({
   component: InstallWizard,
@@ -13,6 +17,7 @@ export const Route = createFileRoute('/install')({
 type Step = 'welcome' | 'detect' | 'hardware' | 'plan' | 'installing' | 'done';
 
 function InstallWizard() {
+  const navigate = useNavigate();
   const [step, setStep] = useState<Step>('welcome');
   const { data: hw } = useQuery({ queryKey: ['hardware'], queryFn: tauri.detectHardware });
   const { data: detection, refetch: refetchDetection } = useQuery({
@@ -40,65 +45,52 @@ function InstallWizard() {
   });
 
   const totalBytes = (manifest ?? []).reduce((sum, c) => sum + c.size_bytes, 0);
-  const totalRecommended = totalBytes;
 
   return (
-    <div className="max-w-3xl mx-auto py-8">
-      <header className="mb-10">
-        <p className="text-xs uppercase tracking-[0.2em] text-gold-400 font-medium mb-2">
-          Configuración inicial
-        </p>
-        <h1 className="font-display text-4xl font-medium">Bienvenido al cultivo</h1>
-        <p className="text-paper-300 mt-3 max-w-2xl leading-relaxed">
-          Antes de empezar, Xianxia Studio descargará e instalará automáticamente todos
-          los componentes necesarios. Este proceso ocurre una sola vez.
-        </p>
-      </header>
+    <div className="route-enter page">
+      <PageHeader
+        title="Bienvenido al cultivo"
+        subtitle="Xianxia Studio descargará e instalará automáticamente todos los componentes necesarios. Una sola vez."
+      />
 
       <Stepper step={step} />
 
       <AnimatePresence mode="wait">
         {step === 'welcome' && (
           <Pane key="welcome">
-            <h2 className="font-display text-2xl mb-4">¿Qué se va a instalar?</h2>
-            <p className="text-sm text-paper-300 mb-5">
-              Stack completo, todo local, todo autoinstalable. Tamaño total ≈
-              <strong className="text-gold-300"> 25–30 GB</strong> según tu GPU.
+            <h2 className="section-header">¿Qué se va a instalar?</h2>
+            <p className="muted" style={{ fontSize: 13, marginBottom: 16 }}>
+              Stack completo, todo local, todo autoinstalable. Tamaño total ≈{' '}
+              <strong style={{ color: 'var(--gold-soft)' }}>25–30 GB</strong> según tu GPU.
             </p>
-            <ul className="space-y-2.5 text-sm text-paper-200">
-              <Item icon="🐍" text="Python 3.11 embebido (~30 MB) + libs IA: torch+CUDA, diffusers, transformers, accelerate, qwen-tts, faster-whisper, mediapipe, rembg, opencv, ultralytics YOLO11 (~8–10 GB)" />
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 10, listStyle: 'none', margin: 0, padding: 0, fontSize: 12.5 }}>
+              <Item icon="🐍" text="Python 3.11 embebido + libs IA: torch+CUDA, diffusers, transformers, accelerate, qwen-tts, faster-whisper, mediapipe, rembg, opencv, ultralytics (~8–10 GB)" />
               <Item icon="📦" text="Node 22 portable + Fastify sidecar para HyperFrames (~120 MB)" />
-              <Item icon="🎬" text="FFmpeg 8 con NVENC h264/hevc (~80 MB) — render Steadicam 60fps con 2x canvas lanczos + spatial-aq + temporal-aq + loudnorm -14 LUFS" />
-              <Item icon="🦙" text="Ollama + xianxia-llm registrado desde supergemma4-e4b-abliterated GGUF Q4_K_M (~5.3 GB) — guion narrativo, modelo de la familia Gemma 4" />
-              <Item icon="🐉" text="Z-Image-Turbo Q4_K_M GGUF (~4.7 GB) + Qwen3-4B FP8 encoder + AE VAE — sampler dpmpp_sde+beta nativo a 720x1280 / 1280x720 (8 GB VRAM, sin offload)" />
-              <Item icon="🎙️" text="Qwen3-TTS-12Hz-1.7B-CustomVoice (~3.5 GB) — 9 voces nativas multilenguaje (Vivian/Serena/Ryan/Aiden/Uncle Fu/Eric/Dylan/Ono Anna/Sohee)" />
-              <Item icon="✂️" text="ComfyUI + custom nodes ComfyUI-GGUF + rgthree-comfy (~252 MB) — runtime de inferencia para Z-Image" />
-              <Item icon="🎞️" text="HyperFrames CLI (~60 MB) — render HTML/CSS/GSAP a vídeo (modo opcional)" />
-              <Item icon="📐" text="rembg + onnxruntime-gpu + MediaPipe + YOLO11n-pose (~720 MB) — parallax 2.5D + subject tracking Shorts vertical 1080×1920 con safe zones TikTok" />
-              <Item icon="🔊" text="faster-whisper-large-v3 (~3 GB) — transcripción palabra-a-palabra para karaoke ASS con highlight contextual" />
-              <Item icon="🎵" text="ACE-Step v1.5 + MusicGen-medium (~6 GB, opcional) — generación local de música cinematográfica xianxia con erhu/guzheng/taiko, pre-master EQ + compresor + loudnorm -16 LUFS" />
+              <Item icon="🎬" text="FFmpeg 8 con NVENC h264/hevc (~80 MB) — render Steadicam 60fps + loudnorm -14 LUFS" />
+              <Item icon="🦙" text="llama.cpp llama-server (~110 MB) + supergemma4-e4b-abliterated GGUF Q4_K_M (~5.3 GB). Ollama opcional desde Ajustes." />
+              <Item icon="🐉" text="Z-Image-Turbo Q4_K_M GGUF (~4.7 GB) + Qwen3-4B FP8 encoder + AE VAE (8 GB VRAM, sin offload)" />
+              <Item icon="🎙️" text="Qwen3-TTS-12Hz-1.7B-CustomVoice (~3.5 GB) — 9 voces nativas multilenguaje" />
+              <Item icon="✂️" text="ComfyUI + ComfyUI-GGUF + rgthree-comfy (~252 MB) — runtime de inferencia para Z-Image" />
+              <Item icon="🎞️" text="HyperFrames CLI (~60 MB) — render HTML/CSS/GSAP a vídeo" />
+              <Item icon="📐" text="rembg + onnxruntime-gpu + MediaPipe + YOLO11n-pose (~720 MB) — parallax 2.5D + tracking Shorts" />
+              <Item icon="🔊" text="faster-whisper-large-v3 (~3 GB) — transcripción palabra-a-palabra para karaoke ASS" />
+              <Item icon="🎵" text="MusicGen-medium (~3-4 GB, opcional, GPU-only). Sin él, /music usa la biblioteca local." />
             </ul>
-            <div className="mt-6 p-4 rounded-lg bg-jade-700/20 border border-jade-600/30 text-sm text-paper-200">
-              <strong className="text-jade-300">Filosofía local-first:</strong> ningún
-              archivo sale de tu máquina. La única conexión externa es YouTube cuando
-              publicas. La descarga ahora es lo único online.
+            <div style={{ marginTop: 24, padding: 16, borderRadius: 12, background: 'rgba(212, 184, 90,0.10)', boxShadow: '0 0 0 0.5px rgba(232, 201, 109,0.25)', fontSize: 13 }}>
+              <strong style={{ color: 'var(--accent-soft)' }}>Filosofía local-first:</strong> ningún
+              archivo sale de tu máquina. La única conexión externa es YouTube cuando publicas.
             </div>
-            <Actions
-              onNext={() => setStep('detect')}
-              nextLabel="Empezar la detección"
-            />
+            <Actions onNext={() => setStep('detect')} nextLabel="Empezar la detección" />
           </Pane>
         )}
 
         {step === 'detect' && (
           <Pane key="detect">
-            <h2 className="font-display text-2xl mb-1">Auto-detección de tu sistema</h2>
-            <p className="text-sm text-paper-300 mb-5">
-              Si ya tienes alguna herramienta compatible instalada, la reutilizamos
-              y te ahorramos la descarga.
+            <h2 className="section-header">Auto-detección de tu sistema</h2>
+            <p className="muted" style={{ fontSize: 13, marginBottom: 16 }}>
+              Si ya tienes alguna herramienta compatible, la reutilizamos y te ahorramos la descarga.
             </p>
-
-            <div className="space-y-2 mb-6">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
               {detection ? (
                 <>
                   <ToolRow tool={detection.python} />
@@ -108,81 +100,72 @@ function InstallWizard() {
                   <ToolRow tool={detection.git} />
                 </>
               ) : (
-                <p className="text-sm text-paper-300">Detectando…</p>
+                <p className="muted" style={{ fontSize: 13 }}>Detectando…</p>
               )}
             </div>
-
             <button
+              className="btn-ghost"
               onClick={() => refetchDetection()}
-              className="text-xs text-gold-300 hover:text-gold-400 inline-flex items-center gap-1.5 mb-4"
+              style={{ marginBottom: 14, color: 'var(--gold-soft)' }}
             >
-              <ScanSearch className="w-3.5 h-3.5" />
+              <MagnifyingGlass size={13} />
               Re-escanear
             </button>
-
-            <Actions
-              onBack={() => setStep('welcome')}
-              onNext={() => setStep('hardware')}
-              nextLabel="Continuar"
-            />
+            <Actions onBack={() => setStep('welcome')} onNext={() => setStep('hardware')} nextLabel="Continuar" />
           </Pane>
         )}
 
         {step === 'hardware' && hw && (
           <Pane key="hardware">
-            <h2 className="font-display text-2xl mb-4">Tu hardware</h2>
-            <div className="grid grid-cols-2 gap-3 mb-6">
+            <h2 className="section-header">Tu hardware</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 18 }}>
               <Stat icon={Cpu} label="CPU" value={hw.cpu_brand} sub={`${hw.cpu_cores} cores físicos`} />
-              <Stat icon={HardDrive} label="RAM" value={`${hw.total_ram_gb.toFixed(0)} GB`} sub={`${hw.available_ram_gb.toFixed(1)} disponibles`} />
+              <Stat icon={HardDrives} label="RAM" value={`${hw.total_ram_gb.toFixed(0)} GB`} sub={`${hw.available_ram_gb.toFixed(1)} disponibles`} />
               <Stat
-                icon={Zap}
+                icon={Lightning}
                 label="GPU"
                 value={hw.gpu?.name ?? 'Sin GPU dedicada'}
                 sub={hw.gpu?.vram_gb ? `${hw.gpu.vram_gb.toFixed(1)} GB VRAM` : 'usaremos CPU + RAM'}
               />
-              <Stat icon={HardDrive} label="Disco libre" value={`${hw.free_disk_gb.toFixed(0)} GB`} sub="espacio suficiente recomendado: 40 GB" />
+              <Stat icon={HardDrives} label="Disco libre" value={`${hw.free_disk_gb.toFixed(0)} GB`} sub="recomendado: 40 GB" />
             </div>
-
-            <div className="rounded-xl border border-gold-500/30 bg-gradient-to-br from-obsidian-900 to-obsidian-800 p-6">
-              <p className="text-xs uppercase tracking-[0.2em] text-gold-400 font-medium mb-2">
+            <div className="group" style={{ padding: 22 }}>
+              <p className="eyebrow" style={{ color: 'var(--gold-soft)', fontWeight: 600, marginBottom: 8 }}>
                 Recomendación automática · Tier {hw.recommendation.tier}
               </p>
-              <div className="grid grid-cols-3 gap-4 mt-4 text-sm">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16, marginTop: 12 }}>
                 <Reco label="LLM" value={hw.recommendation.llm_label} />
                 <Reco label="Imagen" value={hw.recommendation.image} />
                 <Reco label="Voz" value={hw.recommendation.tts} />
               </div>
               {hw.recommendation.llm_abliterated && (
-                <p className="text-[11px] text-paper-300 mt-3 leading-relaxed">
-                  El modelo por defecto es <strong className="text-gold-300">abliterated</strong>:
-                  sin filtros de seguridad, mejor para temas oscuros del nicho xianxia.
-                  Puedes cambiarlo a la variante oficial de Google con filtros desde Ajustes.
+                <p className="caption" style={{ marginTop: 12, lineHeight: 1.5 }}>
+                  El modelo por defecto es <strong style={{ color: 'var(--gold-soft)' }}>abliterated</strong>:
+                  sin filtros, mejor para temas oscuros del nicho xianxia. Cambiable desde Ajustes.
                 </p>
               )}
-              <p className="text-xs text-paper-300 mt-4">
-                Descarga total estimada: <strong className="text-paper-100">{formatBytes(totalRecommended)}</strong>
+              <p className="caption" style={{ marginTop: 14 }}>
+                Descarga total estimada: <strong style={{ color: 'var(--text-primary)' }}>{formatBytes(totalBytes)}</strong>
               </p>
             </div>
-
-            <Actions
-              onBack={() => setStep('detect')}
-              onNext={() => setStep('plan')}
-              nextLabel="Continuar al plan"
-            />
+            <Actions onBack={() => setStep('detect')} onNext={() => setStep('plan')} nextLabel="Continuar al plan" />
           </Pane>
         )}
 
         {step === 'plan' && manifest && (
           <Pane key="plan">
-            <h2 className="font-display text-2xl mb-4">Plan de instalación</h2>
-            <div className="space-y-2 mb-6">
+            <h2 className="section-header">Plan de instalación</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
               {manifest.map((c) => (
-                <div key={c.id} className="flex items-center justify-between p-3 rounded-md bg-card/60 border border-border/40">
+                <div
+                  key={c.id}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderRadius: 10, background: 'rgba(255,255,255,0.04)' }}
+                >
                   <div>
-                    <div className="font-medium text-sm">{c.label}</div>
-                    <div className="text-xs text-muted-foreground capitalize">{c.category}</div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{c.label}</div>
+                    <div className="caption" style={{ textTransform: 'capitalize' }}>{c.category}</div>
                   </div>
-                  <div className="text-xs text-paper-300 font-mono">{formatBytes(c.size_bytes)}</div>
+                  <div className="mono" style={{ color: 'var(--text-secondary)' }}>{formatBytes(c.size_bytes)}</div>
                 </div>
               ))}
             </div>
@@ -194,32 +177,34 @@ function InstallWizard() {
                 tauri.runInstall(installOptions);
               }}
               nextLabel="Comenzar instalación"
-              nextIcon={Download}
+              nextIcon={DownloadSimple}
             />
           </Pane>
         )}
 
         {step === 'installing' && manifest && (
           <Pane key="installing">
-            <h2 className="font-display text-2xl mb-4">Instalando…</h2>
-            <ProgressList components={manifest.map((c) => ({ id: c.id, label: c.label, size: c.size_bytes }))} onAllDone={() => setStep('done')} />
+            <h2 className="section-header">Instalando…</h2>
+            <ProgressList
+              components={manifest.map((c) => ({ id: c.id, label: c.label, size: c.size_bytes }))}
+              onAllDone={() => setStep('done')}
+            />
           </Pane>
         )}
 
         {step === 'done' && (
           <Pane key="done">
-            <div className="text-center py-8">
-              <CheckCircle2 className="w-16 h-16 text-jade-400 mx-auto mb-4" />
-              <h2 className="font-display text-3xl font-medium mb-2">Instalación completada</h2>
-              <p className="text-paper-300 max-w-md mx-auto">
+            <div style={{ textAlign: 'center', padding: '32px 0' }}>
+              <span className="lg-tile xl" style={{ '--tint': '#7fa8d8', margin: '0 auto 16px' } as CSSProperties}>
+                <CheckCircle size={20} weight="fill" />
+              </span>
+              <h2 className="title-l" style={{ marginBottom: 8 }}>Instalación completada</h2>
+              <p className="muted" style={{ maxWidth: 420, margin: '0 auto', fontSize: 13 }}>
                 Xianxia Studio está listo. Puedes empezar a generar tu primer vídeo.
               </p>
-              <a
-                href="/"
-                className="inline-flex items-center gap-2 mt-6 px-5 py-2.5 rounded-md bg-gold-500 text-obsidian-950 font-medium text-sm hover:bg-gold-300 transition-colors shadow-glow-gold"
-              >
-                Ir al Dashboard
-              </a>
+              <button className="btn-primary large" style={{ marginTop: 24 }} onClick={() => navigate({ to: '/' })}>
+                Ir al Resumen
+              </button>
             </div>
           </Pane>
         )}
@@ -249,32 +234,30 @@ function ProgressList({
   }, [onAllDone]);
 
   return (
-    <div className="space-y-3">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {components.map((c) => {
         const p = progress[c.id];
         const status = p?.status ?? 'pending';
         const percent = p?.percent ?? 0;
+        const barColor = status === 'failed' ? 'var(--red)' : status === 'done' ? 'var(--green)' : 'var(--accent)';
         return (
-          <div key={c.id} className="p-4 rounded-md bg-card/60 border border-border/40">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2 text-sm font-medium">
+          <div key={c.id} style={{ padding: 14, borderRadius: 10, background: 'rgba(255,255,255,0.04)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 500 }}>
                 {status === 'done' ? (
-                  <CheckCircle2 className="w-4 h-4 text-jade-400" />
+                  <CheckCircle size={15} weight="fill" style={{ color: 'var(--green)' }} />
                 ) : status === 'failed' ? (
-                  <AlertTriangle className="w-4 h-4 text-crimson-400" />
+                  <Warning size={15} style={{ color: 'var(--red)' }} />
                 ) : (
-                  <Download className={cn('w-4 h-4', status !== 'pending' ? 'text-gold-400 animate-pulse' : 'text-paper-300')} />
+                  <DownloadSimple size={15} className={status !== 'pending' ? 'pulse' : ''} style={{ color: status !== 'pending' ? 'var(--gold-soft)' : 'var(--text-tertiary)' }} />
                 )}
                 {c.label}
               </div>
-              <span className="text-xs text-paper-300 font-mono">{p?.message ?? formatBytes(c.size)}</span>
+              <span className="mono" style={{ color: 'var(--text-secondary)' }}>{p?.message ?? formatBytes(c.size)}</span>
             </div>
-            <div className="h-1 rounded-full bg-obsidian-800 overflow-hidden">
+            <div style={{ height: 4, borderRadius: 999, background: 'rgba(0,0,0,0.4)', overflow: 'hidden' }}>
               <motion.div
-                className={cn(
-                  'h-full',
-                  status === 'failed' ? 'bg-crimson-500' : status === 'done' ? 'bg-jade-400' : 'bg-gold-500',
-                )}
+                style={{ height: '100%', background: barColor }}
                 initial={{ width: 0 }}
                 animate={{ width: `${percent}%` }}
                 transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
@@ -287,14 +270,15 @@ function ProgressList({
   );
 }
 
-function Pane({ children }: { children: React.ReactNode }) {
+function Pane({ children }: { children: ReactNode }) {
   return (
     <motion.div
+      className="group"
+      style={{ padding: 28 }}
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
-      transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-      className="rounded-xl border border-border/50 bg-card/60 backdrop-blur p-8"
+      transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
     >
       {children}
     </motion.div>
@@ -306,31 +290,37 @@ function ToolRow({ tool }: { tool: DetectedTool }) {
   const partial = tool.installed && !tool.compatible;
   return (
     <div
-      className={cn(
-        'flex items-center gap-3 p-3 rounded-md border text-sm',
-        ok
-          ? 'border-jade-500/40 bg-jade-700/10'
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: 12,
+        borderRadius: 10,
+        fontSize: 13,
+        background: 'rgba(255,255,255,0.04)',
+        boxShadow: ok
+          ? '0 0 0 0.5px rgba(127, 168, 216,0.35)'
           : partial
-          ? 'border-gold-500/40 bg-gold-500/5'
-          : 'border-border/40 bg-obsidian-800/40',
-      )}
+          ? '0 0 0 0.5px rgba(212,184,90,0.35)'
+          : 'inset 0 0.5px 0 rgba(255,255,255,0.06)',
+      }}
     >
       {ok ? (
-        <CheckCircle2 className="w-4 h-4 text-jade-400 shrink-0" />
+        <CheckCircle size={15} weight="fill" style={{ color: 'var(--green)', flexShrink: 0 }} />
       ) : partial ? (
-        <AlertTriangle className="w-4 h-4 text-gold-400 shrink-0" />
+        <Warning size={15} style={{ color: 'var(--gold-soft)', flexShrink: 0 }} />
       ) : (
-        <XCircle className="w-4 h-4 text-paper-400 shrink-0" />
+        <XCircle size={15} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
       )}
-      <div className="flex-1 min-w-0">
-        <div className="font-medium">{tool.label}</div>
-        <div className="text-[11px] text-paper-300 truncate">
-          {tool.version ? <code className="font-mono">{tool.version}</code> : 'no detectado'}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 500 }}>{tool.label}</div>
+        <div className="caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {tool.version ? <code className="mono">{tool.version}</code> : 'no detectado'}
           {tool.note ? ` · ${tool.note}` : ''}
         </div>
       </div>
       {tool.path && (
-        <span className="text-[10.5px] text-paper-400 font-mono truncate max-w-[260px]" title={tool.path}>
+        <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 }} title={tool.path}>
           {tool.path}
         </span>
       )}
@@ -342,35 +332,41 @@ function Stepper({ step }: { step: Step }) {
   const steps: Step[] = ['welcome', 'detect', 'hardware', 'plan', 'installing', 'done'];
   const idx = steps.indexOf(step);
   return (
-    <ol className="flex items-center gap-2 mb-8 text-xs">
+    <ol style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 24, listStyle: 'none', padding: 0 }}>
       {steps.map((s, i) => (
-        <li key={s} className="flex items-center gap-2">
+        <li key={s} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span
-            className={cn(
-              'w-6 h-6 rounded-full flex items-center justify-center font-medium',
-              i < idx ? 'bg-jade-400 text-obsidian-950' :
-              i === idx ? 'bg-gold-500 text-obsidian-950' :
-              'bg-obsidian-800 text-paper-300',
-            )}
+            style={{
+              width: 24,
+              height: 24,
+              borderRadius: 999,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 11,
+              fontWeight: 600,
+              background: i < idx ? 'var(--green)' : i === idx ? 'var(--accent)' : 'rgba(255,255,255,0.06)',
+              color: i <= idx ? '#1a1a22' : 'var(--text-secondary)',
+            }}
           >
             {i + 1}
           </span>
-          {i < steps.length - 1 && <span className="w-8 h-px bg-border/50" />}
+          {i < steps.length - 1 && <span style={{ width: 28, height: 1, background: 'var(--separator)' }} />}
         </li>
       ))}
     </ol>
   );
 }
 
-function Stat({ icon: Icon, label, value, sub }: { icon: React.ComponentType<{ className?: string }>; label: string; value: string; sub: string }) {
+function Stat({ icon: Icon, label, value, sub }: { icon: PhosphorIcon; label: string; value: string; sub: string }) {
   return (
-    <div className="rounded-md bg-card/60 border border-border/40 p-4">
-      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground mb-1">
-        <Icon className="w-3.5 h-3.5 text-gold-400/70" />
+    <div style={{ borderRadius: 10, background: 'rgba(255,255,255,0.04)', padding: 14 }}>
+      <div className="eyebrow" style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+        <Icon size={13} style={{ color: 'var(--gold-soft)' }} />
         {label}
       </div>
-      <div className="text-paper-100 text-sm font-medium truncate" title={value}>{value}</div>
-      <div className="text-xs text-muted-foreground mt-1">{sub}</div>
+      <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={value}>{value}</div>
+      <div className="caption" style={{ marginTop: 4 }}>{sub}</div>
     </div>
   );
 }
@@ -378,17 +374,17 @@ function Stat({ icon: Icon, label, value, sub }: { icon: React.ComponentType<{ c
 function Reco({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wide text-paper-300 mb-1">{label}</div>
-      <div className="text-paper-100 text-sm font-mono">{value}</div>
+      <div className="eyebrow" style={{ marginBottom: 4 }}>{label}</div>
+      <div className="mono" style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>{value}</div>
     </div>
   );
 }
 
 function Item({ icon, text }: { icon: string; text: string }) {
   return (
-    <li className="flex items-start gap-3">
-      <span className="text-lg leading-none mt-0.5">{icon}</span>
-      <span className="leading-relaxed">{text}</span>
+    <li style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <span style={{ fontSize: 18, lineHeight: 1, marginTop: 2 }}>{icon}</span>
+      <span style={{ lineHeight: 1.5, color: 'var(--text-secondary)' }}>{text}</span>
     </li>
   );
 }
@@ -402,23 +398,17 @@ function Actions({
   onBack?: () => void;
   onNext: () => void;
   nextLabel: string;
-  nextIcon?: React.ComponentType<{ className?: string }>;
+  nextIcon?: PhosphorIcon;
 }) {
   return (
-    <div className="flex justify-end gap-2 mt-8 pt-6 border-t border-border/30">
+    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 24, paddingTop: 18, borderTop: '0.5px solid var(--separator)' }}>
       {onBack && (
-        <button
-          onClick={onBack}
-          className="px-4 py-2 rounded-md text-sm text-paper-200 hover:bg-obsidian-800 transition-colors"
-        >
+        <button className="btn" onClick={onBack}>
           Atrás
         </button>
       )}
-      <button
-        onClick={onNext}
-        className="inline-flex items-center gap-2 px-5 py-2 rounded-md bg-gold-500 text-obsidian-950 font-medium text-sm hover:bg-gold-300 transition-colors shadow-glow-gold"
-      >
-        {NextIcon && <NextIcon className="w-4 h-4" />}
+      <button className="btn-primary large" onClick={onNext}>
+        {NextIcon && <NextIcon size={13} />}
         {nextLabel}
       </button>
     </div>

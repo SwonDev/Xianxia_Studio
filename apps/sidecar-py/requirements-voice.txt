@@ -1,0 +1,26 @@
+# Voice acquisition pipeline (v0.1.24).
+# Installed by the wizard's `python-deps-voice` optional component.
+# All run on CPU by default to avoid VRAM contention with whisper / YOLO.
+
+# Ingest: download audio from YouTube / TikTok / Twitch / Vimeo / 1500+ sites.
+# License: Unlicense.
+yt-dlp>=2026.3
+
+# Vocal isolation (separate human speech from music + SFX).
+# Default model UVR-MDX-NET-Voc_FT (~70 MB, ~1× RT CPU).
+# License: MIT (engine), pesos varían pero mayoría MIT/CC.
+audio-separator[cpu]>=0.30
+
+# Speech denoise / dereverb. ~8 MB model, 2-4× RT CPU.
+# License: MIT/Apache-2.0.
+deepfilternet>=0.5
+
+# Voice activity detection — trim non-speech regions precisely.
+# License: MIT.
+silero-vad>=5.1
+
+# Loudness normalisation to broadcast standard (EBU R128 -23 LUFS).
+# License: MIT.
+pyloudnorm>=0.1
+
+# (librosa already provided by requirements.txt for resample fallback)

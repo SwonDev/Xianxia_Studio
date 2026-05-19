@@ -64,7 +64,7 @@ if (!env.TAURI_SIGNING_PRIVATE_KEY) {
 const prep = spawnSync(
   process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm',
   ['sidecars:prepare'],
-  { cwd: ROOT, stdio: 'inherit', env, shell: false },
+  { cwd: ROOT, stdio: 'inherit', env, shell: true },
 );
 if (prep.status !== 0) {
   process.exit(prep.status ?? 1);
@@ -75,6 +75,6 @@ const args = process.argv.slice(2);
 const build = spawnSync(
   process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm',
   ['--filter', '@xianxia/desktop', 'tauri', 'build', ...args],
-  { cwd: ROOT, stdio: 'inherit', env, shell: false },
+  { cwd: ROOT, stdio: 'inherit', env, shell: true },
 );
 process.exit(build.status ?? 0);

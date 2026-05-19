@@ -167,7 +167,17 @@ const phase = (
   status: 'running' | 'done' | 'failed',
   progress: number,
   message: string,
-) => emit('pipeline:progress', { project_id, phase, status, progress, message });
+) => emit('pipeline:progress', {
+  project_id, phase, status,
+  // v0.1.46 parity fix: the Rust supervisor (pipeline/mod.rs) emits
+  // `progress` on the 0–100 scale (`emit(..., 100.0, ...)`), and the
+  // generator UI does `Math.round(update.progress)` expecting that
+  // scale. The shim used to send 0–1 fractions, so a "done" phase
+  // showed "1%" in the sidebar instead of "100%". Normalise here so
+  // the call sites can keep using either convention without bugs.
+  progress: progress <= 1 ? progress * 100 : progress,
+  message,
+});
 
 /** Sequential VRAM swap: free the previous phase's model before the next loads.
  * Best-effort — never fails the pipeline if the unload endpoint isn't reachable.
@@ -196,22 +206,30 @@ async function runPipeline(project_id: string, args: GenerateArgs): Promise<void
       target_minutes: args.target_minutes,
       languages: args.languages,
       model: 'xianxia-llm',
-    }, 10 * 60_000);
+    },
+    // v0.1.46: was 10 min, raised to 30 min. The Python sidecar's
+    // `/script` route itself uses `timeout=900.0` (15 min) per Ollama
+    // call AND runs up to 6 passes for long-form scripts, so the
+    // worst-case totalcan reach 20-25 min when Ollama is cold +
+    // Wikipedia RAG is slow + multi-pass is engaged. Aborting at
+    // 10 min cancelled the request just as the LLM was finishing,
+    // surfaced as "pipeline failed AbortError" in the console.
+    30 * 60_000);
     phase(project_id, 1, 'done', 1, `${script.word_count} palabras, ${Math.round(script.estimated_seconds)}s estimados`);
 
     // Unload Ollama xianxia-llm — frees ~3 GB VRAM for the TTS phase next.
     await unloadModels(['ollama']);
 
-    // Phase 2: Metadata — fire-and-forget with a short hard cap. The xianxia-llm
-    // thinking-mode + format=json combo can stall for 10+ minutes on a 487-word
-    // script, and metadata isn't on the critical path for the visible video.
-    phase(project_id, 2, 'running', 0.3, 'Metadatos (best effort)…');
-    http<unknown>(PY, '/script/metadata', 'POST', {
-      script: script.narration, languages: args.languages, model: 'xianxia-llm',
-    }, 90_000)
-      .then(() => phase(project_id, 2, 'done', 1, 'Título, descripción, tags'))
-      .catch(() => phase(project_id, 2, 'done', 1, 'Saltado (sin bloquear pipeline)'));
-    phase(project_id, 2, 'done', 1, 'En segundo plano');
+    // Phase 2: Metadata
+    // v0.1.46: was fire-and-forget BEFORE TTS, which made Ollama (xianxia-llm)
+    // re-occupy ~6 GB of VRAM in parallel with Qwen3-TTS loading. The two
+    // models then thrashed each other and TTS fell back to CPU/RAM ⇒ 14×
+    // slower (4 min per chunk instead of 15 s). On RTX 4060 8 GB the two
+    // can't coexist. Solution: skip metadata in browser/shim mode (it's
+    // best-effort anyway and not on the critical visible-video path).
+    // The Rust supervisor in prod runs metadata sequentially AFTER tts
+    // unload, so this only matters in dev/shim.
+    phase(project_id, 2, 'done', 1, 'Metadatos saltado (sin bloquear VRAM de TTS)');
 
     // Phase 3: TTS narration. Qwen3-TTS first-load + chunked generation can take
     // 15-25 min for ~3 min audio on RTX 4060 (model load is ~5 min, then ~1 min
@@ -279,32 +297,53 @@ async function runPipeline(project_id: string, args: GenerateArgs): Promise<void
     // depth segmentation + render+subtitles phases.
     await unloadModels(['comfyui', 'image']);
 
-    // Phase 4b: Depth segmentation (rembg) — produces fg.png + bg.jpg per beat
-    // so HyperFrames can compose 2.5D parallax. Best effort: if /depth fails
-    // (rembg not installed, model error), fall through to flat single-image
-    // beats and the FFmpeg-fast render path will still produce a video.
-    phase(project_id, 4, 'running', 0.7, 'Segmentando capas de profundidad…');
+    // Phase 4b: DepthFlow 2.5D parallax — produces an MP4 clip per beat.
+    // v0.1.46: mirrors the Rust supervisor (pipeline/mod.rs). Was using
+    // legacy rembg /depth/batch (deprecated since v0.1.23 because of the
+    // "broken pyramid tops" artefact). Now calls /depthflow/batch which
+    // generates GLSL-shaded clips via DepthFlow, and tolerates partial
+    // results (mixed clip + KenBurns timeline).
+    phase(project_id, 4, 'running', 0.7, 'Parallax 2.5D (DepthFlow)…');
     let layeredBeats = beats;
     try {
-      const depth = await http<{
-        results: { bg_path: string; fg_path: string; seconds: number }[];
-        seconds: number;
-      }>(PY, '/depth/batch', 'POST', {
-        images: beats.map((b) => b.path),
-        model: 'u2net',
-        inpaint_radius: 12,
-        feather_pixels: 4,
-      }, 10 * 60_000);
-      if (depth.results.length === beats.length) {
-        layeredBeats = beats.map((b, i) => ({
-          ...b,
-          path: depth.results[i]!.bg_path,
-          foreground_path: depth.results[i]!.fg_path,
-        })) as typeof beats;
-        phase(project_id, 4, 'done', 1, `${beats.length} imágenes + capas 2.5D (${depth.seconds.toFixed(1)}s)`);
+      // Health check first (matches Rust supervisor behaviour).
+      const dfHealth = await http<{ venv_python_exists: boolean; runner_script_exists: boolean }>(
+        PY, '/depthflow/health', 'GET', undefined, 5_000,
+      ).catch(() => ({ venv_python_exists: false, runner_script_exists: false }));
+      if (dfHealth.venv_python_exists && dfHealth.runner_script_exists) {
+        const df = await http<{
+          results: { output_path: string; bytes: number; seconds: number }[];
+          seconds: number;
+        }>(PY, '/depthflow/batch', 'POST', {
+          images: beats.map((b) => b.path),
+          // 12-s clips loop at the renderer; matches Rust constant.
+          duration_seconds: 12.0,
+          fps: 24,
+          width: 1920,
+          height: 1088,
+        }, 30 * 60_000);
+        // Partial-results-tolerant attach (matches Rust v0.1.46).
+        let attached = 0;
+        layeredBeats = beats.map((b, i) => {
+          const r = df.results[i];
+          if (r && r.output_path && r.bytes > 1024) {
+            attached += 1;
+            return { ...b, clip_path: r.output_path } as typeof b & { clip_path: string };
+          }
+          return b;
+        });
+        if (attached === beats.length) {
+          phase(project_id, 4, 'done', 1, `Parallax 2.5D listo (${beats.length} clips)`);
+        } else if (attached > 0) {
+          phase(project_id, 4, 'done', 1, `Parallax parcial: ${attached}/${beats.length} clips`);
+        } else {
+          phase(project_id, 4, 'done', 1, `Parallax sin clips — usando KenBurns`);
+        }
+      } else {
+        phase(project_id, 4, 'done', 1, `${beats.length} imágenes (DepthFlow no instalado)`);
       }
     } catch {
-      phase(project_id, 4, 'done', 1, `${beats.length} imágenes (sin parallax — rembg no disponible)`);
+      phase(project_id, 4, 'done', 1, `${beats.length} imágenes (DepthFlow inalcanzable)`);
     }
 
     // Phase 5: Music (skipped in shim mode unless musicgen is available)
@@ -418,7 +457,18 @@ async function runPipeline(project_id: string, args: GenerateArgs): Promise<void
       PY,
       '/subtitles',
       'POST',
-      { audio_path: tts.audio_path, source_language: lang, target_languages: [lang] },
+      {
+        audio_path: tts.audio_path,
+        source_language: lang,
+        target_languages: [lang],
+        // v0.1.46: must match the Rust supervisor (pipeline/mod.rs).
+        // The Node renderer prepends INTRO_SEC=6.0 of intro card +
+        // silence before the narration, so SRT/ASS timestamps must
+        // be shifted by 6 s to align with the spoken word. Without
+        // this, captions appear over the intro card — exactly the
+        // desync the user reported on every long-form video.
+        intro_offset_seconds: 6.0,
+      },
       15 * 60_000,
     );
     const ass = subs.subtitles.find((s) => s.language === lang)?.ass_path;
@@ -474,7 +524,14 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
     case 'greet':
       return `欢迎, ${(args?.name as string) || 'visitor'}! Welcome to Xianxia Studio (browser shim).` as unknown as T;
     case 'get_app_version':
-      return { version: '0.1.0-shim', tauri: 'browser-mode' } as unknown as T;
+      // v0.1.46: use the workspace package.json version injected at
+      // build time by Vite (see vite.config.ts:define). Matches the
+      // version Tauri webview returns in prod, eliminating the
+      // "v0.1.0-shim vs vX.Y.Z" visual divergence in the sidebar.
+      return {
+        version: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0-shim',
+        tauri: 'browser-mode',
+      } as unknown as T;
 
     case 'detect_hardware':
       return await http(PY, '/install/hardware', 'GET').catch(() => ({
@@ -533,24 +590,19 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
           detail: py ? '(asumido OK porque sidecar Python responde)' : 'no detectable desde browser',
           group: 'Herramientas' },
       );
-      // Música backends — query the live /music/backends endpoint
-      let acestepOk = false;
+      // Música backends — v0.2.6: MusicGen-only (ACE-Step removed).
       let musicgenOk = false;
       if (py) {
         try {
-          const m = await http<{ acestep_available: boolean; musicgen_available: boolean }>(
+          const m = await http<{ musicgen_available: boolean }>(
             PY, '/music/backends', 'GET', undefined, 3000,
           );
-          acestepOk = !!m.acestep_available;
           musicgenOk = !!m.musicgen_available;
         } catch { /* sidecar may not be ready yet */ }
       }
       checks.push(
-        { id: 'acestep', label: 'ACE-Step v1.5 (música cinematográfica · preferido)', ok: acestepOk,
-          detail: acestepOk ? '✓ instalado' : 'no instalado — opcional. requirements-music.txt',
-          group: 'Música' },
-        { id: 'musicgen', label: 'MusicGen (audiocraft · fallback)', ok: musicgenOk,
-          detail: musicgenOk ? '✓ instalado' : 'no instalado — opcional',
+        { id: 'musicgen', label: 'MusicGen-medium (audiocraft · GPU-only)', ok: musicgenOk,
+          detail: musicgenOk ? '✓ instalado' : 'no instalado — opcional. Sin él, /music usa la biblioteca local',
           group: 'Música' },
       );
       const summary = {
@@ -561,7 +613,7 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
         rembg_installed: py,
         mediapipe_installed: py,
         ultralytics_installed: py,
-        acestep_installed: acestepOk,
+        acestep_installed: false,
         musicgen_installed: musicgenOk,
         models_ready_count: checks.filter((c) => c.group === 'Modelos' && c.ok).length,
         models_total: checks.filter((c) => c.group === 'Modelos').length,
@@ -579,17 +631,46 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
       } as unknown as T;
 
     case 'get_sidecar_state': {
-      const [p, n, o, c] = await Promise.all([
+      const [p, n, o, c, ll] = await Promise.all([
         reachable(`${PY}/health`), reachable(`${NODE}/health`), reachable(`${OLLAMA}/api/tags`),
         reachable('http://127.0.0.1:8188/system_stats'),
+        reachable('http://127.0.0.1:8733/health'),
       ]);
       return {
         python: p ? 'running' : 'stopped',
         node: n ? 'running' : 'stopped',
         ollama: o ? 'running' : 'stopped',
         comfyui: c ? 'running' : 'stopped',
+        // v0.2.0 — show llama.cpp dot in dev/browser mode too so the
+        // model browser UI reflects reality without needing Tauri APIs.
+        llamacpp: ll ? 'running' : 'stopped',
       } as unknown as T;
     }
+
+    // v0.2.0 — llama.cpp installer/status. In browser mode we can't
+    // invoke the Rust installer (it writes files inside the data_dir
+    // and bundles cudart DLLs); return a Tauri-only sentinel so the UI
+    // shows a "abre la app de escritorio para instalar" affordance.
+    case 'llamacpp_status': {
+      const alive = await reachable('http://127.0.0.1:8733/health');
+      return {
+        installed: alive,
+        flavor: 'windows_cuda12',
+        flavor_label: 'browser-mode (status unknown)',
+        recommended_tag: 'b9114',
+        current: alive
+          ? {
+              flavor: 'windows_cuda12',
+              tag: 'b9114',
+              install_dir: '<browser-shim>',
+              server_binary: '<browser-shim>',
+              version: null,
+            }
+          : null,
+      } as unknown as T;
+    }
+    case 'llamacpp_install':
+      throw new Error('llamacpp_install requires the desktop Tauri app');
 
     case 'get_sidecar_logs':
       return { python: '(logs no disponibles en modo navegador)', node: '(idem)' } as unknown as T;
@@ -602,8 +683,17 @@ async function invokeShim<T>(cmd: Cmd, args?: Args): Promise<T> {
       }
     }
 
-    case 'library_list_videos':
-      return [] as unknown as T;
+    case 'library_list_videos': {
+      // v0.1.46 parity: Rust supervisor scans <data_dir>/projects/. In
+      // browser mode we ask the Python sidecar to do the same via
+      // /diag/library — same data shape (LibraryVideo[]).
+      try {
+        const resp = await http<{ videos: unknown[] }>(PY, '/diag/library', 'GET');
+        return (resp.videos || []) as unknown as T;
+      } catch {
+        return [] as unknown as T;
+      }
+    }
 
     case 'library_delete_video':
       return undefined as unknown as T;

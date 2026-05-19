@@ -1,18 +1,24 @@
-# Music generation deps (optional, ~5-8 GB total).
+# Music generation deps (optional, ~3-4 GB).
 # Installed by the wizard's `python-deps-music` component.
 #
-# Two backends with auto-selection in /music endpoint:
-#   1. ACE-Step v1.5 — best cinematic quality, native long-form, oriental
-#      instruments (erhu, guzheng, taiko) significantly more realistic.
-#      8 GB VRAM friendly with --cpu_offload --overlapped_decode.
-#      Apache 2.0 license.
-#   2. MusicGen-medium (Meta, audiocraft) — fallback. 30s hard cap, fp16
-#      keeps it under 4 GB VRAM. Good general quality.
-
-# ACE-Step v1.5 — preferred (run with cpu_offload + overlapped_decode for 8 GB).
-# Repo doesn't tag releases; install from main (commits up to May 2026 contain
-# the v1.5 features: audio-to-audio, SDE-based generation, improved lyric align).
-acestep @ git+https://github.com/ace-step/ACE-Step.git@main
-
-# MusicGen fallback (Meta audiocraft).
+# v0.2.6 — ACE-Step v1.5 removed from the pipeline. On 8 GB VRAM it
+# requires cpu_offload=True (README oficial) which contradicts the
+# project's GPU-only rule. On Windows the offload-disabled path hangs
+# indefinitely via WDDM thrash. Upstream repo has no release tag and
+# the inference loop is unmaintained. We rely solely on MusicGen plus
+# the local library as the final fallback.
+#
+# MusicGen-medium (Meta, audiocraft) — fp16 keeps it under 4 GB VRAM.
+# 30 s hard cap per pass; long-form is chunked + acrossfade'd in
+# routes/music.py. Good general cinematic quality.
 audiocraft>=1.3.0
+
+# v0.2.13 — xformers REMOVED on purpose (do not re-add). It has no
+# prebuilt wheel for the runtime (Python 3.11 + torch 2.5.1+cu121,
+# Windows): default PyPI ships only an sdist for 0.0.28.post3 (builds
+# from source → fails without torch), the PyTorch cu121 index tops out
+# at 0.0.27.post2, and `--only-binary` skips 0.0.28.* entirely. It is
+# also unnecessary: audiocraft 1.3.0 defaults to PyTorch-native SDPA
+# attention, and routes/music.py forces `set_efficient_attention_backend
+# ("torch")` + `XFORMERS_DISABLED=1`, so MusicGen-medium imports and
+# generates with xformers absent (validated end-to-end 2026-05-16).

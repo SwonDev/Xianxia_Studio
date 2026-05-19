@@ -154,7 +154,7 @@ Cada apoyo va directo a:
 | ASR | faster-whisper-large-v3 (timestamps por palabra) |
 | Imagen | ComfyUI + Z-Image-Turbo Q4_K_M GGUF |
 | Visión 2.5D | rembg · onnxruntime-gpu · MediaPipe · YOLO11n-pose |
-| Música | ACE-Step v1.5 · MusicGen-medium (fallback) |
+| Música | MusicGen-medium fp16 GPU-only · librería local (fallback) |
 | **Vídeo · motor** | **[HyperFrames](https://github.com/heygen-com/hyperframes)** — HTML/CSS/GSAP → MP4 con parallax + atmospherics + transiciones |
 | Vídeo · post | FFmpeg 8 con NVENC h264, grade cinemático, sidechain ducking |
 | Engagement | Meta TRIBE v2 (fMRI) + Yeo 7-network atlas |

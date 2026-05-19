@@ -202,7 +202,309 @@ async fn install_one(app: &AppHandle, c: &Component, workspace: Option<&Path>) -
         AssetKind::HuggingfaceFileTo { repo, filename, target_path } => {
             hf_file_to(app, c, repo, filename, target_path).await
         }
+        AssetKind::DepthFlowVenv => {
+            depthflow_venv_install(app, c).await
+        }
+        AssetKind::AceStepVenv => {
+            acestep_venv_install(app, c).await
+        }
     }
+}
+
+/// v0.1.38 — provisions an isolated Python venv at
+/// `runtime/depthflow-venv/` and installs DepthFlow inside it.
+///
+/// Why a venv (and not the main runtime python):
+/// DepthFlow's `pip install depthflow` upgrades torch / transformers /
+/// pillow / numpy in ways that conflict with the main sidecar's deps
+/// (qwen-tts, audiocraft, rembg). Tested and verified during
+/// v0.1.38 development: a single shared install breaks TTS + music +
+/// rembg silently. Isolation keeps each tool happy.
+///
+/// Auto-detection downstream: `/depthflow/health` returns
+/// `venv_python_exists=false` when this component hasn't run, so the
+/// pipeline gracefully falls back to single-image + Ken Burns. The user
+/// can install this component later from the wizard at any time.
+async fn depthflow_venv_install(app: &AppHandle, c: &Component) -> Result<()> {
+    emit(app, &c.id, ProgressStatus::Installing, 5.0, "Creando venv aislado para DepthFlow…");
+
+    let main_py = super::python_env::python_exe()?;
+    if !main_py.exists() {
+        return Err(anyhow!("python embebido no instalado: {}", main_py.display()));
+    }
+    super::python_env::ensure_pip(&main_py).await?;
+
+    let venv_dir = paths::runtime_dir()?.join("depthflow-venv");
+    let venv_py = if cfg!(windows) {
+        venv_dir.join("Scripts").join("python.exe")
+    } else {
+        venv_dir.join("bin").join("python")
+    };
+
+    // Skip the heavy work if a previous run already produced a working venv.
+    if venv_py.exists() {
+        // Quick sanity probe: can we import depthflow? If yes, we're done.
+        let probe = std::process::Command::new(&venv_py)
+            .args(["-c", "import depthflow"])
+            .output();
+        if let Ok(out) = probe {
+            if out.status.success() {
+                emit(app, &c.id, ProgressStatus::Done, 100.0, "DepthFlow ya instalado, saltado");
+                return Ok(());
+            }
+        }
+        tracing::warn!(
+            venv = %venv_dir.display(),
+            "DepthFlow venv exists but `import depthflow` failed — reinstalling",
+        );
+    }
+
+    // ── Step 1: create the venv (or repair it). ────────────────────────
+    if !venv_py.exists() {
+        emit(app, &c.id, ProgressStatus::Installing, 10.0, "python -m venv …");
+        let venv_out = std::process::Command::new(&main_py)
+            .args(["-m", "venv", venv_dir.to_str().unwrap_or("")])
+            .output()
+            .map_err(|e| anyhow!("falló crear venv: {}", e))?;
+        if !venv_out.status.success() {
+            let tail = String::from_utf8_lossy(&venv_out.stderr);
+            return Err(anyhow!("python -m venv falló: {}", tail));
+        }
+        if !venv_py.exists() {
+            return Err(anyhow!("venv creado pero python no encontrado en {}", venv_py.display()));
+        }
+    }
+
+    // ── Step 2: ensure pip is recent in the venv. ──────────────────────
+    emit(app, &c.id, ProgressStatus::Installing, 20.0, "Actualizando pip del venv…");
+    let _ = std::process::Command::new(&venv_py)
+        .args(["-m", "pip", "install", "--upgrade", "--quiet", "pip", "wheel", "setuptools"])
+        .output();
+
+    // ── Step 3: install torch CUDA 12.1 BEFORE depthflow so depthflow's
+    //   own auto-installer doesn't pick a CPU wheel or a CUDA wheel that
+    //   doesn't match our embedded driver tier. We pin to torch 2.5.1
+    //   which is the same version the main runtime uses — sharing the
+    //   exact build avoids surprising VRAM allocator differences when
+    //   DepthFlow loads its Depth-Anything-V2 model alongside ComfyUI's
+    //   Z-Image model on the same GPU.
+    emit(app, &c.id, ProgressStatus::Installing, 35.0, "Instalando PyTorch CUDA 12.1 (~2.5 GB)…");
+    let torch_out = std::process::Command::new(&venv_py)
+        .args([
+            "-m", "pip", "install", "--quiet",
+            "torch==2.5.1",
+            "torchvision==0.20.1",
+            "torchaudio==2.5.1",
+            "--index-url", "https://download.pytorch.org/whl/cu121",
+        ])
+        .output()
+        .map_err(|e| anyhow!("torch install falló: {}", e))?;
+    if !torch_out.status.success() {
+        let tail = String::from_utf8_lossy(&torch_out.stderr);
+        return Err(anyhow!("torch install: {}", tail));
+    }
+
+    // ── Step 4: install DepthFlow. depthflow itself + shaderflow +
+    //   broken-source + a moderngl context get pulled in. License: AGPL-3.0
+    //   (the user is informed at component-add time via the manifest's
+    //   label).
+    emit(app, &c.id, ProgressStatus::Installing, 75.0, "Instalando DepthFlow…");
+    let df_out = std::process::Command::new(&venv_py)
+        .args(["-m", "pip", "install", "--quiet", "depthflow"])
+        .output()
+        .map_err(|e| anyhow!("depthflow install falló: {}", e))?;
+    if !df_out.status.success() {
+        let tail = String::from_utf8_lossy(&df_out.stderr);
+        return Err(anyhow!("depthflow install: {}", tail));
+    }
+
+    // ── Step 5: smoke-test the import. ─────────────────────────────────
+    emit(app, &c.id, ProgressStatus::Installing, 95.0, "Verificando instalación…");
+    let probe = std::process::Command::new(&venv_py)
+        .args(["-c", "from depthflow.scene import DepthScene; print('OK')"])
+        .output()
+        .map_err(|e| anyhow!("smoke probe falló: {}", e))?;
+    if !probe.status.success() {
+        let tail = String::from_utf8_lossy(&probe.stderr);
+        return Err(anyhow!("DepthScene import falló: {}", tail));
+    }
+
+    emit(app, &c.id, ProgressStatus::Done, 100.0, "DepthFlow listo");
+    Ok(())
+}
+
+/// v0.2.8 — provisions ACE-Step v1.5 in an isolated venv at
+/// `runtime/acestep-venv/` + the repo at `runtime/acestep-repo/`.
+///
+/// Why isolated (same rationale as DepthFlow): ACE-Step-1.5 @ v0.1.7
+/// hard-pins `torch==2.7.1+cu128` + a local-editable `nano-vllm` +
+/// flash-attn / transformers>=4.51 which would shred the main sidecar's
+/// torch 2.5.1+cu121 stack. The music phase auto-detects this venv and
+/// falls back MusicGen → library when absent, so skipping this component
+/// keeps the app fully functional — it just uses the lighter generator.
+///
+/// Steps mirror `depthflow_venv_install`: create venv → modern pip →
+/// torch cu128 → git clone repo @ tag → editable installs → smoke test.
+/// flash-attn is intentionally NOT installed (the runner passes
+/// `use_flash_attention=False`); it's optional and its Windows build is
+/// fragile, so we skip it to keep the install robust.
+async fn acestep_venv_install(app: &AppHandle, c: &Component) -> Result<()> {
+    emit(app, &c.id, ProgressStatus::Installing, 3.0, "Creando venv aislado para ACE-Step v1.5…");
+
+    let main_py = super::python_env::python_exe()?;
+    if !main_py.exists() {
+        return Err(anyhow!("python embebido no instalado: {}", main_py.display()));
+    }
+    super::python_env::ensure_pip(&main_py).await?;
+
+    let rt = paths::runtime_dir()?;
+    let venv_dir = rt.join("acestep-venv");
+    let repo_dir = rt.join("acestep-repo");
+    let venv_py = if cfg!(windows) {
+        venv_dir.join("Scripts").join("python.exe")
+    } else {
+        venv_dir.join("bin").join("python")
+    };
+
+    // Skip if a previous run already produced a working venv + repo.
+    if venv_py.exists() && repo_dir.join("acestep").is_dir() {
+        let probe = std::process::Command::new(&venv_py)
+            .args(["-c", "import acestep, sys; sys.exit(0)"])
+            .current_dir(&repo_dir)
+            .output();
+        if let Ok(out) = probe {
+            if out.status.success() {
+                emit(app, &c.id, ProgressStatus::Done, 100.0, "ACE-Step ya instalado, saltado");
+                return Ok(());
+            }
+        }
+        tracing::warn!("ACE-Step venv exists but import failed — reinstalling");
+    }
+
+    // ── Step 1: create the venv. ───────────────────────────────────────
+    if !venv_py.exists() {
+        emit(app, &c.id, ProgressStatus::Installing, 8.0, "python -m venv …");
+        let venv_out = std::process::Command::new(&main_py)
+            .args(["-m", "venv", venv_dir.to_str().unwrap_or("")])
+            .output()
+            .map_err(|e| anyhow!("falló crear venv: {}", e))?;
+        if !venv_out.status.success() {
+            return Err(anyhow!(
+                "python -m venv falló: {}",
+                String::from_utf8_lossy(&venv_out.stderr)
+            ));
+        }
+        if !venv_py.exists() {
+            return Err(anyhow!("venv creado pero python no encontrado"));
+        }
+    }
+
+    // ── Step 2: modern pip. ────────────────────────────────────────────
+    emit(app, &c.id, ProgressStatus::Installing, 14.0, "Actualizando pip del venv…");
+    let _ = std::process::Command::new(&venv_py)
+        .args(["-m", "pip", "install", "--upgrade", "--quiet", "pip", "wheel", "setuptools"])
+        .output();
+
+    // ── Step 3: torch 2.7.1 + CUDA 12.8 (the exact pin ACE-Step-1.5
+    //   v0.1.7 requires; lives in its OWN venv so it never touches the
+    //   main runtime's torch 2.5.1+cu121).
+    emit(app, &c.id, ProgressStatus::Installing, 30.0, "Instalando PyTorch 2.7.1 CUDA 12.8 (~3 GB)…");
+    let torch_out = std::process::Command::new(&venv_py)
+        .args([
+            "-m", "pip", "install", "--quiet",
+            "torch==2.7.1", "torchaudio==2.7.1",
+            "--index-url", "https://download.pytorch.org/whl/cu128",
+        ])
+        .output()
+        .map_err(|e| anyhow!("torch install falló: {}", e))?;
+    if !torch_out.status.success() {
+        return Err(anyhow!(
+            "torch cu128 install: {}",
+            String::from_utf8_lossy(&torch_out.stderr)
+        ));
+    }
+
+    // ── Step 4: clone ACE-Step-1.5 at the pinned tag. ──────────────────
+    emit(app, &c.id, ProgressStatus::Installing, 55.0, "Clonando ACE-Step-1.5 @ v0.1.7…");
+    if repo_dir.exists() {
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+    let clone_out = std::process::Command::new("git")
+        .args([
+            "clone", "--depth", "1", "--branch", "v0.1.7",
+            "https://github.com/ace-step/ACE-Step-1.5.git",
+            repo_dir.to_str().unwrap_or(""),
+        ])
+        .output()
+        .map_err(|e| anyhow!("git no disponible / clone falló: {}", e))?;
+    if !clone_out.status.success() {
+        return Err(anyhow!(
+            "git clone ACE-Step-1.5: {}",
+            String::from_utf8_lossy(&clone_out.stderr)
+        ));
+    }
+
+    // ── Step 5: install the repo + nano-vllm (local editable). We do
+    //   NOT use `uv sync` (would need uv + re-resolve the cu128 index
+    //   we already satisfied); plain editable installs are deterministic
+    //   and keep our torch pin. `--no-deps` on the repo so pip can't
+    //   move the torch we just placed; then its runtime deps explicitly.
+    emit(app, &c.id, ProgressStatus::Installing, 70.0, "Instalando nano-vllm + ACE-Step…");
+    let nano = repo_dir.join("acestep").join("third_parts").join("nano-vllm");
+    if nano.is_dir() {
+        let nano_out = std::process::Command::new(&venv_py)
+            .args(["-m", "pip", "install", "--quiet", "-e", nano.to_str().unwrap_or("")])
+            .output()
+            .map_err(|e| anyhow!("nano-vllm install falló: {}", e))?;
+        if !nano_out.status.success() {
+            return Err(anyhow!(
+                "nano-vllm install: {}",
+                String::from_utf8_lossy(&nano_out.stderr)
+            ));
+        }
+    }
+    // Repo runtime deps (requirements.txt) WITHOUT torch (already pinned).
+    let req_txt = repo_dir.join("requirements.txt");
+    if req_txt.is_file() {
+        emit(app, &c.id, ProgressStatus::Installing, 80.0, "Instalando dependencias ACE-Step…");
+        let _ = std::process::Command::new(&venv_py)
+            .args([
+                "-m", "pip", "install", "--quiet",
+                "-r", req_txt.to_str().unwrap_or(""),
+            ])
+            .current_dir(&repo_dir)
+            .output();
+    }
+    // The package itself (editable, no-deps so torch stays put).
+    emit(app, &c.id, ProgressStatus::Installing, 90.0, "Instalando paquete ACE-Step (editable)…");
+    let pkg_out = std::process::Command::new(&venv_py)
+        .args(["-m", "pip", "install", "--quiet", "--no-deps", "-e", "."])
+        .current_dir(&repo_dir)
+        .output()
+        .map_err(|e| anyhow!("acestep -e . install falló: {}", e))?;
+    if !pkg_out.status.success() {
+        return Err(anyhow!(
+            "acestep editable install: {}",
+            String::from_utf8_lossy(&pkg_out.stderr)
+        ));
+    }
+
+    // ── Step 6: smoke-test the import. ─────────────────────────────────
+    emit(app, &c.id, ProgressStatus::Installing, 96.0, "Verificando instalación…");
+    let probe = std::process::Command::new(&venv_py)
+        .args(["-c", "from acestep.handler import AceStepHandler; print('OK')"])
+        .current_dir(&repo_dir)
+        .output()
+        .map_err(|e| anyhow!("smoke probe falló: {}", e))?;
+    if !probe.status.success() {
+        return Err(anyhow!(
+            "AceStepHandler import falló: {}",
+            String::from_utf8_lossy(&probe.stderr)
+        ));
+    }
+
+    emit(app, &c.id, ProgressStatus::Done, 100.0, "ACE-Step v1.5 listo (checkpoint se baja en el primer uso)");
+    Ok(())
 }
 
 async fn git_clone(app: &AppHandle, c: &Component, repo_url: &str, target: &str) -> Result<()> {

@@ -96,7 +96,7 @@ class TTSRequest(BaseModel):
     # 5–6 minute chunks because the autoregressive decoder time scales
     # super-linearly with sequence length. Smaller chunks keep the worst
     # case bounded so long narrations stay under a few minutes wall-time.
-    chunk_chars: int = 220
+    chunk_chars: int = 350
     out_dir: str | None = None
 
 
@@ -187,6 +187,110 @@ def _do_synthesize_builtin(text: str, language: str, speaker: str, instruct: str
     )
 
 
+# v0.1.34: post-synthesis loudness normalization. Qwen3-TTS-Base (voice
+# cloning) emits audio at ~-22 to -25 LUFS, while CustomVoice presets
+# come out at ~-15 LUFS. Normalizing both to -14 LUFS (YouTube/Spotify
+# standard) keeps the listener experience consistent regardless of which
+# voice path produced the audio. Plus a -1 dBTP peak ceiling to prevent
+# clipping on consumer playback.
+def _loudnorm_audio(audio, sr, target_lufs=-14.0, peak_db=-1.0):
+    """Normalize a 1D float32 numpy array to target LUFS + peak ceiling.
+
+    Falls back to peak normalization if pyloudnorm isn't available.
+    """
+    import numpy as _np
+    if audio is None or len(audio) == 0:
+        return audio
+    audio = audio.astype("float32", copy=False)
+    try:
+        import pyloudnorm as pyln
+        # ITU-R BS.1770-4 integrated loudness measurement.
+        meter = pyln.Meter(sr)
+        loudness = meter.integrated_loudness(audio)
+        # If the source was effectively silent, integrated_loudness
+        # returns -inf — skip normalization to avoid blowing up gain.
+        if loudness == float("-inf") or loudness != loudness:  # NaN check
+            return audio
+        normalized = pyln.normalize.loudness(audio, loudness, target_lufs)
+    except Exception:
+        # Fallback: peak normalize so at least it isn't muffled.
+        peak = float(_np.max(_np.abs(audio))) or 1.0
+        target_peak = 10 ** (peak_db / 20.0)
+        normalized = audio * (target_peak / peak)
+    # Hard peak limiter at peak_db dBTP to avoid clipping after LUFS gain.
+    target_peak = 10 ** (peak_db / 20.0)
+    peak = float(_np.max(_np.abs(normalized))) if len(normalized) else 0.0
+    if peak > target_peak and peak > 0:
+        normalized = normalized * (target_peak / peak)
+    return normalized.astype("float32")
+
+
+# Module-level prompt cache keyed by (ref_audio_path, mtime_ns).
+# Saves the ~10-15 s extract_speaker_embedding + tokenize for the SAME
+# voice across consecutive requests. Invalidated automatically if the
+# user re-records / replaces the ref_audio file (mtime changes).
+_clone_prompt_cache: dict[tuple, object] = {}
+_clone_prompt_cache_lock = __import__("threading").Lock()
+
+
+def _build_clone_prompt(ref_audio: str):
+    """Build the voice-clone prompt ONCE per request.
+
+    Internally extracts:
+      - speech codes via `speech_tokenizer.encode(ref_audio)`
+      - speaker embedding via `extract_speaker_embedding(ref_audio)` (resampled to 24 kHz)
+
+    Both are expensive (~5-10 s on GPU) and were being recomputed per
+    chunk in v0.1.26 — that's why a 10-chunk request took ~8-10 min
+    instead of the ~1 min you'd expect from the direct test (3x faster
+    than realtime). Per the upstream docs:
+      "To avoid recomputing features across multiple generations,
+       build it once with create_voice_clone_prompt"
+    """
+    if tts_model.is_loaded():
+        tts_model.unload()
+    try:
+        model = tts_base_model.load()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Voice cloning requires the Qwen3-TTS-Base model "
+                "(≈7 GB) and it's not installed yet. Open "
+                "Ajustes → Componentes opcionales → Voice Cloning "
+                "to download it. Original error: " + str(exc)
+            ),
+        ) from exc
+    # x_vector_only_mode=True per v0.1.25: ICL with ref_text was producing
+    # wrong-gender output. Embedding-only is robust across mic/file/URL refs.
+    try:
+        mtime = os.stat(ref_audio).st_mtime_ns
+    except OSError:
+        mtime = 0
+    cache_key = (str(ref_audio), mtime)
+    with _clone_prompt_cache_lock:
+        cached = _clone_prompt_cache.get(cache_key)
+    if cached is not None:
+        return model, cached
+    prompt_item = model.create_voice_clone_prompt(
+        ref_audio=ref_audio, ref_text=None, x_vector_only_mode=True,
+    )[0]
+    with _clone_prompt_cache_lock:
+        _clone_prompt_cache[cache_key] = prompt_item
+    return model, prompt_item
+
+
+def _synthesize_clone_batch(model, prompt_item, texts: list[str], language: str):
+    """Single batched call — replays the precomputed prompt across all
+    chunks. Returns (list_of_wavs, sample_rate). Avoids the per-chunk
+    speaker-embedding recomputation that was bottlenecking v0.1.26."""
+    languages = [language] * len(texts)
+    prompts = [prompt_item] * len(texts)
+    return model.generate_voice_clone(
+        text=texts, language=languages, voice_clone_prompt=prompts,
+    )
+
+
 def _do_synthesize_clone(text: str, language: str, ref_audio: str, ref_text: str | None):
     """Voice cloning runs on the SEPARATE *Base* model variant.
 
@@ -223,8 +327,25 @@ def _do_synthesize_clone(text: str, language: str, ref_audio: str, ref_text: str
                 "to download it. Original error: " + str(exc)
             ),
         ) from exc
+    # v0.1.25: ALWAYS use x_vector_only_mode=True.
+    # ICL mode (with ref_text) was producing wrong-gender / wrong-timbre
+    # output for refs extracted from URLs because:
+    #   - whisper auto-transcription can mis-segment punctuation/diacritics
+    #     (the v0.1.24 mojibake was a red herring — even clean transcripts
+    #     produced bad output);
+    #   - ICL conditions on BOTH the ref speech codes AND the ref text;
+    #     any small mismatch derails the speaker conditioning.
+    # x_vector_only_mode uses ONLY the speaker embedding extracted from
+    # the audio (resampled to 24 kHz internally). In direct testing this
+    # cloned a female reference voice perfectly in 11.2 s on GPU,
+    # whereas ICL produced a male voice with the same ref. The upstream
+    # docs note "slightly lower quality" but for our use case (URL/file/
+    # mic-derived refs of varying cleanliness) the embedding-only path
+    # is far more robust.
     return model.generate_voice_clone(
-        text=text, language=language, ref_audio=ref_audio, ref_text=ref_text,
+        text=text, language=language,
+        ref_audio=ref_audio, ref_text=None,
+        x_vector_only_mode=True,
     )
 
 
@@ -239,33 +360,137 @@ class CloningStatusResponse(BaseModel):
     base_model_installed: bool
     component_id: str = "model-qwen-tts-base"
     repo_id: str = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-    download_size_gb: float = 7.0
+    download_size_gb: float = 3.4
     registered_clones: int = 0
     hint: str = ""
 
 
 @router.get("/cloning/status", response_model=CloningStatusResponse)
 async def cloning_status() -> CloningStatusResponse:
-    base_ready = tts_base_model.is_available()
+    state = tts_base_model.get_install_state()
+    base_ready = state["available"]
     clones_count = len(_load_clone_manifest())
+    bytes_dl = int(state["weight_bytes"])
+    pct = min(100, int(100 * bytes_dl / (3.6 * 1024 * 1024 * 1024)))
     if base_ready:
         hint = "Voice cloning is available."
+    elif state["has_config"] and not state["has_weights"]:
+        hint = (
+            f"Descarga parcial detectada (solo metadatos, faltan pesos). "
+            f"Pulsa 'Reintentar instalación' para reanudar (≈{pct}% completo)."
+        )
     elif clones_count > 0:
         hint = (
             f"Tienes {clones_count} voz/voces clonadas registradas, pero el "
-            "modelo Base de voice cloning (≈7 GB) aún no está instalado. "
-            "Instálalo desde Ajustes → Componentes opcionales para usarlas."
+            "modelo Base de voice cloning (≈3.4 GB) aún no está instalado. "
+            "Pulsa 'Reintentar instalación' para descargarlo."
         )
     else:
         hint = (
-            "Voice cloning requiere el modelo Base de Qwen3-TTS (≈7 GB). "
-            "Instálalo cuando quieras subir y usar voces clonadas."
+            "Voice cloning requiere el modelo Base de Qwen3-TTS (≈3.4 GB). "
+            "Instálalo cuando quieras crear y usar voces clonadas."
         )
     return CloningStatusResponse(
         base_model_installed=base_ready,
         registered_clones=clones_count,
         hint=hint,
+        download_size_gb=3.4,
     )
+
+
+# ─── In-process install (with resume) ──────────────────────────────────
+# huggingface_hub.snapshot_download has native resume: failed mid-flight
+# files restart from zero, but already-completed files are skipped. So
+# repeating this endpoint is the simplest "retry" path. We surface
+# progress via _INSTALL_STATE that the UI polls.
+_INSTALL_STATE = {
+    "running": False,
+    "phase": "idle",
+    "downloaded_bytes": 0,
+    "total_bytes": int(3.4 * 1024 * 1024 * 1024),
+    "error": None,
+    "completed": False,
+}
+
+
+def _install_progress_callback():
+    """Refresh _INSTALL_STATE.downloaded_bytes by re-scanning the cache.
+    huggingface_hub doesn't expose progress hooks for snapshot_download,
+    so we sample the disk state every poll. Counts BOTH committed
+    snapshot weights and the partial blobs/ store so the % moves
+    smoothly during a multi-GB resume.
+    """
+    state = tts_base_model.get_install_state()
+    # Use the LARGER of the two to handle either:
+    #   - resume halfway: weight_bytes=0, in_flight_bytes=2.1 GB
+    #   - already complete: weight_bytes=3.4 GB, in_flight_bytes=3.4 GB
+    _INSTALL_STATE["downloaded_bytes"] = int(
+        max(state["weight_bytes"], state["in_flight_bytes"])
+    )
+
+
+def _do_install_base_blocking() -> None:
+    from huggingface_hub import snapshot_download  # type: ignore
+
+    repo_id = os.environ.get(
+        "XIANXIA_TTS_BASE_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    )
+    _INSTALL_STATE.update(
+        running=True, phase="downloading", error=None, completed=False,
+    )
+    try:
+        log.info("tts.cloning.install: starting snapshot_download for %s", repo_id)
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir_use_symlinks=False,
+            resume_download=True,
+            max_workers=4,
+            etag_timeout=30,
+        )
+        _install_progress_callback()
+        if not tts_base_model.is_available():
+            raise RuntimeError(
+                "snapshot_download finished but is_available() still False. "
+                "Re-running may complete missing files."
+            )
+        _INSTALL_STATE.update(
+            running=False, phase="ready", completed=True,
+        )
+        log.info("tts.cloning.install: snapshot_download OK, model ready")
+    except Exception as exc:
+        log.warning("tts.cloning.install: failed (%s)", exc)
+        _INSTALL_STATE.update(
+            running=False, phase="failed", error=str(exc)[:300],
+        )
+
+
+@router.post("/cloning/install")
+async def cloning_install():
+    """Install Qwen3-TTS-Base from inside the Python sidecar with
+    huggingface_hub's native resume. Idempotent: calling this multiple
+    times resumes a partial download, doesn't restart it.
+    """
+    if _INSTALL_STATE["running"]:
+        return {"status": "already_running", "state": _INSTALL_STATE}
+    if tts_base_model.is_available():
+        _INSTALL_STATE.update(running=False, phase="ready", completed=True)
+        return {"status": "already_installed", "state": _INSTALL_STATE}
+    # Run in a thread so the FastAPI event loop keeps serving /health,
+    # /tts/cloning/install/progress, etc.
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _do_install_base_blocking)
+    return {"status": "started", "state": _INSTALL_STATE}
+
+
+@router.get("/cloning/install/progress")
+async def cloning_install_progress():
+    """Polled by the UI for live progress."""
+    _install_progress_callback()
+    state = dict(_INSTALL_STATE)
+    state["pct"] = min(100, int(
+        100 * state["downloaded_bytes"] / max(1, state["total_bytes"])
+    ))
+    return state
 
 
 @router.post("", response_model=TTSResponse)
@@ -310,26 +535,49 @@ async def synthesize(req: TTSRequest) -> TTSResponse:
     loop = asyncio.get_running_loop()
     log_event("info", "tts_synthesis_start", chunks=len(chunks), total_chars=sum(len(c) for c in chunks), language=lang)
     t_total = _t.time()
-    for idx, chunk in enumerate(chunks):
-        t_chunk = _t.time()
-        if is_clone:
-            wav, sr_returned = await loop.run_in_executor(
-                None, _do_synthesize_clone, chunk, lang, ref_audio, ref_text,
-            )
-        else:
+    if is_clone:
+        # v0.1.27: precompute the speaker prompt ONCE and batch all chunks
+        # in a single generate_voice_clone() call. The previous per-chunk
+        # loop re-extracted the speaker embedding every time, which on
+        # GPU was costing ~10 s of pure overhead per chunk for nothing.
+        t_prompt = _t.time()
+        model, prompt_item = await loop.run_in_executor(
+            None, _build_clone_prompt, ref_audio,
+        )
+        log_event("info", "tts_clone_prompt_built",
+                  duration_ms=int((_t.time() - t_prompt) * 1000))
+        t_gen = _t.time()
+        wavs, sr_returned = await loop.run_in_executor(
+            None, _synthesize_clone_batch, model, prompt_item, chunks, lang,
+        )
+        log_event("info", "tts_clone_batch_done",
+                  chunks=len(chunks),
+                  duration_ms=int((_t.time() - t_gen) * 1000),
+                  ms_per_chunk=int((_t.time() - t_gen) * 1000 / max(1, len(chunks))))
+        audio_segments = list(wavs)
+        sr = sr_returned
+    else:
+        for idx, chunk in enumerate(chunks):
+            t_chunk = _t.time()
             wav, sr_returned = await loop.run_in_executor(
                 None, _do_synthesize_builtin, chunk, lang, spk, instruct,
             )
-        audio_segments.append(wav[0])
-        sr = sr_returned
-        log_event(
-            "info", "tts_chunk_done",
-            index=idx, total=len(chunks),
-            chars=len(chunk),
-            duration_ms=int((_t.time() - t_chunk) * 1000),
-        )
+            audio_segments.append(wav[0])
+            sr = sr_returned
+            log_event(
+                "info", "tts_chunk_done",
+                index=idx, total=len(chunks),
+                chars=len(chunk),
+                duration_ms=int((_t.time() - t_chunk) * 1000),
+            )
     log_event("info", "tts_synthesis_done", total_ms=int((_t.time() - t_total) * 1000), chunks=len(chunks))
     full = np.concatenate(audio_segments) if audio_segments else np.zeros(1)
+    # v0.1.34: loudness-normalize to -14 LUFS (YouTube standard).
+    # Voice clones (Qwen3-TTS-Base) come out 6-10 LUFS quieter than the
+    # built-in CustomVoice speakers, which made cloned narration sound
+    # muffled in the final video. EBU R128 normalization equalizes both
+    # paths so the user hears consistent loudness regardless of speaker.
+    full = _loudnorm_audio(full.astype("float32"), sr, target_lufs=-14.0, peak_db=-1.0)
     out_dir = Path(req.out_dir or os.environ.get("XIANXIA_OUT_DIR", "./out"))
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"tts-{uuid.uuid4().hex[:10]}.wav"

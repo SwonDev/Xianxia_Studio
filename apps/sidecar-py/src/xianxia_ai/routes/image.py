@@ -22,14 +22,20 @@ from ..models import image_model
 
 router = APIRouter()
 
-# Cinematic preset — tuned to Z-Image's training distribution.
-# Avoids SDXL trigger words that visibly degrade output on Lumina2 / DiT models.
-XIANXIA_STYLE = (
+# Cinematic preset — TOPIC-AGNOSTIC. Drops SDXL trigger words ("8k",
+# "masterpiece") that degrade Z-Image (Lumina2 / DiT family) and replaces
+# them with cinematographer vocabulary the model was trained on.
+# v0.1.33: REMOVED culture-specific tokens (jade mountains, silk hanfu,
+# xianxia mood, ink-wash atmosphere, teal-and-orange tones). Those forced
+# every image into a Chinese-mythology look regardless of the user's topic.
+# Now only neutral cinematographic tokens remain.
+CINEMATIC_STYLE = (
     "cinematic anamorphic 2.39:1 framing, volumetric god rays, "
-    "Kodak Portra 400 film grade, teal-and-orange tones, "
-    "jade mountains and silk hanfu in xianxia mood, "
-    "sharp focus on subject, natural skin texture, ink-wash atmosphere"
+    "Kodak Portra 400 film grade, sharp focus on subject, "
+    "natural skin texture"
 )
+# Backwards-compat alias (other modules may import this name).
+XIANXIA_STYLE = CINEMATIC_STYLE
 
 
 class ImageRequest(BaseModel):

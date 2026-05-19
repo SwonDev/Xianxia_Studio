@@ -64,16 +64,13 @@ def cinematic_look_filters(cfg: EffectsConfig | None = None) -> list[str]:
     cfg = cfg or EffectsConfig()
     parts: list[str] = []
     if cfg.color_grade:
+        # v0.1.35: only contrast / saturation / gamma. Removed the teal-
+        # orange colorbalance split that pushed warm shadows + cool
+        # highlights — that grade gave EVERY video the same xianxia look
+        # regardless of topic. Now the color stays faithful to whatever
+        # the diffusion model produced for that scene.
         parts.append(
             f"eq=contrast={cfg.contrast}:saturation={cfg.saturation}:gamma={cfg.gamma}"
-        )
-        # Teal-orange split: warm shadows/highlights on the red channel,
-        # cool tint on the blue channel. Numbers are subtle so the picture
-        # still reads as natural xianxia, not Instagram filter.
-        parts.append(
-            "colorbalance=rs=0.04:gs=-0.01:bs=-0.06:"
-            "rm=0.02:gm=0.0:bm=-0.02:"
-            "rh=-0.04:gh=0.02:bh=0.06"
         )
     if cfg.sharpen:
         # 5x5 luma sharpen + 3x3 chroma — preserves DiT-generated detail

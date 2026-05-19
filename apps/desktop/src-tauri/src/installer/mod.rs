@@ -1,5 +1,6 @@
 pub mod detect;
 pub mod downloader;
+pub mod llamacpp;
 pub mod llm;
 pub mod manifest;
 pub mod ollama;

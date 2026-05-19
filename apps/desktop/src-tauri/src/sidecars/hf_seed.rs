@@ -22,6 +22,16 @@ const KNOWN_REPOS: &[&str] = &[
     "Comfy-Org/z_image_turbo",
     "unsloth/Z-Image-Turbo-GGUF",
     "briaai/RMBG-2.0",
+    // v0.1.44 — required by DepthFlow's 2.5D parallax pipeline.
+    // Without seeding from the user cache, the model has to be
+    // downloaded into `<data_dir>/hf-cache/` on first DepthFlow
+    // invocation; if anti-virus or a process kill interrupts the
+    // download (frequently observed on Windows Defender's heuristic
+    // scan of the depthflow venv subprocess) only `.incomplete`
+    // zero-byte blobs end up in the cache and every subsequent
+    // /depthflow/batch call returns 500 with
+    // "Can't load image processor … preprocessor_config.json".
+    "depth-anything/Depth-Anything-V2-small-hf",
 ];
 
 fn user_hf_hub() -> Option<PathBuf> {

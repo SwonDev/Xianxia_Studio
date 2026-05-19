@@ -28,9 +28,24 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = join(__dirname, 'templates');
+// Assets are co-located with the compiled JS at runtime: tsc emits to dist/
+// and the build script mirrors src/assets → dist/assets, so __dirname/assets
+// works both in `npm run dev` (tsx → src/) and in production (`node dist/…`).
+const ASSETS_DIR = join(__dirname, 'assets');
+const SFX_DIR = join(ASSETS_DIR, 'sfx');
 
 export type AtmosphericFx = 'none' | 'mist' | 'embers' | 'snow' | 'dust_motes' | 'clouds';
 export type Transition = 'cross' | 'flash' | 'whip' | 'inkwash';
+export type SfxKind = 'whoosh' | 'impact' | 'shimmer' | 'rumble';
+
+export interface SfxOverlay {
+  /** Which bundled SFX to play. */
+  kind: SfxKind;
+  /** Start time, in seconds, measured from the beginning of the final video. */
+  start: number;
+  /** Linear gain 0..1. Defaults to 0.7. */
+  volume?: number;
+}
 
 export interface ImageBeat {
   /** Single base image (used as background and as fallback when no depth layers exist). */
@@ -39,6 +54,14 @@ export interface ImageBeat {
   foreground_path?: string;
   /** Optional mid-distance layer (transparent PNG). */
   mid_path?: string;
+  /**
+   * Optional pre-rendered DepthFlow parallax MP4 for this beat. When set,
+   * the renderer plays this short video as the visual content of the
+   * beat instead of doing Ken Burns on the still image. DepthFlow uses a
+   * per-pixel depth map (Depth-Anything-V2) + a GLSL shader to produce
+   * artefact-free 2.5D parallax — much cleaner than rembg fg/bg split.
+   */
+  clip_path?: string;
   start: number;
   duration: number;
   /** Atmospheric particle overlay played during this beat. */
@@ -47,6 +70,13 @@ export interface ImageBeat {
   transition?: Transition;
   /** Add subtle directional light rays. */
   light_rays?: boolean;
+  /**
+   * Optional chapter-divider title. When set, the beat is treated as a chapter
+   * boundary: the visual layer (rendered in the HF template by another agent)
+   * will draw a divider card, and the audio layer (here in render.ts) will
+   * auto-inject whoosh+impact SFX at the beat's start time.
+   */
+  chapter_title?: string;
 }
 
 export interface NarrativeRequest {
@@ -62,6 +92,15 @@ export interface NarrativeRequest {
   cinematic?: CinematicProfile;
   music_volume?: number;
   music_ducking?: boolean;
+  /**
+   * Optional explicit SFX cue list. If omitted (or empty), `renderNarrative`
+   * auto-generates a sensible default schedule based on the beats:
+   *  - whoosh @ ~5 s (intro logo sting)
+   *  - impact @ ~8 s (title card appearance)
+   *  - whoosh + impact at every beat with `chapter_title`
+   *  - rumble bed during the last 30 s (outro)
+   */
+  sfx?: SfxOverlay[];
 }
 
 export interface RenderResult {
@@ -77,6 +116,22 @@ export async function renderNarrative(req: NarrativeRequest): Promise<RenderResu
   const profile: CinematicProfile = req.cinematic ?? 'full';
 
   const tmpl = await readFile(join(TEMPLATES_DIR, 'narrative.html'), 'utf8');
+  // v0.1.38: tail of pure music + fade-to-black after narration ends.
+  const MUSIC_TAIL_SEC = 5.0;
+  // v0.1.38 (refactor): true intro segment at the start. The first
+  // INTRO_SEC seconds show only the animated title card (over black);
+  // the narrator does NOT speak during this window — the audio post-
+  // processor prepends INTRO_SEC of silence to the narration so the
+  // first sentence lands exactly when the intro fades out. Music plays
+  // from t=0 as underscore. Beats are shifted by INTRO_SEC.
+  const INTRO_SEC = 6.0;
+  for (const b of req.images) {
+    b.start = (b.start ?? 0) + INTRO_SEC;
+  }
+  const beatsLastIndex = req.images.length - 1;
+  if (beatsLastIndex >= 0) {
+    req.images[beatsLastIndex].duration = (req.images[beatsLastIndex].duration ?? 0) + MUSIC_TAIL_SEC;
+  }
   const duration = req.images.reduce((s, b) => Math.max(s, b.start + b.duration), 0);
 
   const baseSilent = req.out_path.replace(/\.mp4$/i, '.base.mp4');
@@ -92,17 +147,29 @@ export async function renderNarrative(req: NarrativeRequest): Promise<RenderResu
   const stagedNarration = await stage.copy(req.narration_path, 'narration');
   const stagedMusic = req.music_path ? await stage.copy(req.music_path, 'music') : '';
 
+  // v0.1.38 (regression fix): parallax 2.5D was producing broken
+  // geometry whenever the foreground subject occupied a large fraction
+  // of the frame — rembg's inpaint had to "guess" what was behind a
+  // big shape (e.g. a pharaoh statue covering a pyramid peak) and the
+  // hallucinated fill was visible as torn / smeared backgrounds even
+  // with heavy bg blur. Until we have a depth-gradient model (MiDaS /
+  // Depth-Anything) we drop the layered render and serve every beat
+  // as a single full-frame image with Ken Burns. KenBurns + cinematic
+  // grade + transitions + tail-fade is enough on its own.
   const stagedBeats: ImageBeat[] = [];
   for (let i = 0; i < req.images.length; i++) {
     const b = req.images[i];
     stagedBeats.push({
       ...b,
       path: await stage.copy(b.path, `bg-${i}`),
-      foreground_path: b.foreground_path
-        ? await stage.copy(b.foreground_path, `fg-${i}`)
-        : undefined,
-      mid_path: b.mid_path
-        ? await stage.copy(b.mid_path, `mid-${i}`)
+      // Foreground / mid layers intentionally dropped — see comment above.
+      foreground_path: undefined,
+      mid_path: undefined,
+      // v0.1.38: stage the DepthFlow parallax clip too. When present the
+      // renderer prefers it over the still image (single layer + KenBurns)
+      // because DepthFlow already bakes the camera move + 2.5D parallax.
+      clip_path: b.clip_path
+        ? await stage.copy(b.clip_path, `clip-${i}`)
         : undefined,
     });
   }
@@ -123,8 +190,14 @@ export async function renderNarrative(req: NarrativeRequest): Promise<RenderResu
       src="${stagedMusic}"
     ></audio>`
     : '';
+  // v0.1.38: intro eyebrow — small tracked-caps line above the title.
+  // Defaults to "DOCUMENTAL" so it's never a watermark of the app's
+  // own brand; callers can pass `intro_eyebrow` on the request to use
+  // the topic's setting tag (e.g. "ANTIGUO EGIPTO · HISTORIA REAL").
+  const introEyebrow = ((req as { intro_eyebrow?: string }).intro_eyebrow || 'DOCUMENTAL').trim();
   const html = tmpl
     .replace(/__TITLE__/g, escapeHtml(req.title))
+    .replace(/__INTRO_EYEBROW__/g, escapeHtml(introEyebrow))
     .replace(/__WIDTH__/g, String(width))
     .replace(/__HEIGHT__/g, String(height))
     .replace(/__DURATION__/g, String(duration))
@@ -141,6 +214,15 @@ export async function renderNarrative(req: NarrativeRequest): Promise<RenderResu
   logger.info({ projectDir, base: baseSilent }, 'rendering narrative (HyperFrames 0.4)');
   await runHyperFrames(projectDir, baseSilent, fps);
 
+  // ── Auto-map default SFX cues if the caller didn't pass any ─────────
+  // The auto-schedule layers cinematic accents over the standard intro/
+  // outro beats; chapter dividers are detected via `chapter_title`.
+  // If the caller passed any sfx[] (even empty) we honour it verbatim so
+  // tests can opt-out by sending `[]`.
+  const sfxOverlays: SfxOverlay[] = Array.isArray(req.sfx)
+    ? req.sfx.slice()
+    : autoMapSfx(req.images, duration);
+
   // ── FFmpeg cinematic post-pass + audio mix ──────────────────────────
   await postProcessCinematic({
     baseSilent,
@@ -150,6 +232,7 @@ export async function renderNarrative(req: NarrativeRequest): Promise<RenderResu
     musicVolume: req.music_volume ?? 0.32,
     musicDucking: req.music_ducking ?? true,
     profile,
+    sfxOverlays,
   });
 
   try { await unlink(baseSilent); } catch { /* ignore */ }
@@ -168,35 +251,67 @@ function buildBeatNode(b: ImageBeat, idx: number): string {
     `data-start="${b.start}" data-duration="${b.duration}"` +
     (b.transition ? ` data-trans="${b.transition}"` : '');
 
-  // Layered render when depth-segmented assets exist; otherwise single image.
-  // Paths arrive here already staged into the project's assets/ directory
-  // (renderNarrative stages everything before constructing the HTML), so
-  // we use them as plain relative URLs — no file:// scheme, no absolute
-  // paths, which is what Chromium's file:// sandbox accepts.
-  const layers = b.foreground_path || b.mid_path
-    ? `
+  // Layered render priority:
+  //   1. DepthFlow parallax clip (clip_path) — preferred. The MP4 already
+  //      contains the camera move + 2.5D parallax baked in by DepthFlow,
+  //      so the renderer just plays it. We mute it (audio comes from the
+  //      narration / music tracks) and have it loop in case its duration
+  //      doesn't match the beat (DepthFlow generates exact-length clips
+  //      per beat by default, so loop is a safety net).
+  //   2. Layered render bg+fg+mid (rembg) — legacy path; currently
+  //      disabled upstream because of inpaint artefacts.
+  //   3. Single still image — fallback for when no clip exists.
+  let layers: string;
+  if (b.clip_path) {
+    layers = `<video class="single dfclip" data-track-index="${idx + 2}" data-start="${b.start}" data-duration="${b.duration}" src="${b.clip_path}" muted preload="auto" loop></video>`;
+  } else if (b.foreground_path || b.mid_path) {
+    layers = `
       <div class="layer bg" style="background-image: url('${b.path}');"></div>
       ${b.mid_path ? `<div class="layer mid" style="background-image: url('${b.mid_path}');"></div>` : ''}
       ${b.foreground_path ? `<div class="layer fg" style="background-image: url('${b.foreground_path}');"></div>` : ''}
-    `
-    : `<img class="single" src="${b.path}" alt="" />`;
+    `;
+  } else {
+    layers = `<img class="single" src="${b.path}" alt="" />`;
+  }
 
   const atmosCanvas = (b.fx && b.fx !== 'none')
     ? `<div class="atmos" id="atmos-${idx}"><canvas></canvas></div>`
     : '';
   const rays = b.light_rays ? `<div class="rays"></div>` : '';
+  // v0.1.38 — chapter divider card (F3). When the beat carries a
+  // chapter_title, we render a slate over the first ~1.0 s of the beat
+  // (animated by GSAP in narrative.html) so the viewer gets a visible
+  // section break — matches the documentary-essay storytelling rhythm.
+  const chapterCard = b.chapter_title
+    ? `<div class="chapter-card" id="chapter-${idx}">
+         <div class="rule"></div>
+         <div class="title">${escapeHtml(b.chapter_title)}</div>
+         <div class="rule bottom"></div>
+       </div>`
+    : '';
 
   return `
     <div ${dataAttrs}>
       ${layers}
       ${atmosCanvas}
       ${rays}
+      ${chapterCard}
     </div>`;
 }
 
 export async function renderThumbnail(req: {
+  /** Primary headline (rendered uppercase, big, with gold accent on the
+   *  first word). The caller usually passes the video's `title_en`. */
   title_en: string;
+  /** Optional second-language title; passed through for backward compat
+   *  but no longer rendered separately — the new template shows ONE
+   *  punchy uppercase title for maximum click-through. */
   title_zh?: string;
+  /** Optional small uppercased subtitle line at the bottom (channel name,
+   *  episode tag, etc.). Falls back to topic if not provided. */
+  subtitle?: string;
+  /** Optional small red badge top-left ("EPIC", "REAL STORY", "1990s"). */
+  badge?: string;
   background_path: string;
   out_path: string;
 }): Promise<{ out_path: string }> {
@@ -208,15 +323,43 @@ export async function renderThumbnail(req: {
   const stage = makeAssetStager(assetsDir);
   const stagedBg = await stage.copy(req.background_path, 'bg');
 
+  // v0.1.37: viral template uses a single punchy title + small subtitle +
+  // optional badge. We map the legacy title_en / title_zh fields into the
+  // new placeholders so old callers still work without changes.
+  const headline = (req.title_en || req.title_zh || '').trim();
+  const subtitle = (req.subtitle || '').trim();
+  const badge = (req.badge || '').trim();
+  // v0.1.42: global regex replace — each placeholder appears twice in
+  // thumbnail.html (once in the documenting CSS comment, once in the
+  // real HTML). The previous string-form `.replace()` only hit the
+  // first occurrence (the comment) and left the rendered HTML with
+  // literal `__TITLE__` / `__BADGE__` / `__SUBTITLE__` on screen.
   const html = tmpl
-    .replace('__TITLE_EN__', escapeHtml(req.title_en))
-    .replace('__TITLE_ZH__', escapeHtml(req.title_zh ?? ''))
-    .replace('__BG__', stagedBg);
+    .replace(/__TITLE__/g, escapeHtml(headline))
+    .replace(/__SUBTITLE__/g, escapeHtml(subtitle))
+    .replace(/__BADGE__/g, escapeHtml(badge))
+    .replace(/__BG__/g, stagedBg);
   await scaffoldProject(projectDir, html, {
     id: `${dirname(req.out_path).split(/[\\/]/).pop()}-thumb`,
-    name: 'Xianxia thumbnail',
+    name: 'thumbnail',
   });
-  await runHyperFrames(projectDir, req.out_path, 24, /* still */ true);
+  // HyperFrames CLI's --still flag is broken when out_path is a JPG: ffmpeg's
+  // image2 muxer rejects "thumbnail.jpg" without -update 1 / -frames:v 1 and
+  // the render fails at the Faststart stage. Render to a 1-frame MP4 first
+  // (HF handles MP4 fine) and extract the JPG with a direct ffmpeg call.
+  const tmpMp4 = req.out_path.replace(/\.\w+$/, '.tmp.mp4');
+  await runHyperFrames(projectDir, tmpMp4, 24, /* still */ true);
+  try {
+    await execa('ffmpeg', [
+      '-y',
+      '-i', tmpMp4,
+      '-frames:v', '1',
+      '-q:v', '2',
+      req.out_path,
+    ], { preferLocal: true });
+  } finally {
+    try { await unlink(tmpMp4); } catch { /* ignore */ }
+  }
   try { await rm(projectDir, { recursive: true, force: true }); } catch { /* ignore */ }
   return { out_path: req.out_path };
 }
@@ -246,37 +389,108 @@ export async function renderShort(req: {
   out_path: string;
 }): Promise<RenderResult> {
   const tmpl = await readFile(join(TEMPLATES_DIR, 'short.html'), 'utf8');
-  // Use the actual clip duration. The old v1 baked in 30 s which clipped
-  // longer Shorts and stretched shorter ones — both wrong now that we
-  // honour the producer's chosen viral-moment length.
-  const duration = req.duration > 0 ? req.duration : 30;
+  // v0.1.22: composition duration = clip duration + 1.2 s tail.
+  // The tail is intentional: the CTA card needs ~1.5 s on screen
+  // for the viewer to read "GRACIAS / Suscríbete" without the video
+  // ending mid-sentence. The video element runs to its natural end
+  // (data-duration = clipDuration), then the last frame freezes for
+  // the remaining tail while the CTA card is fully visible.
+  const clipDuration = req.duration > 0 ? req.duration : 30;
+  const duration = clipDuration + 1.2;
   const projectDir = req.out_path.replace(/\.\w+$/, '-short-proj');
   const assetsDir = join(projectDir, 'assets');
   await mkdir(assetsDir, { recursive: true });
 
+  // v0.1.22 A0: validate the input clip BEFORE staging. If the clip
+  // path is missing or unreadable we used to silently emit `<video
+  // src="">` and let HyperFrames fail 45 s later with the cryptic
+  // "video first frame not decoded after 45000ms" error — wasting a
+  // full render budget per short. Fail loud here instead so the
+  // sidecar's HTTP 500 carries the actionable cause.
+  if (!req.clip_path) {
+    throw new Error('renderShort: clip_path is empty');
+  }
+  if (!existsSync(req.clip_path)) {
+    throw new Error(`renderShort: clip_path does not exist: ${req.clip_path}`);
+  }
+
   const stage = makeAssetStager(assetsDir);
   const stagedClip = await stage.copy(req.clip_path, 'clip');
+  if (!stagedClip) {
+    throw new Error(`renderShort: stage.copy returned empty for ${req.clip_path}`);
+  }
 
-  // ── Build the per-word DOM and matching JSON timing array ──────────
-  // The DOM order MUST match the WORDS array order — the timeline
-  // looks them up by querySelectorAll index. Each word renders TWO
-  // stacked spans (white base + yellow active) so the highlight
-  // animation can stay opacity-only (HyperFrames doesn't officially
-  // support animating `color` via GSAP).
-  const words = (req.words ?? []).filter((w) => w && w.e > w.s && w.w.trim().length > 0);
-  const captionsHtml = words
-    .map((w) => {
-      const safe = escapeHtml(w.w.trim());
-      return (
-        `<span class="word">` +
-        `<span class="w-base">${safe}</span>` +
-        `<span class="w-active">${safe}</span>` +
-        `</span>`
-      );
+  // ── Build OpusClip Mozi-style caption GROUPS ──────────────────────
+  // OpusClip Mozi shows 2-3 words on screen at a time with the active
+  // word highlighted in yellow and rolled through the group; when the
+  // group ends, the next group replaces it with a quick crossfade.
+  // This reads MUCH better than 1-word-at-a-time hard-kill (the
+  // previous v0.1.22 attempt) because:
+  //   - Words don't disappear during silence pauses between sentences
+  //   - The reader's eye sees context (previous + next word in chunk)
+  //   - Caption density matches the audio cadence naturally
+  // Group rules: max 3 words OR 22 chars OR 0.6 s pause between words.
+  const words = (req.words ?? []).filter(
+    (w) => w && w.e > w.s && w.w.trim().length > 0,
+  );
+  type Group = { words: typeof words; start: number; end: number };
+  const groups: Group[] = [];
+  {
+    let cur: typeof words = [];
+    let curChars = 0;
+    for (const w of words) {
+      const wlen = w.w.trim().length;
+      const tooManyWords = cur.length >= 3;
+      const tooManyChars = cur.length > 0 && curChars + 1 + wlen > 22;
+      const longGap =
+        cur.length > 0 && w.s - cur[cur.length - 1].e > 0.6;
+      if (tooManyWords || tooManyChars || longGap) {
+        if (cur.length > 0) {
+          groups.push({
+            words: cur,
+            start: cur[0].s,
+            end: cur[cur.length - 1].e,
+          });
+          cur = [];
+          curChars = 0;
+        }
+      }
+      cur.push(w);
+      curChars += (cur.length === 1 ? 0 : 1) + wlen;
+    }
+    if (cur.length > 0) {
+      groups.push({
+        words: cur,
+        start: cur[0].s,
+        end: cur[cur.length - 1].e,
+      });
+    }
+  }
+  const captionsHtml = groups
+    .map((g, gi) => {
+      const inner = g.words
+        .map((w, wi) => {
+          const safe = escapeHtml(w.w.trim().toUpperCase());
+          return (
+            `<span class="word" data-wi="${wi}">` +
+            `<span class="w-base">${safe}</span>` +
+            `<span class="w-active">${safe}</span>` +
+            `</span>`
+          );
+        })
+        .join(' ');
+      return `<div class="cap-group" data-gi="${gi}">${inner}</div>`;
     })
     .join('\n');
+  // Pass timing data per group + per word inside each group, so the
+  // template JS can build a clean GSAP timeline without re-parsing
+  // word boundaries.
   const wordsJson = JSON.stringify(
-    words.map((w) => ({ s: round3(w.s), e: round3(w.e) })),
+    groups.map((g) => ({
+      s: round3(g.start),
+      e: round3(g.end),
+      words: g.words.map((w) => ({ s: round3(w.s), e: round3(w.e) })),
+    })),
   );
 
   const ctaTitle = (req.cta_title ?? 'SUSCRÍBETE').slice(0, 40);
@@ -289,6 +503,9 @@ export async function renderShort(req: {
     .replace('__WORDS_JSON__', wordsJson)
     .replace('__CTA_TITLE__', escapeHtml(ctaTitle))
     .replace('__CTA_SUB__', escapeHtml(ctaSub))
+    // __CLIP_DURATION__ FIRST so subsequent __DURATION__ replacement
+    // doesn't accidentally match the substring.
+    .replace(/__CLIP_DURATION__/g, String(clipDuration))
     .replace(/__DURATION__/g, String(duration));
 
   await scaffoldProject(projectDir, html, {
@@ -309,10 +526,16 @@ export async function renderShort(req: {
     'rendering short v2 (HyperFrames + animated captions)',
   );
   await runHyperFrames(projectDir, req.out_path, 30);
-  try {
-    await rm(projectDir, { recursive: true, force: true });
-  } catch {
-    /* ignore */
+  // v0.1.22 A0 debug: preserve projectDir if env var XIANXIA_KEEP_SHORT_PROJ=1
+  // so we can inspect the generated HTML and verify GSAP/HyperFrames behaviour.
+  if (!process.env.XIANXIA_KEEP_SHORT_PROJ) {
+    try {
+      await rm(projectDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  } else {
+    logger.info({ projectDir }, 'short projectDir KEPT for debug (XIANXIA_KEEP_SHORT_PROJ)');
   }
   return {
     out_path: req.out_path,
@@ -337,14 +560,20 @@ function makeAssetStager(assetsDir: string) {
   let counter = 0;
   return {
     async copy(srcPath: string, label: string): Promise<string> {
-      if (!srcPath) return '';
+      if (!srcPath) {
+        // v0.1.22 A0: empty string fallback was the silent bug that
+        // produced `<video src="">` and made HyperFrames fail 45 s
+        // later with a cryptic "first frame not decoded" error.
+        // Throwing here forces the caller (renderShort / renderNarrative)
+        // to handle a missing-asset case explicitly.
+        throw new Error(`stage.copy: srcPath empty for label=${label}`);
+      }
       const cleaned = srcPath.replace(/^file:\/+/i, '').replace(/^\/+/, '');
       const local = process.platform === 'win32' && /^[a-zA-Z]:/.test(cleaned)
         ? cleaned
         : srcPath;
       if (!existsSync(local)) {
-        logger.warn({ srcPath, local }, 'asset to stage does not exist; leaving empty');
-        return '';
+        throw new Error(`stage.copy: asset does not exist (label=${label}, path=${local})`);
       }
       const ext = extname(local) || '';
       const safeLabel = label.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -422,6 +651,69 @@ async function runHyperFrames(
   }
 }
 
+/**
+ * Build the default cinematic SFX schedule for a narrative video.
+ *
+ * Heuristics:
+ *  - whoosh @ 5 s   — logo sting / intro swell
+ *  - impact @ 8 s   — title card appearance
+ *  - whoosh @ chapterStart, impact @ chapterStart + 0.6 s — chapter dividers
+ *  - rumble @ duration - 30 s (or earlier if the video is short) — outro bed
+ *
+ * The caller can always override the whole schedule by passing `sfx` on the
+ * NarrativeRequest. If the video is shorter than the default cue points the
+ * cue is dropped (we never schedule SFX past the video end).
+ */
+function autoMapSfx(beats: ImageBeat[], totalDuration: number): SfxOverlay[] {
+  const out: SfxOverlay[] = [];
+
+  // v0.1.38 (refactor 2): MUCH softer intro accents. The previous volumes
+  // (whoosh 0.55 / impact 0.7) sounded harsh on top of the music swell —
+  // the user described it as "un sonido raro y fuerte horrible". Drop
+  // the intro impact entirely and keep only a SUBTLE whoosh that whispers
+  // under the rule animation. The closing whoosh at 5.3 s is also quiet
+  // so the transition into beat 0 feels natural, not punctuated.
+  if (totalDuration > 6) {
+    out.push({ kind: 'whoosh', start: 0.5, volume: 0.18 });
+    out.push({ kind: 'whoosh', start: 5.3, volume: 0.18 });
+  }
+
+  // Chapter dividers — every beat marked with `chapter_title` gets a
+  // whoosh+impact pair anchored at its start. Beat timestamps already
+  // include the +6 s intro offset so we just skip anything that would
+  // collide with the intro window or fall past the video end.
+  for (const b of beats) {
+    if (!b.chapter_title) continue;
+    if (b.start < 8) continue;
+    if (b.start + 0.6 >= totalDuration) continue;
+    out.push({ kind: 'whoosh', start: b.start, volume: 0.6 });
+    out.push({ kind: 'impact', start: b.start + 0.6, volume: 0.6 });
+  }
+
+  // Outro rumble bed — last ~30 s if the video is long enough, else last
+  // 1/4 of the runtime. Volume is intentionally low (it's a bed, not a hit).
+  if (totalDuration > 12) {
+    const outroStart = totalDuration > 60
+      ? Math.max(0, totalDuration - 30)
+      : Math.max(0, totalDuration * 0.75);
+    out.push({ kind: 'rumble', start: outroStart, volume: 0.35 });
+  }
+
+  return out;
+}
+
+/**
+ * Resolve a SfxOverlay.kind to its absolute WAV path. Throws if the file
+ * is missing — that's a packaging error (build step didn't copy assets/).
+ */
+function sfxPath(kind: SfxKind): string {
+  const file = join(SFX_DIR, `${kind}.wav`);
+  if (!existsSync(file)) {
+    throw new Error(`sfxPath: bundled SFX not found at ${file}. Did the build step copy src/assets to dist/assets?`);
+  }
+  return file;
+}
+
 async function postProcessCinematic(opts: {
   baseSilent: string;
   out: string;
@@ -430,8 +722,10 @@ async function postProcessCinematic(opts: {
   musicVolume: number;
   musicDucking: boolean;
   profile: CinematicProfile;
+  sfxOverlays?: SfxOverlay[];
 }): Promise<void> {
   const { baseSilent, out, narrationPath, musicPath, musicVolume, musicDucking, profile } = opts;
+  const sfxOverlays = opts.sfxOverlays ?? [];
   const cfg = effectsConfig(profile);
   const cineFilters = cinematicLookFilters(cfg);
   const vf = cineFilters.length > 0 ? cineFilters.join(',') : 'null';
@@ -466,26 +760,118 @@ async function postProcessCinematic(opts: {
   //    Inputs: 0=baseSilent (video+silent_audio), 1=narration. If music
   //    is present it goes in as input 2.
   const inputs = ['-i', baseSilent, '-i', narrationPath];
-  const videoChain = `[0:v]${vf}[v]`;
+  // v0.1.38: rounded ending with music tail.
+  // The HF composition is now extended by MUSIC_TAIL_SEC (5 s) past the
+  // narration end — see renderNarrative. During that tail the last image
+  // holds and the music plays alone. We fade BOTH video and audio over
+  // those final seconds so the clip closes with a credits-style fade-to-
+  // black + slow audio tail-out, not an abrupt cut.
+  const MUSIC_TAIL_SEC = 5.0;
+  const INTRO_SEC = 6.0;
+  const fadeDurationSec = 4.0;        // fade lasts most of the tail
+  const fadeStartOffset = 1.0;        // …starting 1 s into the tail (gives the music a beat to breathe before fading)
+  const probedNarration = await ffprobeDurations(narrationPath).catch(() => ({ video: null, container: null }));
+  const narrationDuration = probedNarration.container ?? probedNarration.video ?? 0;
+  // v0.1.38 (refactor): the timeline is now INTRO_SEC + narrationDuration
+  // + MUSIC_TAIL_SEC. Fade-out starts 1 s into the tail (i.e. 1 s after
+  // the narrator finishes) and lasts 4 s, finishing exactly at the end
+  // of the composition.
+  const fadeStart = INTRO_SEC + narrationDuration + fadeStartOffset;
+  const videoChain = narrationDuration > 0
+    ? `[0:v]${vf},fade=t=out:st=${fadeStart.toFixed(2)}:d=${fadeDurationSec}[v]`
+    : `[0:v]${vf}[v]`;
   let audioChain: string;
   let audioOut = '[a]';
+  void MUSIC_TAIL_SEC;
 
+  // v0.1.38: pad narration with 5 s of silence so the audio mix lasts
+  // through the music-only tail. Without this, `amix duration=first`
+  // would cut all audio at narration end and the tail would play with
+  // no music. We splice the apad in front of every audio chain so all
+  // three branches (ducking / music-only / no-music) pick up the
+  // padded stream as their narration source.
+  // v0.1.38 (refactor): prepend INTRO_SEC of silence + append 5 s tail.
+  // adelay=N adds N ms of silence at the START so the narrator's first
+  // sentence aligns with the intro card's fade-out (renderNarrative
+  // pushes beats by INTRO_SEC = 6 s; same offset goes here). apad=5s
+  // appends silence at the END so the music tail keeps playing with
+  // amix duration=longest.
+  const INTRO_SILENCE_MS = 6000;
+  const narrationPad =
+    `[1:a]adelay=${INTRO_SILENCE_MS}|${INTRO_SILENCE_MS},apad=pad_dur=5[npad]`;
   if (musicPath && musicDucking) {
     inputs.push('-i', musicPath);
-    audioChain = musicDuckingFilterComplex({
-      narrationIdx: 1,
-      musicIdx: 2,
-      musicVolume,
-      outLabel: 'a',
-    });
+    // The ducking filter expects narrationIdx:a, but we want it to read
+    // the padded version. We rebuild the ducking graph inline using
+    // [npad] as the narration source.
+    audioChain =
+      `${narrationPad};` +
+      `[2:a]volume=${musicVolume}[m1];` +
+      `[npad]asplit=2[n1][n2];` +
+      `[m1][n1]sidechaincompress=threshold=0.04:ratio=10:attack=20:release=350:makeup=1.0[duck];` +
+      `[duck][n2]amix=inputs=2:duration=longest:dropout_transition=0[a]`;
   } else if (musicPath) {
     inputs.push('-i', musicPath);
-    audioChain = `[2:a]volume=${musicVolume}[m];[1:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]`;
+    audioChain = `${narrationPad};[2:a]volume=${musicVolume}[m];[npad][m]amix=inputs=2:duration=longest:dropout_transition=0[a]`;
   } else {
-    audioChain = `[1:a]anull[a]`;
+    audioChain = `${narrationPad};[npad]anull[a]`;
+  }
+  // Silence the unused musicDuckingFilterComplex import to keep
+  // compilers happy when the helper is no longer the live path.
+  void musicDuckingFilterComplex;
+
+  // ── SFX overlay layer ──────────────────────────────────────────────
+  // Each SfxOverlay is loaded as an extra `-i sfx.wav` input AFTER the
+  // narration/music inputs already in `inputs`. We then build a small
+  // sub-graph that delays each SFX by `start*1000 ms` (adelay needs ms
+  // per channel; our WAVs are stereo so we use `delay|delay`) and amixes
+  // it onto the post-duck `[a]` stream into a new label `[apostsfx]`.
+  // We DO NOT touch the narration ducking chain — SFX are a layer on
+  // top, mixed at their own per-cue volume.
+  //
+  // The first SFX gets ffmpeg input index `firstSfxIdx`, where:
+  //   firstSfxIdx = 2 (no music) | 3 (music or music+ducking)
+  // matching the order in `inputs[]`.
+  const firstSfxIdx = musicPath ? 3 : 2;
+  const validSfx = sfxOverlays.filter(
+    (s) => s && Number.isFinite(s.start) && s.start >= 0,
+  );
+  let sfxSubGraph = '';
+  let postSfxLabel = audioOut;        // [a]
+  if (validSfx.length > 0) {
+    for (const s of validSfx) {
+      inputs.push('-i', sfxPath(s.kind));
+    }
+    const sfxLabels: string[] = [];
+    validSfx.forEach((s, i) => {
+      const idx = firstSfxIdx + i;
+      const delayMs = Math.max(0, Math.round(s.start * 1000));
+      const vol = s.volume ?? 0.7;
+      const lbl = `s${i}`;
+      sfxLabels.push(`[${lbl}]`);
+      // adelay needs one delay per channel (stereo → "ms|ms").
+      sfxSubGraph +=
+        `;[${idx}:a]volume=${vol.toFixed(3)},` +
+        `adelay=${delayMs}|${delayMs}[${lbl}]`;
+    });
+    // amix together the existing mix + every delayed SFX. duration=longest
+    // matches the existing narration+music chain semantics (the apad on the
+    // narration already extends through the music tail).
+    const totalInputs = 1 + sfxLabels.length;
+    sfxSubGraph += `;${audioOut}${sfxLabels.join('')}` +
+      `amix=inputs=${totalInputs}:duration=longest:dropout_transition=0:normalize=0[apostsfx]`;
+    postSfxLabel = '[apostsfx]';
   }
 
-  const filterComplex = [`${videoChain};${audioChain}`].join('');
+  // ── Final fade-out (video + audio together, over the music tail) ───
+  // Applied AFTER SFX so that any SFX cue near the end fades out with
+  // the rest of the audio rather than sticking out over a black frame.
+  const audioFadeSuffix = narrationDuration > 0
+    ? `;${postSfxLabel}afade=t=out:st=${fadeStart.toFixed(2)}:d=${fadeDurationSec}[afaded]`
+    : `;${postSfxLabel}anull[afaded]`;
+  audioOut = '[afaded]';
+
+  const filterComplex = [`${videoChain};${audioChain}${sfxSubGraph}${audioFadeSuffix}`].join('');
 
   const cmd = [
     '-y',
@@ -507,7 +893,10 @@ async function postProcessCinematic(opts: {
     out,
   ];
 
-  logger.info({ encoder, profile, filterComplex }, 'ffmpeg cinematic post-pass');
+  logger.info(
+    { encoder, profile, sfxCount: validSfx.length, filterComplex },
+    'ffmpeg cinematic post-pass',
+  );
   // preferLocal: true lets execa find `ffmpeg` from sidecar-node/node_modules/
   // .bin/ when the system PATH inherited from Tauri does not include it
   // (Windows users running ffmpeg via WinGet hit this case). Without this

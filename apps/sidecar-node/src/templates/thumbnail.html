@@ -5,42 +5,83 @@
     <meta name="viewport" content="width=1280, height=720" />
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
     <style>
+      /*
+        v0.1.38 — Viral, topic-agnostic thumbnail (restored).
+        Anchor: dark moody background with a rim-lit subject, big bold
+        uppercase title with a gold accent on the first word, small red
+        badge top-left, and a tracked-caps subtitle line below the title.
+        No channel watermark / no xian seal — keeps the thumbnail from
+        looking like a stamp on every video.
+
+        Render.ts replaces these placeholders:
+          __BG__       : background image URL (already staged)
+          __TITLE__    : main headline (rendered uppercase, big serif)
+          __SUBTITLE__ : optional small line under the gold rule
+          __BADGE__    : optional red top-left tag (e.g. "ANCIENT")
+      */
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body {
         width: 1280px;
         height: 720px;
-        background: #0a0a0f;
+        background: #060608;
         overflow: hidden;
+        font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
       }
       .bg { position: absolute; inset: 0; }
-      .bg img { width: 100%; height: 100%; object-fit: cover; filter: brightness(0.85); }
-      .overlay {
+      .bg img {
+        width: 100%; height: 100%; object-fit: cover;
+        filter: saturate(1.18) contrast(1.10) brightness(0.94);
+      }
+      /* Vignette + bottom dark gradient so the headline sits on a
+         readable area regardless of what the AI image looks like. */
+      .vignette {
         position: absolute; inset: 0;
-        background: linear-gradient(180deg, transparent 30%, rgba(10,10,15,0.85) 100%);
+        background:
+          radial-gradient(ellipse at center, transparent 30%, rgba(0,0,0,0.55) 100%),
+          linear-gradient(180deg, rgba(0,0,0,0.0) 50%, rgba(0,0,0,0.92) 100%);
       }
-      .title-en {
-        position: absolute; left: 60px; bottom: 130px; right: 60px;
-        font-family: 'EB Garamond', Georgia, serif;
-        font-size: 96px; font-weight: 700; line-height: 1.05;
-        color: #e8c96d;
-        text-shadow: 0 8px 32px rgba(0,0,0,0.85), 0 0 24px rgba(201,168,76,0.4);
-        letter-spacing: -0.02em;
+      .title {
+        position: absolute;
+        left: 56px; right: 56px; bottom: 90px;
+        font-weight: 900;
+        font-size: 104px;
+        line-height: 0.96;
+        letter-spacing: -0.025em;
+        color: #ffffff;
+        text-transform: uppercase;
+        text-shadow:
+          0 6px 24px rgba(0,0,0,0.95),
+          0 2px 6px rgba(0,0,0,1);
+        -webkit-text-stroke: 1px rgba(0,0,0,0.55);
       }
-      .title-zh {
-        position: absolute; left: 60px; bottom: 60px; right: 60px;
-        font-family: 'Noto Serif SC', serif;
-        font-size: 56px; font-weight: 700;
-        color: #52b788;
-        text-shadow: 0 4px 16px rgba(0,0,0,0.85);
+      .title .accent {
+        background: linear-gradient(180deg, #ffd44a 0%, #ffae0e 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        filter: drop-shadow(0 4px 14px rgba(255,170,40,0.55));
       }
-      .seal {
-        position: absolute; top: 40px; right: 40px;
-        width: 88px; height: 88px; border-radius: 50%;
-        background: radial-gradient(circle, #c9a84c 0%, #a88a3c 100%);
-        display: flex; align-items: center; justify-content: center;
-        font-family: 'Noto Serif SC', serif; font-weight: 700;
-        font-size: 48px; color: #0a0a0f;
-        box-shadow: 0 0 32px rgba(201,168,76,0.6);
+      .subtitle {
+        position: absolute;
+        left: 60px; bottom: 36px;
+        font-size: 22px; font-weight: 600;
+        letter-spacing: 0.18em;
+        color: rgba(255,255,255,0.78);
+        text-transform: uppercase;
+        text-shadow: 0 2px 8px rgba(0,0,0,0.9);
+      }
+      .badge {
+        position: absolute;
+        top: 32px; left: 32px;
+        padding: 10px 22px;
+        background: rgba(255, 78, 78, 0.95);
+        color: #ffffff;
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        border-radius: 6px;
+        box-shadow: 0 6px 20px rgba(255, 78, 78, 0.45);
       }
     </style>
   </head>
@@ -54,17 +95,40 @@
       data-height="720"
     >
       <div class="bg" id="thumb-bg"><img src="__BG__" alt="" /></div>
-      <div class="overlay" id="thumb-overlay"></div>
-      <div class="seal" id="thumb-seal">仙</div>
-      <div class="title-en" id="thumb-title-en">__TITLE_EN__</div>
-      <div class="title-zh" id="thumb-title-zh">__TITLE_ZH__</div>
+      <div class="vignette"></div>
+      <div class="badge" id="thumb-badge">__BADGE__</div>
+      <div class="title" id="thumb-title">__TITLE__</div>
+      <div class="subtitle" id="thumb-subtitle">__SUBTITLE__</div>
     </div>
 
     <script>
       window.__timelines = window.__timelines || {};
-      // Still composition: a paused 1-second timeline is enough to satisfy
-      // HyperFrames' lint requirement that every composition registers a
-      // timeline. Render with `--still` to capture a single frame.
+      // Split the first word into .accent for the gold highlight. If the
+      // headline is empty or a single word the title still renders fine.
+      try {
+        var t = document.getElementById('thumb-title');
+        if (t) {
+          var raw = t.textContent || '';
+          var trimmed = raw.trim();
+          if (trimmed) {
+            var m = trimmed.match(/^(\S+)(\s+)?(.*)$/s);
+            if (m) {
+              t.innerHTML =
+                '<span class="accent">' + m[1] + '</span>' +
+                (m[2] || '') +
+                (m[3] || '');
+            }
+          }
+        }
+      } catch (e) { /* keep plain title if anything fails */ }
+      // Hide empty fields cleanly so the layout doesn't show stray ::after
+      // artefacts when the caller skipped a field.
+      try {
+        var s = document.getElementById('thumb-subtitle');
+        if (s && !s.textContent.trim()) s.style.display = 'none';
+        var b = document.getElementById('thumb-badge');
+        if (b && !b.textContent.trim()) b.style.display = 'none';
+      } catch (e) { /* ignore */ }
       var tl = gsap.timeline({ paused: true });
       window.__timelines['thumbnail'] = tl;
     </script>

@@ -1,16 +1,18 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useEffect, useRef, useState } from 'react';
-import { motion } from 'motion/react';
+import { useEffect, useRef, useState, type ReactNode, type CSSProperties } from 'react';
 import {
-  Sparkles, Type, Volume2, Image as ImageIcon, Music,
-  Film, Layout, Subtitles, Upload, CalendarClock,
-  AlertTriangle, CheckCircle2, Loader2,
-} from 'lucide-react';
+  Sparkle, TextT, SpeakerHigh, Image as ImageIcon, MusicNotes,
+  FilmSlate, Layout, ClosedCaptioning, UploadSimple, CalendarBlank,
+  Warning, CheckCircle, CircleNotch, Plus, CaretDown,
+  type Icon as PhosphorIcon,
+} from '@phosphor-icons/react';
 import { useQuery } from '@tanstack/react-query';
-import { tauri, events, type PhaseUpdate, type GenerateRequest, type ImageReadyEvent } from '@/lib/tauri';
-import { convertFileSrc } from '@tauri-apps/api/core';
-import { cn } from '@/lib/utils';
+import { tauri, type GenerateRequest } from '@/lib/tauri';
+import { usePipelineStore } from '@/lib/pipelineStore';
+import { convertFileSrc } from '@/lib/tauri-asset';
 import { useToast } from '@/components/toast';
+import { VoiceWizard } from '@/components/voice-wizard';
+import { PageHeader } from '@/components/ui-glass';
 
 interface VoiceProfile {
   id: string;
@@ -26,30 +28,68 @@ export const Route = createFileRoute('/generator')({
   component: GeneratorWizard,
 });
 
+// v0.1.28: presets diversos. Antes eran todos xianxia y eso reforzaba el
+// sesgo. La app genera cualquier temática; los chips deben demostrarlo.
 const TOPIC_PRESETS = [
-  'The legend of the Jade Emperor',
-  'Origin of the Eight Immortals',
-  'The Cultivation of Lü Dongbin',
-  'The fall of the Demon Empress',
-  'How the Dragon Kings divided the seas',
-  'The Sword Saint of Mount Hua',
+  'La historia de los dioses egipcios',
+  'Norse mythology — Ragnarök and the fall of the gods',
+  'The lost civilization of Atlantis',
+  'The rise and fall of the Roman Empire',
+  'Black holes and the limits of physics',
+  'La leyenda del Emperador de Jade',
 ];
 
-const PHASES = [
-  { phase: 1, label: 'Guion', icon: Type, hint: 'Generación con Gemma 4' },
-  { phase: 2, label: 'Metadatos', icon: Type, hint: 'Título, descripción, tags' },
-  { phase: 3, label: 'Voz', icon: Volume2, hint: 'Qwen3-TTS' },
+// v0.1.38: topic-aware duration recommender. YouTube monetises videos of
+// 8+ min, but each topic class has its own viral sweet spot — biographies
+// and history reward longer arcs (12-15 min), while tech/curiosities
+// max out around 8-10 before viewers churn. We classify the topic by
+// keywords and recommend a length that maximises both retention and
+// monetisation eligibility. The user can always override the slider.
+function recommendMinutesFor(topic: string): { minutes: number; reason: string } {
+  const t = (topic || '').toLowerCase();
+  if (/\b(biograf|biograph|vida de|life of|historia de un|the story of|legacy of|legado de)\b/.test(t)) {
+    return { minutes: 14, reason: 'Biografías virales: 12-15 min para arco completo' };
+  }
+  if (/\b(historia|history|civilization|civilizaci|empire|imperio|guerra|war|battle|batalla|ancient|antigua|antiguo|dynasty|dinast|reino|kingdom|emperor|faraón|pharaoh|tomb|tumba|descubrim|discover)\b/.test(t)) {
+    return { minutes: 13, reason: 'Documental histórico: 12-15 min retiene mejor' };
+  }
+  if (/\b(mito|myth|legend|leyenda|gods?|dioses?|ragnarok|valhalla|olimpo|olympus|atlantis|nordic|norse|griega|greek|hindú|hindu)\b/.test(t)) {
+    return { minutes: 12, reason: 'Mitología: 10-14 min para desarrollar el lore' };
+  }
+  if (/\b(misterio|mystery|conspirac|conspiraci|unsolved|sin resolver|paranormal|sobrenatural|leyenda urbana|urban legend|cripto|crypto|secret)\b/.test(t)) {
+    return { minutes: 10, reason: 'Misterio/conspiración: 10-12 min mantiene la tensión' };
+  }
+  if (/\b(crimen|crime|asesin|murder|killer|caso|case|true crime)\b/.test(t)) {
+    return { minutes: 12, reason: 'True crime: 12-15 min para el arco completo' };
+  }
+  if (/\b(ciencia|science|fisica|physics|quantum|cuántic|astronom|cosmos|black hole|agujero negro|relativ|big bang|space|espacio|universe|universo|galax)\b/.test(t)) {
+    return { minutes: 10, reason: 'Divulgación científica: 8-12 min, suficiente densidad' };
+  }
+  if (/\b(tech|tecnolog|ia|ai\b|inteligencia artificial|computer|computing|machine learning|programaci|coding)\b/.test(t)) {
+    return { minutes: 9, reason: 'Tech: 8-10 min, ritmo ágil' };
+  }
+  if (/\b(top \d|los \d|the \d|curiosidades|curiosities|datos sorprendentes|amazing facts|did you know)\b/.test(t)) {
+    return { minutes: 8, reason: 'Top/curiosidades: 8 min mínimo monetización' };
+  }
+  if (/\b(película|movie|film|serie|series|anime|videojuego|videogame|character|personaje|saga|universe)\b/.test(t)) {
+    return { minutes: 11, reason: 'Cultura pop: 10-13 min para análisis con peso' };
+  }
+  return { minutes: 10, reason: 'Sugerencia por defecto: 10 min · ≥ 8 min para monetizar' };
+}
+
+const PHASES: { phase: number; label: string; icon: PhosphorIcon; hint: string }[] = [
+  { phase: 1, label: 'Guion', icon: TextT, hint: 'Generación con Gemma 4' },
+  { phase: 2, label: 'Metadatos', icon: TextT, hint: 'Título, descripción, tags' },
+  { phase: 3, label: 'Voz', icon: SpeakerHigh, hint: 'Qwen3-TTS' },
   { phase: 4, label: 'Imágenes', icon: ImageIcon, hint: 'Z-Image-Turbo' },
-  { phase: 5, label: 'Música', icon: Music, hint: 'Biblioteca local' },
-  { phase: 6, label: 'Vídeo', icon: Film, hint: 'HyperFrames' },
+  { phase: 5, label: 'Música', icon: MusicNotes, hint: 'Biblioteca local' },
+  { phase: 6, label: 'Vídeo', icon: FilmSlate, hint: 'HyperFrames' },
   { phase: 7, label: 'Thumbnail', icon: Layout, hint: 'Bilingüe' },
-  { phase: 8, label: 'Subtítulos', icon: Subtitles, hint: 'faster-whisper' },
-  { phase: 9, label: 'Upload', icon: Upload, hint: 'YouTube' },
-  { phase: 10, label: 'Programación', icon: CalendarClock, hint: 'Cron + Shorts' },
+  { phase: 8, label: 'Subtítulos', icon: ClosedCaptioning, hint: 'faster-whisper' },
+  { phase: 9, label: 'Upload', icon: UploadSimple, hint: 'YouTube' },
+  { phase: 10, label: 'Programación', icon: CalendarBlank, hint: 'Cron + Shorts' },
 ];
 
-// Persisted across reloads so the user doesn't lose their topic if they
-// accidentally close the window or the dev server reloads.
 const STORAGE_KEY = 'xianxia.generator.draft';
 function loadDraft(): {
   topic: string; minutes: number; languages: string[];
@@ -69,28 +109,31 @@ function saveDraft(d: ReturnType<typeof loadDraft>) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch { /* */ }
 }
 
+const selBtn = (active: boolean): CSSProperties => ({
+  padding: '6px 12px',
+  borderRadius: 999,
+  fontSize: 12.5,
+  fontWeight: 500,
+  background: active ? 'var(--accent-bg)' : 'rgba(255,255,255,0.04)',
+  color: active ? 'var(--accent-soft)' : 'var(--text-secondary)',
+  boxShadow: active
+    ? 'inset 0 0.5px 0 rgba(255,255,255,0.15), 0 0 0 0.5px rgba(232, 201, 109,0.40)'
+    : 'inset 0 0.5px 0 rgba(255,255,255,0.06)',
+  transition: 'all 140ms',
+});
+
 function GeneratorWizard() {
   const draft = loadDraft();
   const [topic, setTopic] = useState(draft?.topic ?? '');
   const [minutes, setMinutes] = useState(draft?.minutes ?? 14);
-  // ─── Idioma del AUDIO (TTS narration) — single select.
-  // Antes había un solo array `languages` que mezclaba idioma del
-  // audio con idiomas de subtítulos. Eso obligaba a que el primer
-  // idioma marcado fuera el del audio sin que el user lo entendiera.
-  // Ahora son selecciones independientes.
   const [audioLanguage, setAudioLanguage] = useState<string>(
     draft?.audio_language ?? draft?.languages?.[0] ?? 'en',
   );
-  // ─── Idiomas de SUBTÍTULOS — multi select. Por defecto incluye
-  //     siempre el del audio + un par adicionales para canales
-  //     internacionales.
   const [subtitleLanguages, setSubtitleLanguages] = useState<string[]>(() => {
     const seed = draft?.subtitle_languages ?? draft?.languages ?? ['en', 'es'];
     const unique = Array.from(new Set([draft?.audio_language ?? draft?.languages?.[0] ?? 'en', ...seed]));
     return unique;
   });
-  // Compat: derived `languages` array (audio first) — algunos pipelines
-  // legacy aún consumen esto; lo enviamos también para no romper.
   const languages = Array.from(new Set([audioLanguage, ...subtitleLanguages]));
   const [experimental, setExperimental] = useState(false);
   const [useMusicgen, setUseMusicgen] = useState(false);
@@ -105,16 +148,18 @@ function GeneratorWizard() {
   const [suggesting, setSuggesting] = useState(false);
   const [topicIdeas, setTopicIdeas] = useState<{ title: string; hook: string }[] | null>(null);
   const { toast, confirmDialog } = useToast();
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [phaseState, setPhaseState] = useState<Record<number, PhaseUpdate>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [imageThumbs, setImageThumbs] = useState<ImageReadyEvent[]>([]);
+  const activeProjectId = usePipelineStore((s) => s.activeProjectId);
+  const phaseState = usePipelineStore((s) => s.phaseState);
+  const error = usePipelineStore((s) => s.error);
+  const imageThumbs = usePipelineStore((s) => s.imageThumbs);
+  const pipeSeedStarting = usePipelineStore((s) => s.seedStarting);
+  const pipeSetActiveProject = usePipelineStore((s) => s.setActiveProject);
+  const pipeReset = usePipelineStore((s) => s.reset);
+  const setError = usePipelineStore((s) => s.setError);
 
-  // Primary language drives the voice catalog (audio language).
   const primaryLang = audioLanguage;
 
-  // Fetch voices contextual to the primary language.
-  const { data: voices } = useQuery<VoiceProfile[]>({
+  const { data: voices, refetch: refetchVoices } = useQuery<VoiceProfile[]>({
     queryKey: ['voices', primaryLang],
     queryFn: async () => {
       const res = await fetch(`http://127.0.0.1:8731/tts/voices?language=${primaryLang}`);
@@ -125,10 +170,6 @@ function GeneratorWizard() {
     retry: 1,
   });
 
-  // Voice cloning component status — surfaced as a banner above the
-  // voice picker so the user can install the optional Qwen3-TTS-Base
-  // (~7 GB) without leaving the wizard. Refetched whenever a clone is
-  // selected so the install transition is reflected live.
   const isCloneVoice = voice.startsWith('clone:');
   const { data: cloningStatus, refetch: refetchCloningStatus } = useQuery<{
     base_model_installed: boolean;
@@ -146,9 +187,6 @@ function GeneratorWizard() {
     },
     staleTime: 30_000,
     retry: 1,
-    // Poll every 5 s while the user has a clone selected and the
-    // model isn't installed yet — picks up the install completion
-    // automatically without a page reload.
     refetchInterval: (q) => {
       const d = q.state.data;
       if (!d) return false;
@@ -158,10 +196,7 @@ function GeneratorWizard() {
   });
 
   const [installingVoiceClone, setInstallingVoiceClone] = useState(false);
-  // Once we attempt the auto-install in this session we don't retry,
-  // even if it fails — otherwise a user with a flaky connection would
-  // spam the installer on every voice picker re-render. They can
-  // always retry manually from Ajustes → Componentes opcionales.
+  const [voiceWizardOpen, setVoiceWizardOpen] = useState(false);
   const autoInstallAttempted = useRef(false);
 
   const handleInstallVoiceClone = async (silent = false) => {
@@ -181,14 +216,9 @@ function GeneratorWizard() {
       );
       await refetchCloningStatus();
     } catch (e) {
-      // Only surface the error toast on manual installs. The silent
-      // auto-install runs in the background — failing there should
-      // not pop a scary toast in the user's face; the banner stays
-      // visible with a manual button as the fallback path.
       if (!silent) {
         toast.error('No se pudo instalar voice cloning', String(e));
       } else {
-        // Reset the flag so a subsequent manual click can still try.
         autoInstallAttempted.current = false;
       }
     } finally {
@@ -196,20 +226,6 @@ function GeneratorWizard() {
     }
   };
 
-  // ─── Auto-install voice cloning in background ────────────────────
-  // The user explicitly requested "todo tiene que ser autodetectable,
-  // autoinstalable y autoconfigurable" — they don't want to click an
-  // "Instalar" button when the Base model is the obvious next step
-  // (they already registered a voice clone). We auto-trigger the
-  // install once per session as soon as the status query confirms:
-  //   • the user has at least one registered clone
-  //   • the Base model is NOT installed
-  //   • we haven't tried already this session
-  //
-  // The poll-every-5s on cloningStatus picks up completion live and
-  // unlocks the dropdown without any user action. If the auto-install
-  // fails (e.g. offline), the manual button on the banner remains as
-  // a fallback.
   useEffect(() => {
     if (!cloningStatus) return;
     if (cloningStatus.base_model_installed) return;
@@ -220,8 +236,6 @@ function GeneratorWizard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloningStatus?.base_model_installed, cloningStatus?.registered_clones]);
 
-  // Music backend availability — drives the toggle label so the user knows
-  // whether ACE-Step v1.5 (preferred) or MusicGen-medium (fallback) will run.
   const { data: musicBackends } = useQuery<{
     acestep_available: boolean;
     musicgen_available: boolean;
@@ -237,19 +251,12 @@ function GeneratorWizard() {
     retry: 1,
   });
 
-  // Auto-pick a sensible default when language changes and current voice doesn't fit.
   useEffect(() => {
     if (!voices || voices.length === 0) return;
     const ok = voices.some((v) => v.id === voice);
     if (!ok && voices[0]) setVoice(voices[0].id);
   }, [voices, voice]);
 
-  // Use a ref so the listener callback always sees the current activeProjectId
-  // without needing to re-subscribe on every change (which races with events).
-  const activeRef = useRef<string | null>(null);
-  activeRef.current = activeProjectId;
-
-  // Auto-save form state to localStorage so reload doesn't lose work in progress.
   useEffect(() => {
     saveDraft({
       topic, minutes, languages,
@@ -260,51 +267,11 @@ function GeneratorWizard() {
     });
   }, [topic, minutes, languages, audioLanguage, subtitleLanguages, voice, vertical, animationPreset, captionStyle]);
 
-  useEffect(() => {
-    let unListenProgress: (() => void) | null = null;
-    let unListenError: (() => void) | null = null;
-    let unListenImage: (() => void) | null = null;
-    events.onPipelineProgress((p) => {
-      const aid = activeRef.current;
-      if (!aid || p.project_id === aid) {
-        setPhaseState((prev) => ({ ...prev, [p.phase]: p }));
-      }
-    }).then((u) => (unListenProgress = u));
-    events.onPipelineError((e) => {
-      const aid = activeRef.current;
-      if (!aid || e.project_id === aid) setError(e.error);
-    }).then((u) => (unListenError = u));
-    events.onImageReady((p) => {
-      const aid = activeRef.current;
-      if (!aid || p.project_id === aid) {
-        setImageThumbs((prev) => {
-          // dedupe by index, replace if newer
-          const filtered = prev.filter((x) => x.index !== p.index);
-          return [...filtered, p].sort((a, b) => a.index - b.index);
-        });
-      }
-    }).then((u) => (unListenImage = u));
-    return () => {
-      unListenProgress?.();
-      unListenError?.();
-      unListenImage?.();
-    };
-  }, []); // mount once, ref carries the latest project id
-
   const handleStart = async () => {
     if (!topic.trim()) return;
-    setError(null);
-    setImageThumbs([]);
-    setPhaseState({
-      // Seed an immediate "running" indicator on phase 1 so the user sees
-      // feedback before the backend emits its first event.
-      1: { project_id: '', phase: 1, status: 'running', progress: 1, message: 'Iniciando…' },
-    });
+    pipeSeedStarting();
     const req: GenerateRequest = {
       topic: topic.trim(),
-      // `languages` legacy alias, kept for backcompat — Rust pipeline
-      // reads audio_language/subtitle_languages first and falls back
-      // to this when missing.
       languages,
       audio_language: audioLanguage,
       subtitle_languages: subtitleLanguages,
@@ -322,14 +289,13 @@ function GeneratorWizard() {
     };
     try {
       const id = await tauri.startGeneration(req);
-      setActiveProjectId(id);
+      pipeSetActiveProject(id);
     } catch (e) {
+      pipeReset();
       setError(String(e));
-      setPhaseState({});
     }
   };
 
-  // Active phase = highest running phase, or the highest done if everything is done.
   const activePhase =
     Object.values(phaseState)
       .filter((p) => p.status === 'running')
@@ -341,41 +307,44 @@ function GeneratorWizard() {
       .sort((a, b) => b - a)[0];
 
   const activeMessage = activePhase ? phaseState[activePhase]?.message : null;
+  const LANGS = ['en', 'es', 'zh', 'ja', 'ko', 'de', 'fr', 'it', 'pt', 'ru'] as const;
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-      className="space-y-8"
-    >
-      <header>
-        <p className="text-xs uppercase tracking-[0.2em] text-gold-400 font-medium mb-2">
-          Producción
-        </p>
-        <h1 className="font-display text-4xl font-medium">Generador</h1>
-        <p className="text-paper-300 mt-2 max-w-2xl">
-          Elige un tema, ajusta los parámetros y deja que las 10 fases del pipeline
-          produzcan tu vídeo de forma autónoma.
-        </p>
-      </header>
+    <div className="route-enter page" style={{ maxWidth: 1100 }}>
+      <PageHeader
+        title="Generador"
+        subtitle="Elige un tema, ajusta los parámetros y deja que el pipeline produzca tu vídeo de forma autónoma."
+      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6">
-        {/* Left: configuration form */}
-        <section className="rounded-xl border border-border/50 bg-card/60 backdrop-blur p-6">
-          <h2 className="font-display text-xl mb-5">1. Configura tu vídeo</h2>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0,1fr) 360px',
+          gap: 22,
+          alignItems: 'start',
+        }}
+      >
+        {/* Left: configuration */}
+        <section className="group" style={{ padding: 22 }}>
+          <h2 className="section-header" style={{ fontSize: 15 }}>1 · Configura tu vídeo</h2>
 
           <Field label="Tema">
-            <div className="flex gap-2">
+            <div style={{ display: 'flex', gap: 8 }}>
               <input
                 type="text"
+                className="input"
+                style={{ flex: 1, height: 30 }}
                 value={topic}
                 onChange={(e) => setTopic(e.target.value)}
                 placeholder="El ascenso del Inmortal del Trueno…"
                 data-testid="topic-input"
-                className="flex-1 bg-obsidian-800 border border-border/50 rounded-md px-3 py-2 text-paper-100 placeholder:text-paper-400 focus:outline-none focus:border-gold-500 focus:ring-2 focus:ring-gold-500/20"
               />
               <button
+                className="btn"
+                style={{ flexShrink: 0 }}
+                disabled={suggesting}
+                data-testid="suggest-topics"
+                title="Generar ideas con LLM"
                 onClick={async () => {
                   setSuggesting(true);
                   setTopicIdeas(null);
@@ -383,11 +352,13 @@ function GeneratorWizard() {
                     const r = await fetch('http://127.0.0.1:8731/script/suggest', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ niche: 'xianxia', count: 6, language: primaryLang }),
+                      body: JSON.stringify({
+                        niche: topic.trim() || 'diverse storytelling',
+                        count: 6,
+                        language: primaryLang,
+                      }),
                     });
-                    if (!r.ok) {
-                      throw new Error(`HTTP ${r.status}`);
-                    }
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
                     const j = await r.json();
                     const ideas = (j.ideas ?? []).map((x: { title: string; hook: string }) => ({ title: x.title, hook: x.hook }));
                     if (ideas.length === 0) {
@@ -399,184 +370,160 @@ function GeneratorWizard() {
                     const msg = err instanceof Error ? err.message : String(err);
                     toast.error(
                       'No se pudieron generar ideas',
-                      `${msg}. Verifica que Ollama y el sidecar Python estén verdes en el topbar.`,
+                      `${msg}. Verifica que llama.cpp y el sidecar Python estén verdes en el topbar.`,
                     );
                   } finally {
                     setSuggesting(false);
                   }
                 }}
-                data-testid="suggest-topics"
-                disabled={suggesting}
-                className={cn(
-                  'shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium transition-colors',
-                  suggesting
-                    ? 'bg-obsidian-800 text-paper-400 cursor-wait'
-                    : 'bg-obsidian-800 border border-gold-500/40 text-gold-300 hover:bg-gold-500/10',
-                )}
-                title="Generar ideas con LLM"
               >
-                {suggesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                {suggesting ? <CircleNotch size={13} className="pulse" /> : <Sparkle size={13} />}
                 Ideas IA
               </button>
             </div>
             {topicIdeas && topicIdeas.length > 0 && (
-              <div className="mt-2 space-y-1" data-testid="topic-ideas">
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }} data-testid="topic-ideas">
                 {topicIdeas.map((idea, i) => (
                   <button
                     key={i}
                     onClick={() => { setTopic(idea.title); setTopicIdeas(null); }}
-                    className="w-full text-left text-[11px] px-2.5 py-1.5 rounded-md bg-obsidian-800 hover:bg-gold-500/10 border border-border/40 hover:border-gold-500/50 text-paper-200 transition-colors"
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      borderRadius: 8,
+                      background: 'rgba(255,255,255,0.04)',
+                      boxShadow: 'inset 0 0.5px 0 rgba(255,255,255,0.06)',
+                    }}
                   >
-                    <div className="font-medium text-paper-100 truncate">{idea.title}</div>
-                    <div className="text-[10px] text-paper-400 truncate">{idea.hook}</div>
+                    <div style={{ fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{idea.title}</div>
+                    <div className="caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{idea.hook}</div>
                   </button>
                 ))}
               </div>
             )}
-            <div className="flex flex-wrap gap-1.5 mt-2">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
               {TOPIC_PRESETS.map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setTopic(p)}
-                  className="text-[11px] px-2.5 py-1 rounded-md bg-obsidian-800 hover:bg-obsidian-700 border border-border/40 text-paper-300 hover:text-paper-100 transition-colors"
-                >
-                  {p}
-                </button>
+                <button key={p} className="chip" onClick={() => setTopic(p)}>{p}</button>
               ))}
             </div>
           </Field>
 
           <Field label="Duración aproximada">
-            <div className="flex items-center gap-3">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <input
                 type="range"
-                min={1}
-                max={25}
+                className="range"
+                min={4}
+                max={45}
                 step={1}
                 value={minutes}
                 onChange={(e) => setMinutes(Number(e.target.value))}
                 data-testid="minutes-slider"
-                className="flex-1 accent-gold-500"
               />
-              <span className="font-mono text-sm tabular-nums w-12 text-right">{minutes} min</span>
+              <span className="mono" style={{ fontSize: 13, width: 52, textAlign: 'right' }}>{minutes} min</span>
             </div>
+            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+              {(() => {
+                const reco = recommendMinutesFor(topic);
+                const isCurrent = minutes === reco.minutes;
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setMinutes(reco.minutes)}
+                      disabled={isCurrent}
+                      data-testid="suggest-duration"
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: 999,
+                        fontSize: 11,
+                        background: isCurrent ? 'rgba(212, 184, 90,0.15)' : 'var(--gold-bg)',
+                        color: isCurrent ? 'var(--accent-soft)' : 'var(--gold-soft)',
+                        boxShadow: '0 0 0 0.5px rgba(255,255,255,0.10)',
+                      }}
+                    >
+                      {isCurrent ? `✓ Óptima · ${reco.minutes} min` : `Sugerir ${reco.minutes} min`}
+                    </button>
+                    <span className="muted">{reco.reason}</span>
+                  </>
+                );
+              })()}
+            </div>
+            {minutes < 8 && (
+              <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--gold-soft)' }}>
+                <Warning size={12} />
+                <span>Por debajo de 8 min YouTube no permite monetizar con mid-roll.</span>
+              </div>
+            )}
           </Field>
 
           <Field label="Idioma del audio (narración)">
-            <div className="flex gap-2 flex-wrap">
-              {(['en', 'es', 'zh', 'ja', 'ko', 'de', 'fr', 'it', 'pt', 'ru'] as const).map((l) => {
-                const active = audioLanguage === l;
-                return (
-                  <button
-                    key={l}
-                    data-testid={`audio-lang-${l}`}
-                    onClick={() => {
-                      setAudioLanguage(l);
-                      // Make sure the audio language is always among the
-                      // subtitle languages so the burned-in subs match
-                      // what's heard. The user can still un-toggle it
-                      // afterwards.
-                      setSubtitleLanguages((prev) =>
-                        prev.includes(l) ? prev : [l, ...prev],
-                      );
-                    }}
-                    className={cn(
-                      'px-3 py-1.5 rounded-md text-sm border transition-all',
-                      active
-                        ? 'bg-gold-500/20 border-gold-500 text-gold-300 ring-1 ring-gold-500/40'
-                        : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-gold-500/40',
-                    )}
-                  >
-                    {l.toUpperCase()}
-                  </button>
-                );
-              })}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {LANGS.map((l) => (
+                <button
+                  key={l}
+                  data-testid={`audio-lang-${l}`}
+                  style={selBtn(audioLanguage === l)}
+                  onClick={() => {
+                    setAudioLanguage(l);
+                    setSubtitleLanguages((prev) => (prev.includes(l) ? prev : [l, ...prev]));
+                  }}
+                >
+                  {l.toUpperCase()}
+                </button>
+              ))}
             </div>
-            <p className="text-[10px] text-paper-400 mt-1.5">
+            <p className="caption" style={{ marginTop: 6 }}>
               El TTS narrará en este idioma y filtrará el catálogo de voces.
             </p>
           </Field>
 
           <Field label="Idiomas de subtítulos (multi)">
-            <div className="flex gap-2 flex-wrap">
-              {(['en', 'es', 'zh', 'ja', 'ko', 'de', 'fr', 'it', 'pt', 'ru'] as const).map((l) => {
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {LANGS.map((l) => {
                 const active = subtitleLanguages.includes(l);
                 const isAudio = audioLanguage === l;
                 return (
                   <button
                     key={l}
                     data-testid={`sub-lang-${l}`}
+                    style={selBtn(active)}
+                    title={isAudio ? 'Idioma del audio — siempre incluido' : ''}
                     onClick={() => {
-                      // Don't let the user un-toggle the audio language
-                      // (the burned-in caption track must exist for it).
                       if (isAudio && active) return;
                       setSubtitleLanguages((prev) =>
                         active ? prev.filter((x) => x !== l) : [...prev, l],
                       );
                     }}
-                    className={cn(
-                      'px-3 py-1.5 rounded-md text-sm border transition-all',
-                      active
-                        ? 'bg-emerald-500/15 border-emerald-500/60 text-emerald-300'
-                        : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-emerald-500/40',
-                      isAudio && 'ring-1 ring-gold-500/30',
-                    )}
-                    title={isAudio ? 'Idioma del audio — siempre incluido' : ''}
                   >
                     {l.toUpperCase()}
-                    {isAudio && <span className="ml-1 text-[9px] text-gold-400">·audio</span>}
+                    {isAudio && <span style={{ marginLeft: 4, fontSize: 9, color: 'var(--gold-soft)' }}>·audio</span>}
                   </button>
                 );
               })}
             </div>
-            <p className="text-[10px] text-paper-400 mt-1.5">
-              Se generan SRT y ASS por cada idioma. El idioma del audio se quema en el vídeo final;
-              el resto van como pistas externas para subir a YouTube.
+            <p className="caption" style={{ marginTop: 6 }}>
+              SRT y ASS por idioma. El del audio se quema en el vídeo; el resto van como pistas externas.
             </p>
           </Field>
 
-          {/*
-            Voice cloning availability banner.
-            • If the auto-install kicked off (installingVoiceClone=true),
-              we render an emerald "Descargando…" banner with a spinner
-              and zero buttons — totally hands-off as the user demanded.
-            • If the auto-install hasn't started yet, or it failed and
-              we cleared the flag, the original amber banner shows with
-              a manual fallback button so the user can retry.
-            The dropdown re-renders the moment the 5 s poll detects the
-            install completion (base_model_installed flips to true) so
-            the banner disappears live.
-          */}
           {cloningStatus && !cloningStatus.base_model_installed && (cloningStatus.registered_clones > 0 || isCloneVoice) && (
             installingVoiceClone ? (
-              <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-100 flex items-start gap-2">
-                <Loader2 className="w-4 h-4 mt-0.5 flex-shrink-0 text-emerald-400 animate-spin" />
-                <div className="flex-1">
-                  <div className="font-semibold text-emerald-200 mb-0.5">
-                    Instalando voice cloning automáticamente…
-                  </div>
-                  <div className="text-emerald-100/80">
-                    Descargando Qwen3-TTS Base (≈{cloningStatus.download_size_gb} GB).
-                    Cuando termine, las voces clonadas aparecerán
-                    automáticamente. Puedes seguir usando la app
-                    mientras tanto.
-                  </div>
+              <div style={{ borderRadius: 10, padding: 12, marginBottom: 16, background: 'rgba(212, 184, 90,0.10)', boxShadow: '0 0 0 0.5px rgba(232, 201, 109,0.30)', display: 'flex', gap: 8, fontSize: 12 }}>
+                <CircleNotch size={16} className="pulse" style={{ color: 'var(--accent-soft)', flexShrink: 0, marginTop: 2 }} />
+                <div>
+                  <div style={{ fontWeight: 600, color: 'var(--accent-soft)', marginBottom: 2 }}>Instalando voice cloning automáticamente…</div>
+                  <div className="muted">Descargando Qwen3-TTS Base (≈{cloningStatus.download_size_gb} GB). Cuando termine, las voces clonadas aparecerán solas.</div>
                 </div>
               </div>
             ) : (
-              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100 flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-400" />
-                <div className="flex-1">
-                  <div className="font-semibold text-amber-200 mb-0.5">
-                    Voice cloning no se pudo instalar
-                  </div>
-                  <div className="text-amber-100/80 mb-2">
-                    {cloningStatus.hint} Reintenta cuando tengas conexión.
-                  </div>
-                  <button
-                    onClick={() => handleInstallVoiceClone(false)}
-                    className="px-3 py-1.5 rounded-md text-xs font-semibold border border-amber-500 bg-amber-500 text-obsidian-900 hover:bg-amber-400 transition-all"
-                  >
+              <div style={{ borderRadius: 10, padding: 12, marginBottom: 16, background: 'var(--gold-bg)', boxShadow: '0 0 0 0.5px rgba(212,184,90,0.35)', display: 'flex', gap: 8, fontSize: 12 }}>
+                <Warning size={16} style={{ color: 'var(--gold-soft)', flexShrink: 0, marginTop: 2 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, color: 'var(--gold-soft)', marginBottom: 2 }}>Voice cloning no se pudo instalar</div>
+                  <div className="muted" style={{ marginBottom: 8 }}>{cloningStatus.hint} Reintenta cuando tengas conexión.</div>
+                  <button className="btn-primary" onClick={() => handleInstallVoiceClone(false)}>
                     Reintentar instalación ({cloningStatus.download_size_gb} GB)
                   </button>
                 </div>
@@ -585,212 +532,146 @@ function GeneratorWizard() {
           )}
 
           <Field label={`Voz narradora (${primaryLang.toUpperCase()})`}>
-            <div className="relative">
+            <div style={{ position: 'relative' }}>
               <select
+                className="input"
                 value={voice}
                 data-testid="voice-select"
                 onChange={(e) => setVoice(e.target.value)}
-                className="w-full appearance-none bg-obsidian-800 border border-border/50 rounded-md pl-3 pr-9 py-2 text-paper-100 text-sm focus:outline-none focus:border-gold-500 focus:ring-2 focus:ring-gold-500/20 cursor-pointer"
+                style={{ height: 30, appearance: 'none', paddingRight: 30, cursor: 'pointer' }}
               >
                 {(voices ?? []).map((v) => (
-                  <option key={v.id} value={v.id} className="bg-obsidian-800 text-paper-100">
+                  <option key={v.id} value={v.id} style={{ background: '#1b1b22' }}>
                     {v.label} — {v.description}
                   </option>
                 ))}
                 {(!voices || voices.length === 0) && (
-                  <option value="vivian" className="bg-obsidian-800 text-paper-100">
-                    Cargando voces…
-                  </option>
+                  <option value="vivian" style={{ background: '#1b1b22' }}>Cargando voces…</option>
                 )}
               </select>
-              <svg
-                aria-hidden="true"
-                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gold-400"
-                viewBox="0 0 16 16" fill="none"
-              >
-                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <CaretDown size={13} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-soft)', pointerEvents: 'none' }} />
             </div>
             {voices && voices.length > 0 && (
-              <p className="text-[10px] text-paper-400 mt-1.5">
+              <p className="caption" style={{ marginTop: 6 }}>
                 {voices.length} voces compatibles con {primaryLang.toUpperCase()}.
-                {voices.find((v) => v.id === voice)?.tone &&
-                  ` Tono: ${voices.find((v) => v.id === voice)?.tone}`}
+                {voices.find((v) => v.id === voice)?.tone && ` Tono: ${voices.find((v) => v.id === voice)?.tone}`}
               </p>
             )}
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setVoiceWizardOpen(true)}
+              style={{ marginTop: 8, width: '100%', justifyContent: 'center' }}
+            >
+              <Plus size={12} weight="bold" />
+              Crear voz nueva (grabar / archivo / URL)
+            </button>
           </Field>
 
           <Field label="Formato">
-            <div className="flex gap-2">
+            <div className="segmented">
               <button
-                onClick={() => setVertical(false)}
+                className={'segmented-btn' + (!vertical ? ' active' : '')}
                 data-testid="aspect-horizontal"
-                className={cn(
-                  'px-3 py-1.5 rounded-md text-sm border transition-all',
-                  !vertical
-                    ? 'bg-gold-500/20 border-gold-500 text-gold-300'
-                    : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-gold-500/40',
-                )}
+                onClick={() => setVertical(false)}
               >
                 Horizontal 1920×1080
               </button>
               <button
-                onClick={() => setVertical(true)}
+                className={'segmented-btn' + (vertical ? ' active' : '')}
                 data-testid="aspect-vertical"
-                className={cn(
-                  'px-3 py-1.5 rounded-md text-sm border transition-all',
-                  vertical
-                    ? 'bg-gold-500/20 border-gold-500 text-gold-300'
-                    : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-gold-500/40',
-                )}
+                onClick={() => setVertical(true)}
               >
                 Vertical 1080×1920
               </button>
             </div>
           </Field>
 
-          <details className="rounded-md border border-border/40 bg-obsidian-800/30 group" data-testid="advanced-options">
-            <summary className="flex items-center gap-2 px-4 py-3 cursor-pointer list-none select-none hover:bg-obsidian-800/50 rounded-md text-sm font-medium text-paper-200">
-              <svg
-                aria-hidden="true"
-                className="w-3.5 h-3.5 text-gold-400 transition-transform group-open:rotate-90"
-                viewBox="0 0 16 16" fill="none"
-              >
-                <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-              Opciones avanzadas
-              <span className="ml-auto text-[10px] text-paper-400">animación · subs · música · engagement</span>
+          <details data-testid="advanced-options" style={{ marginTop: 8 }}>
+            <summary
+              className="caption"
+              style={{ cursor: 'default', listStyle: 'none', padding: '8px 0', fontWeight: 600, color: 'var(--text-secondary)' }}
+            >
+              ▸ Opciones avanzadas · animación · subs · música · engagement
             </summary>
-            <div className="px-4 pb-4 pt-1 space-y-4">
+            <div style={{ paddingTop: 8 }}>
+              <Field label="Estilo de animación · transiciones">
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 6 }} data-testid="animation-presets">
+                  {([
+                    { id: 'cinematic', label: 'Cinematográfico', desc: 'Ken Burns suave + xfade variado' },
+                    { id: 'dynamic', label: 'Dinámico', desc: 'Zooms fuertes + transiciones rápidas' },
+                    { id: 'minimal', label: 'Minimal', desc: 'Movimiento sutil, fades simples' },
+                    { id: 'dramatic', label: 'Dramático', desc: 'Steadicam intenso + radial/circle' },
+                  ] as const).map((p) => (
+                    <button
+                      key={p.id}
+                      data-testid={`anim-${p.id}`}
+                      onClick={() => setAnimationPreset(p.id)}
+                      style={{
+                        padding: '8px 10px',
+                        textAlign: 'left',
+                        borderRadius: 10,
+                        background: animationPreset === p.id ? 'var(--accent-bg)' : 'rgba(255,255,255,0.04)',
+                        boxShadow: animationPreset === p.id
+                          ? 'inset 0 0.5px 0 rgba(255,255,255,0.15), 0 0 0 0.5px rgba(232, 201, 109,0.40)'
+                          : 'inset 0 0.5px 0 rgba(255,255,255,0.06)',
+                      }}
+                    >
+                      <div style={{ fontSize: 12.5, fontWeight: 500 }}>{p.label}</div>
+                      <div className="caption" style={{ fontSize: 10 }}>{p.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </Field>
 
-          <Field label="Estilo de animación · transiciones">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" data-testid="animation-presets">
-              {([
-                { id: 'cinematic', label: 'Cinematográfico', desc: 'Ken Burns suave + xfade variado' },
-                { id: 'dynamic',   label: 'Dinámico',         desc: 'Zooms más fuertes + transiciones rápidas' },
-                { id: 'minimal',   label: 'Minimal',          desc: 'Movimiento sutil, fades simples' },
-                { id: 'dramatic',  label: 'Dramático',        desc: 'Steadicam intenso + radial/circle' },
-              ] as const).map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => setAnimationPreset(p.id)}
-                  data-testid={`anim-${p.id}`}
-                  className={cn(
-                    'px-3 py-2 rounded-md text-left border transition-all',
-                    animationPreset === p.id
-                      ? 'bg-gold-500/15 border-gold-500 text-paper-100'
-                      : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-gold-500/40',
-                  )}
-                >
-                  <div className="text-sm font-medium">{p.label}</div>
-                  <div className="text-[10px] text-paper-400 leading-tight">{p.desc}</div>
-                </button>
-              ))}
-            </div>
-          </Field>
+              <Field label="Estilo de subtítulos">
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }} data-testid="caption-style-presets">
+                  {(['xianxia', 'hormozi', 'mrbeast', 'minimal', 'neon'] as const).map((s) => (
+                    <button
+                      key={s}
+                      data-testid={`cap-${s}`}
+                      style={selBtn(captionStyle === s)}
+                      onClick={() => setCaptionStyle(s)}
+                    >
+                      {s.charAt(0).toUpperCase() + s.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </Field>
 
-          <Field label="Estilo de subtítulos">
-            <div className="grid grid-cols-3 sm:grid-cols-5 gap-2" data-testid="caption-style-presets">
-              {([
-                { id: 'xianxia',  label: 'Xianxia' },
-                { id: 'hormozi',  label: 'Hormozi' },
-                { id: 'mrbeast',  label: 'MrBeast' },
-                { id: 'minimal',  label: 'Minimal' },
-                { id: 'neon',     label: 'Neon' },
-              ] as const).map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => setCaptionStyle(s.id)}
-                  data-testid={`cap-${s.id}`}
-                  className={cn(
-                    'px-2 py-1.5 rounded-md text-xs border transition-all',
-                    captionStyle === s.id
-                      ? 'bg-gold-500/15 border-gold-500 text-paper-100'
-                      : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-gold-500/40',
-                  )}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          <Toggle
-            label="Quemar subtítulos sobre el vídeo"
-            description="Si está activo, el karaoke ASS se imprime en el master MP4. Los SRT siempre se generan para upload separado a YouTube."
-            checked={burnSubtitles}
-            onChange={setBurnSubtitles}
-          />
-
-          <Toggle
-            label="Modo experimental (modelo abliterated)"
-            description="Sin filtros de seguridad. Útil para xianxia oscuro. Bajo tu responsabilidad."
-            checked={experimental}
-            onChange={setExperimental}
-            warning
-          />
-
-          <Toggle
-            label={
-              musicBackends?.preferred === 'acestep'
-                ? 'Generar música con ACE-Step v1.5'
-                : musicBackends?.preferred === 'musicgen'
-                ? 'Generar música con MusicGen-medium'
-                : 'Generar música con IA (no instalada — biblioteca local)'
-            }
-            description={
-              musicBackends?.preferred === 'acestep'
-                ? 'ACE-Step v1.5 (Apache 2.0) — calidad cinematográfica oriental superior, hasta 4 min nativos. ~2.6× realtime en RTX 4060 con cpu_offload.'
-                : musicBackends?.preferred === 'musicgen'
-                ? 'MusicGen-medium fp16 (~3.5 GB VRAM). Chunks 30s con crossfade 4s para vídeos largos. Pre-master EQ + compresor + loudnorm -16 LUFS.'
-                : 'Instala ACE-Step y/o MusicGen vía el wizard (componente python-deps-music). Mientras tanto, usa la biblioteca local.'
-            }
-            checked={useMusicgen}
-            onChange={setUseMusicgen}
-            warning={!musicBackends?.preferred}
-          />
-
-          <Toggle
-            label="Auto-Shorts virales tras render"
-            description="Tras el long-form, extrae automáticamente 3 Shorts de 25-60s usando LLM scoring (hook + climax + standalone) sobre los timestamps de Whisper. Solo aplica al modo horizontal."
-            checked={autoShorts}
-            onChange={setAutoShorts}
-          />
-
-          <Toggle
-            label="Analizar engagement con TRIBE v2"
-            description="Meta TRIBE v2 (CC-BY-NC) predice respuestas cerebrales fMRI a tu vídeo y mapea a redes funcionales (Salience + FPN + Visual + Auditory − DMN). Devuelve score 0-100 + valles aburridos. Tarda ~30-90s extra al final del render. Modo light: 8 GB VRAM-friendly."
-            checked={analyzeEngagement}
-            onChange={setAnalyzeEngagement}
-          />
-
-          <Toggle
-            label="Auto-optimizar valles aburridos"
-            description="Si el análisis detecta valles, aplica fixes automáticos: cortar segmentos con DMN alto (mente vagando), subir música en valles auditivos. Requiere análisis activo."
-            checked={autoOptimizeEngagement}
-            onChange={setAutoOptimizeEngagement}
-            warning={!analyzeEngagement}
-          />
+              <Toggle label="Quemar subtítulos sobre el vídeo" description="El karaoke ASS se imprime en el master MP4. Los SRT siempre se generan para upload separado." checked={burnSubtitles} onChange={setBurnSubtitles} />
+              <Toggle label="Modo experimental (modelo abliterated)" description="Sin filtros de seguridad. Útil para xianxia oscuro. Bajo tu responsabilidad." checked={experimental} onChange={setExperimental} warning />
+              <Toggle
+                label="Generar música con IA"
+                description={
+                  musicBackends?.preferred === 'acestep'
+                    ? 'ACE-Step v1.5 (instrumental cinematográfico, GPU-only). Fallback automático a MusicGen → biblioteca.'
+                    : 'ACE-Step v1.5 es el generador principal — su entorno se autoinstala en segundo plano. Mientras, usa MusicGen → biblioteca automáticamente.'
+                }
+                checked={useMusicgen}
+                onChange={setUseMusicgen}
+              />
+              <Toggle label="Auto-Shorts virales tras render" description="Tras el long-form, extrae 3 Shorts de 25-60s con LLM scoring sobre los timestamps de Whisper. Solo modo horizontal." checked={autoShorts} onChange={setAutoShorts} />
+              <Toggle label="Analizar engagement con TRIBE v2" description="Predice respuestas fMRI y mapea a redes funcionales. Score 0-100 + valles. ~30-90s extra. 8 GB VRAM-friendly." checked={analyzeEngagement} onChange={setAnalyzeEngagement} />
+              <Toggle label="Auto-optimizar valles aburridos" description="Si hay valles, corta segmentos con DMN alto y sube música en valles auditivos. Requiere análisis activo." checked={autoOptimizeEngagement} onChange={setAutoOptimizeEngagement} warning={!analyzeEngagement} />
             </div>
           </details>
 
-          <div className="mt-6 grid gap-2" style={{ gridTemplateColumns: activeProjectId ? '1fr auto' : '1fr' }}>
+          <div style={{ marginTop: 18, display: 'grid', gap: 8, gridTemplateColumns: activeProjectId ? '1fr auto' : '1fr' }}>
             <button
-              onClick={handleStart}
+              className="btn-primary large"
               data-testid="start-generation"
               disabled={!topic.trim() || activeProjectId !== null}
-              className={cn(
-                'w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-md font-medium text-sm transition-colors',
-                activeProjectId
-                  ? 'bg-obsidian-800 text-paper-300 cursor-not-allowed'
-                  : 'bg-gold-500 text-obsidian-950 hover:bg-gold-300 shadow-glow-gold',
-              )}
+              onClick={handleStart}
+              style={{ justifyContent: 'center' }}
             >
-              <Sparkles className="w-4 h-4" />
+              <Sparkle size={13} />
               {activeProjectId ? 'Generación en curso…' : 'Iniciar generación'}
             </button>
             {activeProjectId && (
               <button
+                className="btn-destructive"
+                title="Interrumpir la generación en curso"
                 onClick={async () => {
                   if (!activeProjectId) return;
                   const ok = await confirmDialog({
@@ -803,15 +684,13 @@ function GeneratorWizard() {
                   if (!ok) return;
                   try {
                     await tauri.abortGeneration(activeProjectId);
-                    setActiveProjectId(null);
+                    pipeReset();
                     toast.info('Generación cancelada');
                   } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
                     toast.error('No se pudo cancelar', msg);
                   }
                 }}
-                className="px-4 py-3 rounded-md text-sm font-medium border border-crimson-500/50 bg-crimson-500/10 text-crimson-300 hover:bg-crimson-500/20 transition-colors"
-                title="Interrumpir la generación en curso"
               >
                 Cancelar
               </button>
@@ -819,12 +698,12 @@ function GeneratorWizard() {
           </div>
         </section>
 
-        {/* Right: pipeline progress */}
-        <aside className="rounded-xl border border-border/50 bg-card/60 backdrop-blur p-6" data-testid="pipeline-aside">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="font-display text-xl">Pipeline</h2>
+        {/* Right: pipeline */}
+        <aside className="group" style={{ padding: 18 }} data-testid="pipeline-aside">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <h2 className="title">Pipeline</h2>
             {activeProjectId && (
-              <span className="text-[10px] font-mono text-gold-400 truncate max-w-[150px]" title={activeProjectId}>
+              <span className="mono" style={{ color: 'var(--gold-soft)', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }} title={activeProjectId}>
                 #{activeProjectId.slice(0, 8)}
               </span>
             )}
@@ -832,52 +711,60 @@ function GeneratorWizard() {
           {activePhase && (
             <div
               data-testid="active-phase-banner"
-              className="mb-4 p-3 rounded-md border border-gold-500/40 bg-gold-500/5 flex items-center gap-3"
+              style={{ marginBottom: 14, padding: 12, borderRadius: 10, background: 'var(--gold-bg)', boxShadow: '0 0 0 0.5px rgba(212,184,90,0.35)', display: 'flex', alignItems: 'center', gap: 10 }}
             >
-              <Loader2 className="w-4 h-4 text-gold-400 shrink-0 animate-spin" />
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-semibold text-gold-300 uppercase tracking-wide">
+              <CircleNotch size={15} className="pulse" style={{ color: 'var(--gold-soft)', flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--gold-soft)' }}>
                   Fase {activePhase}/10 · {PHASES[activePhase - 1]?.label ?? '…'}
                 </div>
-                <div className="text-[11px] text-paper-200 truncate">
+                <div className="caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {activeMessage ?? 'Procesando…'}
                 </div>
               </div>
             </div>
           )}
-          <ol className="space-y-2" data-testid="pipeline-list">
+          <ol style={{ display: 'flex', flexDirection: 'column', gap: 6, listStyle: 'none', margin: 0, padding: 0 }} data-testid="pipeline-list">
             {PHASES.map((p) => {
               const update = phaseState[p.phase];
               const status = update?.status ?? 'pending';
               const Icon = p.icon;
+              const tint =
+                status === 'done' ? '#7fa8d8' : status === 'running' ? '#d4b85a' : status === 'failed' ? '#c8525e' : '#7a8a8a';
               return (
                 <li
                   key={p.phase}
                   data-testid={`phase-${p.phase}`}
                   data-status={status}
                   data-message={update?.message ?? ''}
-                  className={cn(
-                    'p-3 rounded-md border flex items-center gap-3 transition-colors',
-                    status === 'done'
-                      ? 'border-jade-500/40 bg-jade-700/10'
-                      : status === 'running'
-                      ? 'border-gold-500/40 bg-gold-500/5'
-                      : status === 'failed'
-                      ? 'border-crimson-500/50 bg-crimson-500/5'
-                      : 'border-border/40 bg-obsidian-800/40',
-                  )}
+                  style={{
+                    padding: 10,
+                    borderRadius: 10,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    background: status === 'pending' ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.05)',
+                    boxShadow:
+                      status === 'running'
+                        ? '0 0 0 0.5px rgba(212,184,90,0.40)'
+                        : status === 'done'
+                        ? '0 0 0 0.5px rgba(127, 168, 216,0.30)'
+                        : status === 'failed'
+                        ? '0 0 0 0.5px rgba(200,82,94,0.45)'
+                        : 'inset 0 0.5px 0 rgba(255,255,255,0.05)',
+                  }}
                 >
-                  <PhaseIcon status={status} fallback={Icon} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{p.label}</div>
-                    <div className="text-[11px] text-paper-300 truncate">
+                  <span className="lg-tile md" style={{ '--tint': tint } as CSSProperties}>
+                    {status === 'done' ? <CheckCircle size={13} weight="fill" /> : status === 'failed' ? <Warning size={13} /> : status === 'running' ? <CircleNotch size={13} className="pulse" /> : <Icon size={13} />}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label}</div>
+                    <div className="caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {update?.message ?? p.hint}
                     </div>
                   </div>
                   {update && update.progress > 0 && update.progress < 100 && (
-                    <span className="text-[11px] text-paper-300 font-mono tabular-nums">
-                      {Math.round(update.progress)}%
-                    </span>
+                    <span className="mono" style={{ fontSize: 11 }}>{Math.round(update.progress)}%</span>
                   )}
                 </li>
               );
@@ -885,28 +772,25 @@ function GeneratorWizard() {
           </ol>
 
           {imageThumbs.length > 0 && (
-            <div className="mt-5" data-testid="image-thumbs">
-              <div className="text-xs uppercase tracking-wide text-paper-300 mb-2 font-medium">
-                Imágenes generadas <span className="text-gold-300">({imageThumbs.length})</span>
+            <div style={{ marginTop: 18 }} data-testid="image-thumbs">
+              <div className="caption" style={{ marginBottom: 8, fontWeight: 600 }}>
+                Imágenes generadas <span style={{ color: 'var(--gold-soft)' }}>({imageThumbs.length})</span>
               </div>
-              <div className="grid grid-cols-3 gap-1.5">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6 }}>
                 {imageThumbs.map((t) => (
                   <div
                     key={t.index}
-                    className="relative aspect-[3/4] rounded-md overflow-hidden border border-border/40 bg-obsidian-900"
+                    style={{ position: 'relative', aspectRatio: '3/4', borderRadius: 8, overflow: 'hidden', background: 'rgba(0,0,0,0.4)', boxShadow: 'inset 0 0 0 0.5px rgba(255,255,255,0.06)' }}
                     title={t.prompt}
                   >
                     <img
                       src={convertFileSrc(t.image_path)}
                       alt={`Imagen ${t.index + 1}`}
                       loading="lazy"
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        // Fallback: hide if Tauri webview can't load the file
-                        (e.target as HTMLImageElement).style.display = 'none';
-                      }}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                     />
-                    <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-obsidian-950/80 text-[9px] font-mono tabular-nums text-gold-300">
+                    <div className="mono" style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '1px 4px', background: 'rgba(0,0,0,0.7)', color: 'var(--gold-soft)', fontSize: 9 }}>
                       {t.index + 1}/{t.total}
                     </div>
                   </div>
@@ -916,21 +800,34 @@ function GeneratorWizard() {
           )}
 
           {error && (
-            <div data-testid="pipeline-error" className="mt-4 p-3 rounded-md bg-crimson-500/15 border border-crimson-500/40 text-xs text-paper-100 flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 text-crimson-400 shrink-0 mt-0.5" />
+            <div
+              data-testid="pipeline-error"
+              style={{ marginTop: 14, padding: 12, borderRadius: 10, background: 'var(--red-bg)', boxShadow: '0 0 0 0.5px rgba(200,82,94,0.45)', fontSize: 12, display: 'flex', gap: 8 }}
+            >
+              <Warning size={15} style={{ color: 'var(--red)', flexShrink: 0, marginTop: 1 }} />
               <span>{error}</span>
             </div>
           )}
         </aside>
       </div>
-    </motion.div>
+
+      <VoiceWizard
+        open={voiceWizardOpen}
+        onClose={() => setVoiceWizardOpen(false)}
+        onCreated={(cloneId) => {
+          setVoice(`clone:${cloneId}`);
+          refetchVoices();
+        }}
+        defaultPrimary={primaryLang}
+      />
+    </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="mb-5">
-      <label className="block text-xs uppercase tracking-wide text-paper-300 mb-2 font-medium">
+    <div style={{ marginBottom: 18 }}>
+      <label className="eyebrow" style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>
         {label}
       </label>
       {children}
@@ -955,42 +852,29 @@ function Toggle({
     <button
       type="button"
       onClick={() => onChange(!checked)}
-      className={cn(
-        'w-full text-left p-3 rounded-md border flex items-center gap-3 mb-3 transition-colors',
-        checked
-          ? warning
-            ? 'border-crimson-500/50 bg-crimson-500/10'
-            : 'border-gold-500/40 bg-gold-500/5'
-          : 'border-border/40 bg-obsidian-800/40 hover:border-border',
-      )}
+      style={{
+        width: '100%',
+        textAlign: 'left',
+        padding: 12,
+        borderRadius: 10,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        marginBottom: 8,
+        background: checked ? (warning ? 'var(--red-bg)' : 'var(--accent-bg)') : 'rgba(255,255,255,0.04)',
+        boxShadow: checked
+          ? `0 0 0 0.5px ${warning ? 'rgba(200,82,94,0.45)' : 'rgba(232, 201, 109,0.40)'}`
+          : 'inset 0 0.5px 0 rgba(255,255,255,0.06)',
+      }}
     >
-      <span
-        className={cn(
-          'w-9 h-5 rounded-full relative transition-colors shrink-0',
-          checked ? (warning ? 'bg-crimson-500' : 'bg-gold-500') : 'bg-obsidian-700',
-        )}
-      >
-        <span
-          className={cn(
-            'absolute top-0.5 w-4 h-4 rounded-full bg-paper-100 transition-all',
-            checked ? 'left-[18px]' : 'left-0.5',
-          )}
-        />
-      </span>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium flex items-center gap-2">
+      <span className={'toggle' + (checked ? ' on' : '')} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
           {label}
-          {warning && checked && <AlertTriangle className="w-3 h-3 text-crimson-400" />}
+          {warning && checked && <Warning size={12} style={{ color: 'var(--red)' }} />}
         </div>
-        <div className="text-[11px] text-paper-300">{description}</div>
+        <div className="caption">{description}</div>
       </div>
     </button>
   );
-}
-
-function PhaseIcon({ status, fallback: Fallback }: { status: string; fallback: React.ComponentType<{ className?: string }> }) {
-  if (status === 'done') return <CheckCircle2 className="w-4 h-4 text-jade-400" />;
-  if (status === 'running') return <Sparkles className="w-4 h-4 text-gold-400 animate-pulse" />;
-  if (status === 'failed') return <AlertTriangle className="w-4 h-4 text-crimson-400" />;
-  return <Fallback className="w-4 h-4 text-paper-300" />;
 }

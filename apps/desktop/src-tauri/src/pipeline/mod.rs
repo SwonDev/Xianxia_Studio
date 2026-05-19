@@ -4,13 +4,35 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::db::{self, projects::NewProject, DbPool};
 use crate::installer::paths;
 
 const PY_SIDECAR: &str = "http://127.0.0.1:8731";
 const NODE_SIDECAR: &str = "http://127.0.0.1:8732";
+/// v0.2.0+ — llama-server (OpenAI-compatible) hosted by the supervisor.
+/// Used by `wake_llm()` to head-start the respawn before the next
+/// LLM-bearing phase issues its request via the Python sidecar.
+const LLAMACPP_SIDECAR: &str = "http://127.0.0.1:8733";
+/// ComfyUI inference server (managed by the supervisor). We hit
+/// `/system_stats` directly to read real device VRAM during the
+/// VRAM-gate / hard-reclaim choreography (v0.2.6).
+const COMFY_SIDECAR: &str = "http://127.0.0.1:8188";
+
+/// v0.2.6 — minimum free VRAM (GB) required to attempt the Z-Image
+/// thumbnail cold reload. Below this the ComfyUI sampler enters Windows
+/// CUDA-Sysmem-fallback thrash (≈958 s/step instead of ≈7 s/step — a
+/// real 30-min hang we hit on RTX 4060 8 GB). We extract a video frame
+/// instead. The cold reload needs text-encoder (~2.6 GB) + Lumina2
+/// (~4.9 GB) with partial offload → 5.5 GB is the safe floor.
+const THUMB_MIN_VRAM_GB: f64 = 5.5;
+
+/// v0.2.6 — minimum free VRAM (GB) before loading Whisper for the
+/// subtitles phase. llama-server (~3 GB, woken for translation) +
+/// faster-whisper-large-v3 (~3 GB) must co-exist; 4 GB free after the
+/// ComfyUI reclaim leaves margin for both.
+const WHISPER_MIN_VRAM_GB: f64 = 4.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BeatSlot {
@@ -24,14 +46,20 @@ pub struct BeatSlot {
 ///   - The first beat starts at 0.0 (no black at the head of the video).
 ///   - The last beat ends exactly at `audio_duration` (no black at the tail).
 ///   - All durations are >= 1.0s.
-///   - Transitions cycle through cross/flash/cross/inkwash/whip for variety.
+///   - Transitions cycle through cross/flash/cross/whip for variety.
+///   - `inkwash` (circle-iris) was REMOVED in v0.1.23. The user reported
+///     it was "extremadamente horrible" when the destination beat
+///     showed the same composition as the previous one — the circle
+///     opens onto an unchanged frame, looking like a broken cut.
+///     Cross-fade is now the dominant transition (3 of 4 slots) with
+///     flash + whip for accent.
 ///
 /// Tested by `tests::beat_timeline_covers_full_audio` and friends below.
 pub fn normalise_beat_timeline(n: usize, audio_duration: f64) -> Vec<BeatSlot> {
     if n == 0 || audio_duration <= 0.0 {
         return Vec::new();
     }
-    const TRANS: &[&str] = &["cross", "flash", "cross", "inkwash", "whip"];
+    const TRANS: &[&str] = &["cross", "flash", "cross", "whip"];
     let segment = audio_duration / (n as f64);
     let overlap = (segment * 0.15).clamp(0.4, 1.5).min(segment * 0.5);
     let mut out = Vec::with_capacity(n);
@@ -53,12 +81,138 @@ pub fn normalise_beat_timeline(n: usize, audio_duration: f64) -> Vec<BeatSlot> {
 }
 
 /// Best-effort VRAM unload between phases. Never fails the pipeline.
+///
+/// Targets are runtime-family names: "llm" (the active LLM backend —
+/// llama.cpp by default in v0.2.0+, Ollama only if the user opted in
+/// from Settings), "tts", "image", "comfyui", "depth", "music",
+/// "whisper". The Python sidecar's `/unload` route dispatches each
+/// target to the right tear-down so this caller stays agnostic.
 async fn unload(client: &reqwest::Client, target: &str) {
     let _ = client
         .post(format!("{}/unload?target={}", PY_SIDECAR, target))
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .await;
+}
+
+/// Like `unload` but parses the `vram_free_gb` field the Python `/unload`
+/// route reports after it finishes evicting + polling. Returns `None`
+/// when the call fails or the field is absent. Never panics.
+async fn unload_get_vram(client: &reqwest::Client, target: &str) -> Option<f64> {
+    let resp = client
+        .post(format!("{}/unload?target={}", PY_SIDECAR, target))
+        .timeout(std::time::Duration::from_secs(45))
+        .send()
+        .await
+        .ok()?;
+    let v: serde_json::Value = resp.json().await.ok()?;
+    v.get("vram_free_gb").and_then(|x| x.as_f64())
+}
+
+/// Read ComfyUI's real device free-VRAM (GB) from `/system_stats`.
+/// ComfyUI reports per-device `vram_free` in bytes. Best-effort.
+async fn comfyui_vram_free_gb(client: &reqwest::Client) -> Option<f64> {
+    let resp = client
+        .get(format!("{}/system_stats", COMFY_SIDECAR))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()?;
+    let v: serde_json::Value = resp.json().await.ok()?;
+    let dev = v.get("devices")?.as_array()?.first()?;
+    let free = dev.get("vram_free")?.as_f64()?;
+    Some(free / 1_073_741_824.0)
+}
+
+/// v0.2.6 — guarantee ComfyUI has at least `min_gb` free VRAM before a
+/// GPU-heavy phase that depends on it (thumbnail Z-Image cold reload,
+/// or the Whisper load that follows the subtitles `/free`).
+///
+/// Strategy, escalating:
+///   1. Graceful: `POST /unload?target=comfyui` (the Python route already
+///      issues ComfyUI `/free` and polls up to 30 s) and read the
+///      resulting `vram_free_gb`.
+///   2. If still short, the ComfyUI worker is almost certainly stuck on a
+///      hung prompt (the Sysmem-fallback thrash failure mode) and `/free`
+///      can't help. Ask the supervisor to **kill + respawn ComfyUI**: a
+///      fresh process holds zero models, returning the card to ~full
+///      free. Wait (cold start ≈30 s) until it binds and reports stats.
+///
+/// Returns the best-known free VRAM (GB); `0.0` if it could never be
+/// read. Never fails the pipeline — callers decide what to do with a
+/// low number (skip Z-Image, proceed anyway, etc.).
+async fn ensure_comfyui_vram(app: &AppHandle, client: &reqwest::Client, min_gb: f64) -> f64 {
+    let mut free = unload_get_vram(client, "comfyui").await.unwrap_or(0.0);
+    if free >= min_gb {
+        return free;
+    }
+    if let Some(sup) = app.try_state::<Arc<crate::sidecars::Supervisor>>() {
+        tracing::warn!(
+            free_gb = free,
+            target_gb = min_gb,
+            "ComfyUI VRAM below target after /free — hard respawn (likely hung worker)"
+        );
+        sup.respawn_comfyui().await;
+        // Cold start: ComfyUI binds :8188 in ~10-30 s; weights are lazy
+        // so a fresh process reports near-full free immediately once up.
+        for _ in 0..45 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Some(f) = comfyui_vram_free_gb(client).await {
+                free = f;
+                if f >= min_gb {
+                    tracing::info!(free_gb = f, "ComfyUI respawned — VRAM reclaimed");
+                    break;
+                }
+            }
+        }
+    }
+    free
+}
+
+/// v0.2.2 — Symmetric counterpart to `unload_llm`. Removes the
+/// `.llamacpp_suspended` sentinel so the supervisor's health loop
+/// respawns llama-server on its next tick (≤3 s), then blocks until
+/// `:8733/health` answers so the next LLM request lands on a warm
+/// server instead of a "Connection refused".
+///
+/// Call BEFORE any pipeline phase whose Python endpoint may invoke an
+/// LLM directly or transitively (music style hints, subtitle
+/// translation, shorts caption generation). The previous behaviour
+/// (`LlamaCppBackend.chat()` clearing the flag itself) only fired
+/// when the call site reached that backend — so a `/music` endpoint
+/// that takes the library path without ever touching the LLM left the
+/// flag stuck, blocking every later LLM-bearing phase until the
+/// supervisor TTL kicked in. This helper closes that hole proactively.
+///
+/// Best-effort: never fails the pipeline. Worst case the LLM call
+/// later sees a still-cold server and retries via the backend's own
+/// 30 s health probe.
+async fn wake_llm(client: &reqwest::Client) {
+    if let Ok(p) = paths::paths() {
+        let flag = p.data_dir.join(".llamacpp_suspended");
+        if flag.is_file() {
+            let _ = std::fs::remove_file(&flag);
+        }
+    }
+    // Give the supervisor up to ~10 s to spawn llama-server. The health
+    // loop sleeps 3 s between ticks so 3-4 polls cover the worst case.
+    // We DON'T fail if it doesn't come back — the Python `LlamaCppBackend`
+    // has its own 30 s health probe inside `chat()` which is the
+    // authoritative wait. This is just a head-start.
+    for _ in 0..20 {
+        let ok = client
+            .get(format!("{}/health", LLAMACPP_SIDECAR))
+            .timeout(std::time::Duration::from_millis(500))
+            .send()
+            .await
+            .map(|r| {
+                let s = r.status().as_u16();
+                s == 200 || s == 503
+            })
+            .unwrap_or(false);
+        if ok { return; }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 async fn node_alive(client: &reqwest::Client) -> bool {
@@ -77,22 +231,47 @@ async fn try_thumbnail(
     client: &reqwest::Client,
     topic: &str,
     meta: &serde_json::Value,
+    setting_tag: Option<&str>,
     width: u32,
     height: u32,
     out_dir: &str,
     out_path: &str,
 ) -> anyhow::Result<()> {
+    // v0.1.37: build a VIRAL thumbnail prompt that prioritizes click-through.
+    // - Anchor with the LLM-generated setting_tag when present (era + culture
+    //   + palette specific to this topic).
+    // - Use viral-thumbnail composition language: extreme close-up,
+    //   high-contrast, dramatic facial expression, punchy saturated
+    //   colours, hook-element in foreground.
+    // - Leave the bottom 1/3 visually "quieter" so the title overlay
+    //   from thumbnail.html lands on a readable area.
+    let setting_prefix = setting_tag.unwrap_or("").trim();
+    let prompt_topic = if !setting_prefix.is_empty() {
+        format!("{}. {}", setting_prefix, topic)
+    } else {
+        topic.to_string()
+    };
+    let prompt = format!(
+        "VIRAL YOUTUBE THUMBNAIL: {prompt_topic}. Extreme dramatic close-up \
+         hero shot, intense emotional expression on the central subject, \
+         iconic element of the topic in the foreground, high-contrast \
+         saturated colours, rim lighting, deep shadows on the lower third \
+         (so title text overlays cleanly), epic atmosphere, photorealistic, \
+         ultra-detailed, sharp focus on subject, shallow depth of field, \
+         clickbait-grade composition, period-correct iconography faithful \
+         to the topic, no text overlay, no logos, no watermarks",
+        prompt_topic = prompt_topic
+    );
     let bg = client
         .post(format!("{}/image", PY_SIDECAR))
-        .timeout(std::time::Duration::from_secs(30 * 60))
+        // v0.2.6 — was 30 min. A single 1280×720 Z-Image thumbnail is
+        // ~20-40 s warm, ~90 s cold. If it isn't done in 4 min the
+        // ComfyUI sampler is thrashing (Sysmem fallback) and will never
+        // finish — fail fast so the caller extracts a video frame
+        // instead of burning 30 min on a doomed prompt.
+        .timeout(std::time::Duration::from_secs(4 * 60))
         .json(&serde_json::json!({
-            "prompt": format!(
-                "dramatic xianxia thumbnail of {}, hero in mid-action with qi aura, \
-                 anamorphic 2.39:1 cinematic framing, volumetric god rays, \
-                 high-contrast teal-and-orange grade, sharp focus on subject, \
-                 epic scale composition rule of thirds, no text overlay",
-                topic
-            ),
+            "prompt": prompt,
             "width": width,
             "height": height,
             "out_dir": out_dir,
@@ -103,12 +282,51 @@ async fn try_thumbnail(
         .error_for_status()?
         .json::<serde_json::Value>()
         .await?;
+    // v0.1.37: pass the full set of new viral fields. The Node renderer
+    // builds the punchy "first word in gold + rest in white" headline;
+    // we pass meta.title_en as the headline and a topic-derived badge.
+    let badge = setting_prefix
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_uppercase();
+    // v0.1.38: derive a SHORT tagline subtitle from the setting_tag instead
+    // of repeating the topic (which doubles as the big title). E.g.
+    // "Ancient Egyptian setting (sand-gold, …)" → "ANCIENT EGYPTIAN ·
+    // REAL HISTORY". When setting_tag is missing we fall back to a
+    // generic tagline so the thumbnail never shows duplicate copy.
+    let core_setting = setting_prefix
+        .splitn(2, |c: char| c == '(' || c == '[')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches(|c: char| ".,;: ".contains(c))
+        .to_string();
+    let core_setting = {
+        let lower = core_setting.to_lowercase();
+        let trimmed = ["setting", "era", "period", "world", "universe", "atmosphere"]
+            .iter()
+            .fold(lower, |acc, suffix| {
+                if acc.ends_with(suffix) {
+                    acc[..acc.len() - suffix.len()].trim().to_string()
+                } else { acc }
+            });
+        trimmed.trim_end_matches(|c: char| ".,;: ".contains(c)).to_string()
+    };
+    let subtitle_text = if core_setting.is_empty() {
+        "REAL HISTORY".to_string()
+    } else {
+        format!("{} · REAL HISTORY", core_setting.to_uppercase())
+    };
     let _thumb = client
         .post(format!("{}/render/thumbnail", NODE_SIDECAR))
         .timeout(std::time::Duration::from_secs(2 * 60))
         .json(&serde_json::json!({
             "title_en": meta["title_en"],
             "title_zh": meta["title_zh"],
+            "subtitle": subtitle_text,
+            "badge": badge,
             "background_path": bg["image_path"],
             "out_path": out_path,
         }))
@@ -154,6 +372,7 @@ async fn try_hyperframes_render(
     out_path: &str,
     width: u32,
     height: u32,
+    intro_eyebrow: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let resp = client
         .post(format!("{}/render/narrative", NODE_SIDECAR))
@@ -161,6 +380,10 @@ async fn try_hyperframes_render(
         .json(&serde_json::json!({
             "project_id": pid,
             "title": title,
+            // v0.1.38 — eyebrow line on the intro card. Derived from the
+            // setting_tag so it reads "ANCIENT EGYPTIAN · HISTORIA REAL"
+            // instead of the generic "DOCUMENTAL" fallback.
+            "intro_eyebrow": intro_eyebrow,
             "images": beats,
             "narration_path": narration_audio,
             "music_path": music_audio,
@@ -389,6 +612,10 @@ async fn run(
     let _full_script = script_resp["script"].as_str().unwrap_or("").to_string();
     let markers = script_resp["markers"].clone();
     persist_step(pool, pid, 1, "done", &script_resp).await?;
+    // Persist the raw script (with [CHAPTER:]/[IMAGE:] markers) next to
+    // the project so the SEO pack — phase 12 here, or the Library panel
+    // re-run on an OLD project — can rebuild real chapters from it.
+    let _ = std::fs::write(project_dir.join("script.txt"), &_full_script);
     emit(app, pid, 1, "done", 100.0, "Guion listo");
     // Phase 2 also uses Ollama (Gemma 4) — keeping the model loaded between
     // phases avoids paying the ~3 GB load cost twice. We unload AFTER
@@ -408,9 +635,14 @@ async fn run(
         .await?;
     persist_step(pool, pid, 2, "done", &meta).await?;
     emit(app, pid, 2, "done", 100.0, "Metadatos listos");
-    // NOW free Ollama (~3 GB recovered) before TTS loads its own model.
-    // The unload helper polls /api/ps until xianxia-llm is fully evicted.
-    unload(&client, "ollama").await;
+    // Free the LLM (~3-5 GB) before TTS loads its own weights. In v0.2.0+
+    // the default backend is llama.cpp: the sidecar kills `llama-server.exe`
+    // and drops the `.llamacpp_suspended` flag so the supervisor doesn't
+    // respawn during the image/TTS/depth chain. If the user explicitly
+    // selected Ollama from Settings, the same call falls back to
+    // `keep_alive=0` + /api/ps polling. Either way the Rust pipeline stays
+    // backend-agnostic.
+    unload(&client, "llm").await;
 
     // ─── Phase 3: TTS ────────────────────────────────────────────────
     // Audio language comes from the FIRST entry in `languages` (the UI's
@@ -442,8 +674,24 @@ async fn run(
     };
     emit(app, pid, 3, "running", 0.0,
         &format!("Sintetizando voz en {}…", audio_lang_name));
+    // v0.2.6.1 — best-effort VRAM reclaim before loading the ~7 GB
+    // Qwen3-TTS clone model. llama-server is already killed (above), but
+    // a ComfyUI baseline + desktop GPU apps (browser/Teams/Photos) can
+    // shave the headroom enough that the clone model spills into Windows
+    // Sysmem-fallback thrash (the 2026-05-15 run: TTS clone took 17 min
+    // vs ~2.5 min normal). We reclaim everything WE control; this never
+    // aborts (TTS is mandatory — there is no library fallback for the
+    // narration) — it just maximises the free card.
+    ensure_comfyui_vram(app, &client, 6.0).await;
     let tts: serde_json::Value = client
         .post(format!("{}/tts", PY_SIDECAR))
+        // v0.2.6.1 — was UNBOUNDED. A TTS clone that fell into Sysmem
+        // thrash with no timeout would hang the ENTIRE pipeline forever
+        // (the worst failure mode — no error, no recovery). 25 min
+        // covers a legitimately slow long-form clone with margin while
+        // bounding a true hang so the run fails cleanly instead of
+        // hanging indefinitely.
+        .timeout(std::time::Duration::from_secs(25 * 60))
         .json(&serde_json::json!({
             "text": narration,
             "language": audio_lang_name,
@@ -482,6 +730,12 @@ async fn run(
         let total = image_markers.len().max(1);
         for (i, m) in image_markers.iter().enumerate() {
             let prompt = m["prompt"].as_str().unwrap_or("");
+            // v0.2.1 — preserve the marker's ORIGINAL textual timestamp
+            // (computed by `parse_markers` from words-before / 150 wpm),
+            // so the timeline normalisation below can scale text-relative
+            // positions to the real audio duration instead of throwing
+            // them away with a uniform distribution.
+            let text_seconds = m["timestamp_seconds"].as_f64().unwrap_or(0.0);
             let img: serde_json::Value = client
                 .post(format!("{}/image", PY_SIDECAR))
                 .json(&serde_json::json!({
@@ -496,10 +750,11 @@ async fn run(
                 .json()
                 .await?;
             let img_path = img["image_path"].as_str().unwrap_or("").to_string();
-            // Placeholder start/duration — replaced below by uniform
-            // distribution over the real audio duration.
+            // Placeholder start/duration — replaced below by the
+            // text-proportional scaling pass.
             beats.push(serde_json::json!({
                 "path": img_path.clone(),
+                "text_seconds": text_seconds,
                 "start": 0.0,
                 "duration": 0.0,
             }));
@@ -521,26 +776,94 @@ async fn run(
             emit(app, pid, 4, "running", pct, &format!("Imagen {}/{}", i + 1, total));
         }
     }
-    // ─── Beat timeline normalisation ────────────────────────────────
-    // Replace whatever start/duration the per-beat loop set with a uniform
-    // distribution over the REAL narration audio duration. Each beat
-    // covers `audio / N` seconds, with a small overlap to enable the
-    // GSAP cross/flash/whip/inkwash transitions in narrative.html. The
-    // last beat is clamped to the end of the audio so no image is
-    // truncated and no black tail remains.
+    // ─── Beat timeline normalisation (v0.2.1: text-proportional) ────
+    //
+    // Bug we're fixing: the previous version used `normalise_beat_timeline`
+    // which spread every beat UNIFORMLY across the audio. That guaranteed
+    // coverage but broke the link between image and narration — Gemma
+    // wrote `[IMAGE: serpiente emplumada]` after sentence 5 of the script,
+    // the uniform distribution then placed it at second 45 of the audio,
+    // but at second 45 the voice was already talking about the Aztec
+    // calendar. User feedback: "muchas imágenes extremadamente iguales,
+    // y que a lo mejor no concuerdan con el punto exacto del montaje".
+    //
+    // Fix: each marker comes from `parse_markers` with `timestamp_seconds`
+    // = (words_before / 150) * 60 — i.e. its CHARACTER POSITION in the
+    // script translated to a 150 wpm clock. That's a faithful proxy for
+    // *when in the narration* the marker should fire. The real TTS rate
+    // is rarely exactly 150 wpm, so we LINEARLY SCALE every marker's
+    // text_seconds to the real audio duration. Result: markers retain
+    // their relative position in the narration but cover the full audio
+    // without dead air. No more "image-narration desync".
+    //
+    // Each beat's duration = next beat's start − current start. The last
+    // beat extends to the end of the audio so we never leave a black tail.
     if !beats.is_empty() && narration_duration > 0.0 {
         let n = beats.len();
-        let normalised = normalise_beat_timeline(n, narration_duration);
-        for (i, slot) in normalised.iter().enumerate() {
-            beats[i]["start"] = serde_json::json!(slot.start);
-            beats[i]["duration"] = serde_json::json!(slot.duration);
-            beats[i]["transition"] = serde_json::json!(slot.transition);
+        // Find the maximum text_seconds — that's the scale denominator.
+        // If all beats reported 0 (legacy clients), fall back to uniform.
+        let max_text = beats
+            .iter()
+            .filter_map(|b| b["text_seconds"].as_f64())
+            .fold(0.0f64, f64::max);
+        if max_text > 0.0 {
+            // Same transition cycle the legacy uniform path used (v0.1.23
+            // dropped inkwash because it created the "iris closing on a
+            // near-identical image" effect). Defined here locally so the
+            // text-scaled path stays in sync with normalise_beat_timeline.
+            const TRANS: &[&str] = &["cross", "flash", "cross", "whip"];
+            let scale = narration_duration / max_text;
+            // Pass 1: scale every beat's start time.
+            let mut scaled_starts: Vec<f64> = beats
+                .iter()
+                .map(|b| {
+                    let t = b["text_seconds"].as_f64().unwrap_or(0.0);
+                    (t * scale).max(0.0).min(narration_duration)
+                })
+                .collect();
+            // Defensive: parse_markers sometimes emits two adjacent markers
+            // at the same word offset (e.g. `[IMAGE: a] [IMAGE: b]` with
+            // no narration between them). Bump duplicates forward by 0.5 s
+            // so each image still gets visible screen time.
+            for i in 1..scaled_starts.len() {
+                if scaled_starts[i] <= scaled_starts[i - 1] {
+                    scaled_starts[i] = (scaled_starts[i - 1] + 0.5).min(narration_duration);
+                }
+            }
+            // Pass 2: write start + duration. duration = next.start − this.start
+            // (last beat extends to audio end).
+            for (i, start) in scaled_starts.iter().enumerate() {
+                let next_start = scaled_starts
+                    .get(i + 1)
+                    .copied()
+                    .unwrap_or(narration_duration);
+                let duration = (next_start - start).max(0.5);
+                let transition = TRANS[i % TRANS.len()];
+                beats[i]["start"] = serde_json::json!(*start);
+                beats[i]["duration"] = serde_json::json!(duration);
+                beats[i]["transition"] = serde_json::json!(transition);
+            }
+            tracing::info!(
+                beats = n,
+                audio_seconds = narration_duration,
+                max_text_seconds = max_text,
+                scale = scale,
+                "beat timeline scaled from text-position to real audio duration",
+            );
+        } else {
+            // No text positions (very old marker shape) — fall back to
+            // the legacy uniform behaviour so nothing crashes.
+            let normalised = normalise_beat_timeline(n, narration_duration);
+            for (i, slot) in normalised.iter().enumerate() {
+                beats[i]["start"] = serde_json::json!(slot.start);
+                beats[i]["duration"] = serde_json::json!(slot.duration);
+                beats[i]["transition"] = serde_json::json!(slot.transition);
+            }
+            tracing::warn!(
+                beats = n,
+                "no text_seconds on beats — falling back to uniform distribution",
+            );
         }
-        tracing::info!(
-            beats = n,
-            audio_seconds = narration_duration,
-            "beat timeline normalised over real audio duration",
-        );
     }
 
     persist_step(pool, pid, 4, "done", &serde_json::json!({"beats": beats})).await?;
@@ -550,74 +873,212 @@ async fn run(
     unload(&client, "comfyui").await;
     unload(&client, "image").await;
 
-    // ─── Phase 4b: Depth segmentation (rembg) for parallax 2.5D layers ──
-    // Best effort: if rembg/onnxruntime aren't installed or any image errors,
-    // we fall through to the FFmpeg-fast render which doesn't need layers.
-    emit(app, pid, 4, "running", 80.0, "Segmentando capas de profundidad…");
-    let img_paths: Vec<String> = beats
-        .iter()
-        .map(|b| b["path"].as_str().unwrap_or("").to_string())
-        .collect();
+    // ─── Phase 4b: DepthFlow 2.5D parallax clips (v0.1.38) ──────────────
+    // For each generated still we ask DepthFlow to render a short
+    // parallax MP4 (12 s, looped at the renderer level). DepthFlow uses
+    // a per-pixel depth gradient (Depth-Anything-V2 + GLSL shader) so
+    // there are NO inpainting artefacts — fixes the "broken pyramid
+    // tops" problem we saw with the legacy rembg+inpaint approach.
+    //
+    // Auto-detection: if the DepthFlow venv isn't installed (wizard
+    // component `python-deps-depthflow` not run yet), `/depthflow/health`
+    // reports `venv_python_exists=false` and we skip this phase. The
+    // renderer then falls back to single-image + Ken Burns. Same goes
+    // for any clip-level error: the beat keeps its still image path
+    // and the renderer just plays it as <img> instead of <video>.
+    emit(app, pid, 4, "running", 80.0, "Generando parallax 2.5D con DepthFlow…");
+
+    let depthflow_available = match client
+        .get(format!("{}/depthflow/health", PY_SIDECAR))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+            Ok(v) => v
+                .get("venv_python_exists")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
+            Err(_) => false,
+        },
+        _ => false,
+    };
+
     let mut all_layered = false;
-    if !img_paths.is_empty() {
-        let depth_call = client
-            .post(format!("{}/depth/batch", PY_SIDECAR))
-            .timeout(std::time::Duration::from_secs(10 * 60))
+    if depthflow_available && !beats.is_empty() {
+        let img_paths: Vec<String> = beats
+            .iter()
+            .map(|b| b["path"].as_str().unwrap_or("").to_string())
+            .collect();
+        let df_dir = format!("{}/df-clips", out_dir);
+        let _ = std::fs::create_dir_all(&df_dir);
+        let df_call = client
+            .post(format!("{}/depthflow/batch", PY_SIDECAR))
+            .timeout(std::time::Duration::from_secs(30 * 60))
             .json(&serde_json::json!({
                 "images": img_paths,
-                "model": "u2net",
-                // Bumped from (12, 4) to (16, 8): the new depth.py runs an
-                // erode pass + gamma + decontamination on the alpha so the
-                // parallax composite no longer shows the colour-fringe halo
-                // around hair/foliage. The wider feather absorbs the few
-                // semi-transparent pixels rembg leaves behind.
-                "inpaint_radius": 16,
-                "feather_pixels": 8,
+                "out_dir": df_dir,
+                // 12-second clips loop at the renderer level, so we never
+                // need a per-beat-duration generation cost spike. Empirically
+                // this avoids the GPU OOM that 41 s clips triggered on RTX
+                // 4060 Laptop while still giving every beat its own unique
+                // depth-driven camera move.
+                "duration_seconds": 12.0,
+                "fps": 24,
+                "width": if req.vertical { 1080 } else { 1920 },
+                "height": if req.vertical { 1920 } else { 1088 },
             }))
             .send()
             .await;
-        if let Ok(resp) = depth_call {
+        if let Ok(resp) = df_call {
             if resp.status().is_success() {
-                if let Ok(depth_resp) = resp.json::<serde_json::Value>().await {
-                    if let Some(results) = depth_resp["results"].as_array() {
-                        if results.len() == beats.len() {
-                            for (i, r) in results.iter().enumerate() {
-                                if let (Some(bg), Some(fg)) =
-                                    (r["bg_path"].as_str(), r["fg_path"].as_str())
+                if let Ok(df_resp) = resp.json::<serde_json::Value>().await {
+                    if let Some(results) = df_resp["results"].as_array() {
+                        // v0.1.46: accept PARTIAL results. Previously we
+                        // required `results.len() == beats.len()` (all 16
+                        // of 16) and otherwise discarded every clip,
+                        // including the ones that succeeded — so a single
+                        // UnicodeDecodeError on clip 13 destroyed the
+                        // parallax for clips 0-12 too. Now we attach a
+                        // clip_path to every beat whose result is valid
+                        // and leave the rest as static KenBurns. The
+                        // renderer handles a mixed timeline fine.
+                        let mut attached = 0usize;
+                        for (i, r) in results.iter().enumerate() {
+                            if i >= beats.len() { break; }
+                            if let Some(out) = r["output_path"].as_str() {
+                                if !out.is_empty()
+                                    && std::fs::metadata(out)
+                                        .map(|m| m.len() > 1024)
+                                        .unwrap_or(false)
                                 {
-                                    beats[i]["path"] = serde_json::json!(bg);
-                                    beats[i]["foreground_path"] = serde_json::json!(fg);
+                                    beats[i]["clip_path"] = serde_json::json!(out);
+                                    attached += 1;
                                 }
                             }
+                        }
+                        if attached == beats.len() {
                             all_layered = true;
-                            emit(app, pid, 4, "done", 100.0, "Imágenes + capas 2.5D");
+                            emit(app, pid, 4, "done", 100.0, "Parallax 2.5D listo (DepthFlow)");
+                        } else if attached > 0 {
+                            tracing::warn!(
+                                attached, total = beats.len(),
+                                "depthflow batch partial — using {attached}/{} clips, rest as KenBurns",
+                                beats.len()
+                            );
+                            emit(
+                                app, pid, 4, "done", 100.0,
+                                &format!("Parallax 2.5D parcial: {}/{} clips", attached, beats.len()),
+                            );
+                        } else {
+                            emit(app, pid, 4, "done", 100.0, "Parallax sin clips — usando KenBurns");
                         }
                     }
                 }
+            } else {
+                tracing::warn!(
+                    status = %resp.status(),
+                    "depthflow batch returned non-2xx — falling back to single-image",
+                );
+                // v0.1.45: emit phase-4 completion on fallback so the
+                // UI doesn't stay stuck at the last DepthFlow progress
+                // percentage (user complaint: "stuck at 80%"). The
+                // pipeline really IS continuing to music; without this
+                // explicit emit the renderer never sees the phase
+                // transition and the progress bar appears frozen.
+                emit(app, pid, 4, "done", 100.0, "Parallax falló — continuando con KenBurns");
             }
+        } else if let Err(e) = df_call {
+            tracing::warn!(error = %e, "depthflow batch errored — falling back to single-image");
+            emit(app, pid, 4, "done", 100.0, "DepthFlow inalcanzable — continuando con KenBurns");
         }
+    } else if !depthflow_available {
+        tracing::info!("depthflow venv not installed — skipping parallax phase, using single-image render");
+        emit(app, pid, 4, "done", 100.0, "Imágenes listas (DepthFlow no instalado)");
     }
-    // Free rembg sessions + RMBG-2.0 weights cached for the depth pass.
-    // Without this they linger in VRAM (~177 MB u2net, up to 1.4 GB
-    // RMBG-2.0) competing with the next phases.
     unload(&client, "depth").await;
 
     // ─── Phase 5: Music selector ─────────────────────────────────────
     emit(app, pid, 5, "running", 0.0, "Seleccionando música…");
-    let music: serde_json::Value = client
+    // v0.2.3 — DO NOT wake llama-server before /music. MusicGen needs
+    // ~4 GB VRAM and llama-server holds ~3 GB; with 8 GB total the
+    // contention either spills MusicGen to CPU (50× slower) or stalls
+    // outright. /music never invokes the LLM (style_hint is computed
+    // ahead of time from the script_resp.setting_tag), so keeping the
+    // suspend flag in place through music + render + thumbnail and
+    // only waking the LLM right before /subtitles is the correct
+    // VRAM choreography. v0.2.2 mistakenly inserted wake_llm here
+    // and that's what hung the post-DepthFlow phase in field tests.
+    // v0.1.38: pass topic + setting_tag as style_hint so the music
+    // generator biases toward the right era / culture (e.g. "1990s
+    // superhero TV" for Power Rangers vs "ancient Egyptian percussion"
+    // for Egyptian gods) instead of always sounding xianxia-orchestral.
+    let style_hint = script_resp.get("setting_tag")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| req.topic.clone());
+    // v0.2.6 — hard 12-min timeout. Python `/music` is MusicGen-only now
+    // (ACE-Step removed: see CHANGELOG and routes/music.py). MusicGen has
+    // a strict GPU-only pre-check (≥4 GB free VRAM, else 503). For an 8-min
+    // narrative MusicGen needs ~7-9 min of chunked generation, so 12 min
+    // covers the happy path with margin. On timeout / any error we fall
+    // back to a library track (instant) so the pipeline never stalls on
+    // this phase.
+    // v0.2.9 — ACE-Step v1.5 is the PRINCIPAL music generator (no
+    // toggle). `use_musicgen` means "generate AI music" — the Python
+    // /music route always tries ACE-Step first (its venv auto-bootstraps
+    // in the background), then MusicGen, then library. _acestep_v15
+    // never raises so the chain can't block.
+    let music_body = serde_json::json!({
+        "mood": "epic",
+        "duration_seconds": script_resp["estimated_seconds"].as_f64().unwrap_or(900.0),
+        "use_musicgen": req.use_musicgen,
+        "style_hint": style_hint,
+    });
+    let music_first = client
         .post(format!("{}/music", PY_SIDECAR))
-        .json(&serde_json::json!({
-            "mood": "epic",
-            "duration_seconds": script_resp["estimated_seconds"].as_f64().unwrap_or(900.0),
-            "use_musicgen": req.use_musicgen,
-        }))
+        .timeout(std::time::Duration::from_secs(12 * 60))
+        .json(&music_body)
         .send()
-        .await?
-        .json()
-        .await?;
+        .await;
+    let music: serde_json::Value = match music_first {
+        Ok(r) if r.status().is_success() => match r.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "music JSON decode failed — falling back to library");
+                emit(app, pid, 5, "running", 95.0, "MusicGen falló, usando librería local…");
+                let fb_body = serde_json::json!({
+                    "mood": "epic",
+                    "duration_seconds": script_resp["estimated_seconds"].as_f64().unwrap_or(900.0),
+                    "use_musicgen": false,
+                    "style_hint": style_hint,
+                });
+                client.post(format!("{}/music", PY_SIDECAR))
+                    .timeout(std::time::Duration::from_secs(120))
+                    .json(&fb_body).send().await?.json().await?
+            }
+        },
+        other => {
+            let why = match other {
+                Ok(r) => format!("status {}", r.status()),
+                Err(e) => e.to_string(),
+            };
+            tracing::warn!(reason = %why, "musicgen call failed — falling back to library");
+            emit(app, pid, 5, "running", 95.0, "MusicGen falló, usando librería local…");
+            let fb_body = serde_json::json!({
+                "mood": "epic",
+                "duration_seconds": script_resp["estimated_seconds"].as_f64().unwrap_or(900.0),
+                "use_musicgen": false,
+                "style_hint": style_hint,
+            });
+            client.post(format!("{}/music", PY_SIDECAR))
+                .timeout(std::time::Duration::from_secs(120))
+                .json(&fb_body).send().await?.json().await?
+        }
+    };
     persist_step(pool, pid, 5, "done", &music).await?;
     emit(app, pid, 5, "done", 100.0, "Música lista");
-    // Release MusicGen / ACE-Step PyTorch tensors (~2-4 GB) before render.
+    // Release MusicGen PyTorch tensors (~3-4 GB) before render.
     // Phase 6 doesn't need GPU compute (HyperFrames uses Chromium + ffmpeg
     // NVENC) so this is the cheapest phase to leave VRAM clean for.
     unload(&client, "music").await;
@@ -658,9 +1119,36 @@ async fn run(
             "Renderizando con HyperFrames (HTML/CSS/GSAP · parallax 2.5D · atmospherics · transiciones)…",
         );
         let (width, height) = if req.vertical { (1080u32, 1920u32) } else { (1920u32, 1080u32) };
+        // v0.1.38 — derive intro eyebrow from setting_tag (e.g. "Ancient
+        // Egyptian setting (sand-gold, …)" → "ANCIENT EGYPTIAN · HISTORIA
+        // REAL"). Mirrors the pilot's logic so the compiled app and the
+        // pilot produce the same intro card.
+        let intro_eyebrow = {
+            let raw = script_resp.get("setting_tag")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let core = raw.splitn(2, |c: char| c == '(' || c == '[')
+                .next().unwrap_or("").trim()
+                .trim_end_matches(|c: char| ".,;: ".contains(c))
+                .to_string();
+            let core_lower = core.to_lowercase();
+            let suffix_stripped = ["setting", "era", "period", "world", "universe", "atmosphere"]
+                .iter()
+                .fold(core_lower, |acc, s| {
+                    if acc.ends_with(s) { acc[..acc.len() - s.len()].trim().to_string() } else { acc }
+                });
+            let trimmed = suffix_stripped.trim_end_matches(|c: char| ".,;: ".contains(c)).trim();
+            if trimmed.is_empty() {
+                "DOCUMENTAL".to_string()
+            } else {
+                format!("{} · HISTORIA REAL", trimmed.to_uppercase())
+            }
+        };
         match try_hyperframes_render(
             &client, pid, &req.topic, &beats, &narration_audio,
-            &music["audio_path"], &video_out, width, height,
+            &music["audio_path"], &video_out, width, height, &intro_eyebrow,
         ).await {
             Ok(json) => {
                 // Verify the MP4 actually exists on disk. The Node sidecar
@@ -827,9 +1315,37 @@ async fn run(
     unload(&client, "music").await;
     let (thumb_w, thumb_h) = if req.vertical { (720, 1280) } else { (1280, 720) };
     let thumb_out = format!("{}/thumbnail.jpg", out_dir);
-    let thumbnail_path: Option<String> = match try_thumbnail(
-        &client, &req.topic, &meta, thumb_w, thumb_h, &out_dir, &thumb_out,
-    ).await {
+    // v0.1.37: pass the LLM-generated setting_tag to the thumbnail flow
+    // so the Z-Image prompt is anchored in the right era / culture /
+    // palette (same source of truth used for image markers + music).
+    let thumb_setting_tag = script_resp.get("setting_tag")
+        .and_then(|v| v.as_str());
+    // v0.2.6 — VRAM gate. The thumbnail forces a Z-Image COLD reload
+    // (text encoder + Lumina2 + VAE, ~5.5 GB) because the image phase
+    // evicted ComfyUI. If something upstream left the card contended
+    // (e.g. the old ACE-Step leak — now dropped — or a hung worker),
+    // the cold reload would enter Sysmem-fallback thrash and hang ~30
+    // min. `ensure_comfyui_vram` reclaims (respawning ComfyUI if its
+    // worker is stuck); if we STILL can't free enough we skip Z-Image
+    // entirely and extract a video frame — instant, never hangs.
+    let thumb_vram = ensure_comfyui_vram(app, &client, THUMB_MIN_VRAM_GB).await;
+    let thumb_attempt = if thumb_vram >= THUMB_MIN_VRAM_GB {
+        try_thumbnail(
+            &client, &req.topic, &meta, thumb_setting_tag,
+            thumb_w, thumb_h, &out_dir, &thumb_out,
+        ).await
+    } else {
+        tracing::warn!(
+            free_gb = thumb_vram,
+            target_gb = THUMB_MIN_VRAM_GB,
+            "insufficient VRAM for Z-Image thumbnail cold reload — extracting video frame directly"
+        );
+        Err(anyhow::anyhow!(
+            "VRAM gate: only {:.1} GB free (< {:.1} GB) — skipped Z-Image to avoid Sysmem thrash",
+            thumb_vram, THUMB_MIN_VRAM_GB
+        ))
+    };
+    let thumbnail_path: Option<String> = match thumb_attempt {
         Ok(()) if std::path::Path::new(&thumb_out).exists() => {
             emit(app, pid, 7, "done", 100.0, "Thumbnail listo (Z-Image + Node)");
             Some(thumb_out.clone())
@@ -863,9 +1379,25 @@ async fn run(
 
     // ─── Phase 8: Subtitles (Whisper word-level + ASS karaoke + burn-in) ─
     emit(app, pid, 8, "running", 0.0, "Transcribiendo + karaoke ASS…");
-    // Free Z-Image VRAM (image phase) before Whisper loads (~1 GB).
+    // Free Z-Image VRAM before Whisper loads.
     unload(&client, "image").await;
-    unload(&client, "comfyui").await;
+    // v0.2.6 — HARD ComfyUI reclaim. The plain best-effort `/free` does
+    // NOT work when ComfyUI's worker is stuck on a hung prompt (the exact
+    // failure that killed the 2026-05-15 run: a thumbnail Z-Image prompt
+    // thrashed for 30 min, ComfyUI never released VRAM, then llama-server
+    // (3 GB) + Whisper (3 GB) couldn't fit and the subtitles route hung
+    // 15 min until the Rust timeout). `ensure_comfyui_vram` escalates to
+    // killing + respawning ComfyUI so a fresh process returns the card to
+    // ~full free. We target 4 GB so llama-server + Whisper co-exist.
+    ensure_comfyui_vram(app, &client, WHISPER_MIN_VRAM_GB).await;
+    // v0.2.2 — wake llama-server before /subtitles. When `target_subs`
+    // contains languages different from `primary_lang`, the Python
+    // route invokes the LLM for translation. Without an explicit wake
+    // the suspend flag (set after script generation) would survive
+    // the entire image+depth+music chain and stall here exactly as
+    // v0.2.1 did. Done AFTER the ComfyUI reclaim so the freed VRAM is
+    // what llama-server loads into (not a still-contended card).
+    wake_llm(&client).await;
 
     // Subtitles: source = audio language (the one Whisper transcribes
     // and that gets burned into the MP4); targets = the multi-select
@@ -896,7 +1428,13 @@ async fn run(
     }
     let subs: serde_json::Value = client
         .post(format!("{}/subtitles", PY_SIDECAR))
-        .timeout(std::time::Duration::from_secs(15 * 60))
+        // v0.2.6.1 — was 15 min. Even with the Python-side fixes (whisper
+        // evicted before translation + batched LLM calls) a long video
+        // with many subtitle entries × multiple target languages is
+        // legitimately minutes of LLM work. 15 min killed the 2026-05-15
+        // run at 16.9 min when the route WOULD have completed. 30 min is
+        // the safety net; the real speed fix is whisper-unload + batching.
+        .timeout(std::time::Duration::from_secs(30 * 60))
         .json(&serde_json::json!({
             "audio_path": narration_audio,
             "source_language": primary_lang,
@@ -904,6 +1442,13 @@ async fn run(
             "vertical": req.vertical,
             "out_dir": out_dir,
             "style": req.caption_style.clone().unwrap_or_else(|| "xianxia".to_string()),
+            // v0.1.46: tell the subtitle generator the narration audio
+            // sits at t=6 inside the FINAL composed video (the Node
+            // renderer prepends an INTRO_SEC=6.0 intro card + silence).
+            // Without this, every cue appears 6 s ahead of the spoken
+            // word — the desync the user reported across long-form
+            // videos since the intro card was added in v0.1.38.
+            "intro_offset_seconds": 6.0,
         }))
         .send()
         .await?
@@ -1031,6 +1576,37 @@ async fn run(
             Ok(resp) => {
                 emit(app, pid, 9, "done", 100.0, &format!("Subido: youtube.com/watch?v={}", resp.video_id));
                 persist_step(pool, pid, 9, "done", &serde_json::json!({"video_id": resp.video_id})).await?;
+
+                // v0.4.0 — record the scheduled_uploads row. This was the
+                // missing producer: the table + publish-flip cron existed
+                // but nothing ever wrote here, so scheduled publishing was
+                // dormant and the Planificador screen had no real data.
+                // Best-effort: bookkeeping must NEVER fail the pipeline.
+                let privacy = req.publish_privacy.clone().unwrap_or_else(|| "private".to_string());
+                let now_ts = chrono::Utc::now().timestamp();
+                let (status, sched_at) = if privacy == "public" {
+                    ("published", now_ts) // already public — history only
+                } else if let Some(at) = req.publish_at {
+                    ("uploaded", at)      // cron flips it public when due
+                } else {
+                    ("held", now_ts)      // private, no schedule — cron ignores
+                };
+                if let Err(e) = crate::db::scheduled::record(
+                    pool,
+                    crate::db::scheduled::NewScheduled {
+                        project_id: pid.to_string(),
+                        youtube_video_id: Some(resp.video_id.clone()),
+                        scheduled_at: sched_at,
+                        privacy_status: privacy,
+                        publish_at: req.publish_at,
+                        is_short: req.vertical,
+                        status: status.to_string(),
+                    },
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "scheduled_uploads record failed (non-fatal)");
+                }
             }
             Err(e) => {
                 emit(app, pid, 9, "failed", 0.0, &format!("Upload falló: {}", e));
@@ -1170,6 +1746,93 @@ async fn run(
         }
     } else {
         emit(app, pid, 11, "skipped", 0.0, "Análisis engagement desactivado · skip");
+    }
+
+    // ─── Phase 12: SEO metadata pack (100 % local, best-effort) ────
+    // Title + variants, per-language description with the hook front-
+    // loaded, tags (500-char budget), hashtags, REAL chapters from the
+    // script markers, SEO score. Written to seo.json/seo.txt next to the
+    // MP4. NEVER blocks the pipeline — the video is already done.
+    emit(app, pid, 12, "running", 0.0, "Generando metadatos SEO…");
+    wake_llm(&client).await; // project rule: any LLM phase wakes llama first
+    // v0.2.16 audit: capture WHY the SEO pack was skipped instead of
+    // swallowing the error silently — purely diagnostic, behaviour
+    // unchanged (still best-effort, still never blocks the pipeline).
+    let (seo_resp, seo_reason): (Option<serde_json::Value>, String) = match client
+        .post(format!("{}/seo", PY_SIDECAR))
+        .timeout(std::time::Duration::from_secs(6 * 60))
+        .json(&serde_json::json!({
+            "script": _full_script,
+            "project_id": pid,
+            "topic": req.topic,
+            "languages": req.languages,
+            "model": req.llm_model.clone().unwrap_or_else(|| "xianxia-llm".to_string()),
+            "out_dir": out_dir,
+        }))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => (r.json().await.ok(), String::new()),
+        Ok(r) => (None, format!("HTTP {}", r.status())),
+        Err(e) => (None, format!("request error: {}", e)),
+    };
+    match seo_resp {
+        Some(pack) if pack.get("title").is_some() => {
+            let score = pack["seo_score"].as_i64().unwrap_or(0);
+            persist_step(pool, pid, 12, "done", &pack).await?;
+            emit(app, pid, 12, "done", 100.0,
+                 &format!("Metadatos SEO listos · score {}/100", score));
+        }
+        _ => {
+            let why = if seo_reason.is_empty() {
+                "respuesta sin título".to_string()
+            } else {
+                seo_reason
+            };
+            tracing::warn!(phase = 12, reason = %why, "SEO pack skipped");
+            emit(app, pid, 12, "skipped", 0.0,
+                 &format!("Metadatos SEO no disponibles · {}", why));
+        }
+    }
+
+    // ─── Phase 13: AI-provenance watermark (Meta AudioSeal) ────────
+    // Imperceptible neural watermark on the FINAL video's audio so the
+    // published artifact is provably AI-generated (YouTube AI disclosure,
+    // complements the SEO pack). Best-effort, EXACT mirror of phase 12:
+    // the video is already done, this never blocks and never `?`-propagates.
+    // The video stream is copied bit-identical sidecar-side (`-c:v copy`).
+    emit(app, pid, 13, "running", 0.0, "Marca de agua de procedencia IA…");
+    let (wm_resp, wm_reason): (Option<serde_json::Value>, String) = match client
+        .post(format!("{}/watermark", PY_SIDECAR))
+        .timeout(std::time::Duration::from_secs(7 * 60))
+        .json(&serde_json::json!({
+            "video_path": final_video,
+            "out_dir": out_dir,
+        }))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => (r.json().await.ok(), String::new()),
+        Ok(r) => (None, format!("HTTP {}", r.status())),
+        Err(e) => (None, format!("request error: {}", e)),
+    };
+    match wm_resp {
+        Some(pack) if pack.get("watermarked").and_then(|v| v.as_bool()) == Some(true) => {
+            persist_step(pool, pid, 13, "done", &pack).await?;
+            emit(app, pid, 13, "done", 100.0, "Marca de agua IA aplicada");
+        }
+        _ => {
+            let why = if !wm_reason.is_empty() {
+                wm_reason
+            } else if let Some(p) = &wm_resp {
+                p.get("reason").and_then(|v| v.as_str()).unwrap_or("no disponible").to_string()
+            } else {
+                "no disponible".to_string()
+            };
+            tracing::warn!(phase = 13, reason = %why, "watermark skipped");
+            emit(app, pid, 13, "skipped", 0.0,
+                 &format!("Marca de agua IA omitida · {}", why));
+        }
     }
 
     Ok(())

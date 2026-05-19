@@ -189,6 +189,57 @@ def _segment_one(req: DepthSegmentRequest) -> DepthSegmentResponse:
     if mask.dtype != np.uint8:
         mask = np.clip(mask, 0, 255).astype(np.uint8)
 
+    # ── 2b) Sanity-check: ¿es un mask USABLE? ────────────────────────
+    # rembg fails quietly on certain inputs (extreme close-ups of a face,
+    # busy abstract images, screenshots) producing garbage masks: tiny
+    # disconnected blobs, full-frame coverage, or many islands. Composing
+    # parallax on top of those produced the visible defects in v0.1.18:
+    # disembodied head floating, flying foreground crumbs, swords clipped
+    # half-way. Better to fall back to a SINGLE-LAYER beat (the
+    # narrative.html template handles `single` cleanly with a soft pan
+    # and zoom — no fg/bg separation, no clipping) than to ship a broken
+    # parallax composite.
+    binary = (mask > 64).astype(np.uint8) * 255
+    coverage_ratio = float((binary > 0).sum()) / float(binary.size or 1)
+    n_components, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        binary, connectivity=8,
+    )
+    # Drop the background label (index 0) from stats. Count meaningful
+    # foreground components (≥ 0.4 % of frame area) — a single
+    # well-separated subject usually has 1–3.
+    fg_components = 0
+    if n_components > 1:
+        for i in range(1, n_components):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area >= int(0.004 * binary.size):
+                fg_components += 1
+    mask_is_usable = (
+        0.04 <= coverage_ratio <= 0.92
+        and 1 <= fg_components <= 4
+    )
+    if not mask_is_usable:
+        log.warning(
+            "depth.segment %s: mask rejected (coverage=%.1f%%, components=%d). "
+            "Falling back to single-layer beat — no fg/bg separation will be "
+            "produced for this image.",
+            src.name, coverage_ratio * 100.0, fg_components,
+        )
+        # Returning bg=fg=original_image with the same size makes the
+        # narrative.html template treat it as a `.single` beat (it has
+        # `if (!bg && !mid && !fg && single)` for that). The Rust pipe
+        # discards `foreground_path` when the file is missing, so we
+        # write only the bg here as a JPEG and skip the fg_path entirely.
+        bg_only = cv2.cvtColor(np_rgb, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(str(bg_path), bg_only, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        elapsed = time.perf_counter() - t0
+        return DepthSegmentResponse(
+            bg_path=str(bg_path),
+            fg_path="",  # signal "no fg layer" to the consumer
+            width=width,
+            height=height,
+            seconds=elapsed,
+        )
+
     # ── 3) Pulido de bordes para que el parallax no muestre halos ────
     # Tres pasos en orden:
     #   a) erode interior del mask: el sujeto se hace 1-2 px más estrecho

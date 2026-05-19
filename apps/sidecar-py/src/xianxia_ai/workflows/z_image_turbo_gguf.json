@@ -24,7 +24,7 @@
     "class_type": "CLIPTextEncode",
     "_meta": {"title": "Positive prompt — cinematic, no SDXL-isms"},
     "inputs": {
-      "text": "{{prompt}}, cinematic anamorphic 2.39:1 framing, volumetric god rays, Kodak Portra 400 film grade, teal-and-orange tones, jade mountains and silk hanfu in xianxia mood, sharp focus on subject, natural skin texture, ink-wash atmosphere",
+      "text": "{{prompt}}, cinematic anamorphic 2.39:1 framing, volumetric god rays, Kodak Portra 400 film grade, sharp focus on subject, natural skin texture",
       "clip": ["2", 0]
     }
   },

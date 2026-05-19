@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tauri::AppHandle;
 
 use crate::db::projects::{self, NewProject, Project};
+use crate::db::scheduled::{self, ScheduledUpload};
 use crate::db::voices::{self, VoiceProfile};
 use crate::db::DbPool;
 use crate::pipeline::{self, GenerateRequest};
@@ -33,6 +34,23 @@ pub fn get_app_version() -> AppVersion {
 #[tauri::command]
 pub async fn list_projects(pool: tauri::State<'_, Arc<DbPool>>) -> Result<Vec<Project>, String> {
     projects::list(&pool).await.map_err(|e| e.to_string())
+}
+
+/// Real backing for the Planificador screen — replaces the old UI
+/// placeholder with actual `scheduled_uploads` rows (joined to project title).
+#[tauri::command]
+pub async fn list_scheduled(
+    pool: tauri::State<'_, Arc<DbPool>>,
+) -> Result<Vec<ScheduledUpload>, String> {
+    scheduled::list(&pool).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_scheduled(
+    pool: tauri::State<'_, Arc<DbPool>>,
+    id: String,
+) -> Result<(), String> {
+    scheduled::cancel(&pool, &id).await.map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize)]

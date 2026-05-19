@@ -1,6 +1,6 @@
 {
   "name": "xianxia-studio",
-  "version": "0.1.19",
+  "version": "0.4.0",
   "private": true,
   "description": "Xianxia Studio — desktop app for automated YouTube xianxia content production",
   "license": "Apache-2.0",
@@ -12,9 +12,12 @@
   "scripts": {
     "dev": "pnpm --filter @xianxia/desktop dev",
     "build": "pnpm --filter @xianxia/desktop build",
-    "tauri:dev": "pnpm --filter @xianxia/desktop tauri dev",
-    "tauri:build": "node scripts/tauri-build-local.mjs",
+    "tauri:dev": "node scripts/dev-sync.mjs && pnpm --filter @xianxia/desktop tauri dev",
+    "tauri:build": "node scripts/parity-check.mjs && node scripts/tauri-build-local.mjs",
     "sidecars:prepare": "node scripts/prepare-sidecars.mjs",
+    "dev:sync": "node scripts/dev-sync.mjs",
+    "dev:browser": "node scripts/dev-browser.mjs",
+    "parity:check": "node scripts/parity-check.mjs",
     "icons": "node scripts/gen-icons.mjs",
     "installer:assets": "node scripts/gen-installer-assets.mjs",
     "readme:assets": "node scripts/gen-readme-assets.mjs",
@@ -30,5 +33,12 @@
     "@types/node": "^22.10.0",
     "prettier": "^3.4.2",
     "sharp": "^0.34.5"
+  },
+  "pnpm": {
+    "comment": "v0.2.9 security overrides — pin patched versions of TRANSITIVE deps flagged by `pnpm audit`. Both bumps stay within the existing semver major so they are API-compatible (hyperframes already requires hono ^4.0.0; fast-uri 3.1.1→3.1.2 is a security patch). Local-only sidecar so real-world risk was low, but kept clean for security hygiene.",
+    "overrides": {
+      "fast-uri@<3.1.2": ">=3.1.2",
+      "hono@<4.12.18": ">=4.12.18"
+    }
   }
 }

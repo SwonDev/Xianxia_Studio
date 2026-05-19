@@ -1,174 +1,258 @@
-import { createFileRoute } from '@tanstack/react-router';
-import { useMemo, useState } from 'react';
-import { motion } from 'motion/react';
-import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import { useMemo, useState, type CSSProperties } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { CaretLeft, CaretRight, Plus, Trash } from '@phosphor-icons/react';
+import { tauri, type ScheduledUpload } from '@/lib/tauri';
+import { useToast } from '@/components/toast';
+import { PageHeader } from '@/components/ui-glass';
 
 export const Route = createFileRoute('/scheduler')({
   component: SchedulerRoute,
 });
 
-interface ScheduledItem {
-  id: string;
-  title: string;
-  scheduled_at: number;
-  privacy: 'private' | 'unlisted' | 'public';
-  is_short: boolean;
+// Real backing: `scheduled_uploads` (DB) via tauri.listScheduled. Rows are
+// produced by pipeline Phase 9 after a successful YouTube upload; the
+// internal cron flips `uploaded` → `published` when due. No mock data.
+const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
+  uploaded: { label: 'Programado', color: 'var(--green)', bg: 'var(--green-bg)' },
+  published: { label: 'Publicado', color: 'var(--gold-soft)', bg: 'var(--gold-bg)' },
+  held: { label: 'Subido · privado', color: 'var(--text-secondary)', bg: 'rgba(255,255,255,0.06)' },
+  failed: { label: 'Error', color: '#ffb1b8', bg: 'var(--red-bg)' },
+};
+function statusMeta(s: string) {
+  return STATUS_META[s] ?? { label: s, color: 'var(--text-secondary)', bg: 'rgba(255,255,255,0.06)' };
 }
 
-const MOCK_SCHEDULED: ScheduledItem[] = [
-  // M6: this list will come from `tauri.listScheduled()` once wired.
-];
-
 function SchedulerRoute() {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const { toast, confirmDialog } = useToast();
   const [cursor, setCursor] = useState(() => {
     const d = new Date();
     d.setDate(1);
     return d;
   });
 
+  const { data: items = [], isLoading } = useQuery({
+    queryKey: ['scheduled'],
+    queryFn: tauri.listScheduled,
+    refetchInterval: 8000,
+  });
+
   const calendar = useMemo(() => buildMonthGrid(cursor), [cursor]);
   const monthLabel = cursor.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
 
   const itemsByDay = useMemo(() => {
-    const map = new Map<string, ScheduledItem[]>();
-    for (const it of MOCK_SCHEDULED) {
+    const map = new Map<string, ScheduledUpload[]>();
+    for (const it of items) {
       const k = new Date(it.scheduled_at * 1000).toDateString();
       const arr = map.get(k) ?? [];
       arr.push(it);
       map.set(k, arr);
     }
     return map;
-  }, []);
+  }, [items]);
+
+  const cancel = async (it: ScheduledUpload) => {
+    const ok = await confirmDialog({
+      title: `¿Quitar "${it.title}" del planificador?`,
+      body:
+        it.status === 'uploaded'
+          ? 'Se elimina la fila programada: el vídeo seguirá en YouTube como privado pero NO se publicará automáticamente.'
+          : 'Se elimina esta entrada del planificador. No afecta al vídeo ya subido.',
+      confirmLabel: 'Quitar',
+      cancelLabel: 'Cancelar',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await tauri.cancelScheduled(it.id);
+      qc.invalidateQueries({ queryKey: ['scheduled'] });
+      toast.success('Eliminado del planificador', it.title);
+    } catch (e) {
+      toast.error('No se pudo eliminar', String(e));
+    }
+  };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-      className="space-y-6"
-    >
-      <header className="flex items-end justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-gold-400 font-medium mb-2">
-            Calendario
-          </p>
-          <h1 className="font-display text-4xl font-medium">Planificador</h1>
-          <p className="text-paper-300 mt-2 max-w-2xl">
-            Horarios óptimos para xianxia: jueves-sábado, 15:00 UTC.
-          </p>
-        </div>
-        <button className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-gold-500 text-obsidian-950 font-medium text-sm hover:bg-gold-300 transition-colors shadow-glow-gold">
-          <Plus className="w-4 h-4" />
-          Programar nuevo
-        </button>
-      </header>
+    <div className="route-enter page">
+      <PageHeader
+        title="Planificador"
+        subtitle="Publicaciones programadas reales. Se crean al generar un vídeo con subida automática y fecha de publicación."
+        action={
+          <button className="btn-primary large" onClick={() => navigate({ to: '/generator' })}>
+            <Plus size={11} weight="bold" />
+            Programar nuevo
+          </button>
+        }
+      />
 
-      <section className="rounded-xl border border-border/50 bg-card/60 backdrop-blur p-6">
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="font-display text-xl capitalize">{monthLabel}</h2>
-          <div className="flex gap-1">
-            <NavBtn onClick={() => setCursor(addMonth(cursor, -1))} icon={ChevronLeft} ariaLabel="Mes anterior" />
+      <div className="group" style={{ padding: 22, marginBottom: 22 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+          <h2 className="title" style={{ textTransform: 'capitalize' }}>{monthLabel}</h2>
+          <div className="segmented">
+            <button className="segmented-btn" aria-label="Mes anterior" onClick={() => setCursor(addMonth(cursor, -1))}>
+              <CaretLeft size={13} />
+            </button>
             <button
+              className="segmented-btn"
               onClick={() => {
                 const d = new Date();
                 d.setDate(1);
                 setCursor(d);
               }}
-              className="px-3 py-1.5 rounded-md text-xs text-paper-300 hover:bg-obsidian-800"
             >
               Hoy
             </button>
-            <NavBtn onClick={() => setCursor(addMonth(cursor, 1))} icon={ChevronRight} ariaLabel="Mes siguiente" />
+            <button className="segmented-btn" aria-label="Mes siguiente" onClick={() => setCursor(addMonth(cursor, 1))}>
+              <CaretRight size={13} />
+            </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-7 gap-1 text-center text-[10.5px] uppercase tracking-wide text-paper-300 mb-2">
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(7,1fr)',
+            gap: 4,
+            textAlign: 'center',
+            marginBottom: 8,
+            fontSize: 10.5,
+            color: 'var(--text-tertiary)',
+          }}
+        >
           {['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((d) => (
             <div key={d}>{d}</div>
           ))}
         </div>
 
-        <div className="grid grid-cols-7 gap-1">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 4 }}>
           {calendar.map((day, i) => {
             const dayItems = day ? itemsByDay.get(day.toDateString()) ?? [] : [];
             const isToday = day && isSameDay(day, new Date());
-            const isOptimal = day && [4, 5, 6].includes(day.getDay()); // Thu-Sat (0=Sun)
+            const cellStyle: CSSProperties = day
+              ? {
+                  minHeight: 84,
+                  padding: 8,
+                  borderRadius: 8,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  background: isToday ? 'var(--gold-bg)' : 'rgba(255,255,255,0.03)',
+                  boxShadow: isToday
+                    ? '0 0 0 0.5px rgba(212,184,90,0.45)'
+                    : 'inset 0 0.5px 0 rgba(255,255,255,0.05)',
+                }
+              : { minHeight: 84, opacity: 0, pointerEvents: 'none' };
             return (
-              <div
-                key={i}
-                className={cn(
-                  'min-h-[88px] p-2 rounded-md flex flex-col gap-1',
-                  day
-                    ? cn(
-                        'border',
-                        isToday
-                          ? 'border-gold-500/50 bg-gold-500/5'
-                          : isOptimal
-                          ? 'border-jade-500/20 bg-jade-700/5'
-                          : 'border-border/30 bg-obsidian-800/30',
-                      )
-                    : 'opacity-0 pointer-events-none',
-                )}
-              >
+              <div key={i} style={cellStyle}>
                 {day && (
                   <>
-                    <div className="text-xs font-medium text-paper-300">{day.getDate()}</div>
-                    {dayItems.map((it) => (
-                      <div
-                        key={it.id}
-                        className={cn(
-                          'text-[10px] px-1.5 py-0.5 rounded truncate',
-                          it.is_short ? 'bg-jade-500/30 text-jade-300' : 'bg-gold-500/30 text-gold-300',
-                        )}
-                      >
-                        {it.title}
-                      </div>
-                    ))}
+                    <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>{day.getDate()}</div>
+                    {dayItems.map((it) => {
+                      const m = statusMeta(it.status);
+                      return (
+                        <div
+                          key={it.id}
+                          title={`${it.title} · ${m.label}`}
+                          style={{
+                            fontSize: 10,
+                            padding: '1px 6px',
+                            borderRadius: 4,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            background: m.bg,
+                            color: m.color,
+                          }}
+                        >
+                          {it.is_short ? '▸ ' : ''}{it.title}
+                        </div>
+                      );
+                    })}
                   </>
                 )}
               </div>
             );
           })}
         </div>
-      </section>
+      </div>
 
-      <section className="rounded-xl border border-border/50 bg-card/60 backdrop-blur p-6">
-        <h2 className="font-display text-xl mb-4">Próximas publicaciones</h2>
-        {MOCK_SCHEDULED.length === 0 ? (
-          <p className="text-sm text-paper-300">No hay publicaciones programadas todavía.</p>
+      <div className="group" style={{ padding: 22 }}>
+        <h2 className="title" style={{ marginBottom: 14 }}>Publicaciones</h2>
+        {isLoading ? (
+          <p className="muted" style={{ fontSize: 13 }}>Cargando…</p>
+        ) : items.length === 0 ? (
+          <p className="muted" style={{ fontSize: 13 }}>
+            No hay publicaciones todavía. Genera un vídeo con <strong>subida automática</strong> y
+            una <strong>fecha de publicación</strong> y aparecerá aquí.
+          </p>
         ) : (
-          <ul className="space-y-2 text-sm">
-            {MOCK_SCHEDULED.map((it) => (
-              <li key={it.id} className="flex items-center justify-between p-3 rounded-md bg-obsidian-800/40 border border-border/30">
-                <span>{it.title}</span>
-                <span className="text-xs text-paper-300 font-mono">
-                  {new Date(it.scheduled_at * 1000).toLocaleString('es-ES')}
-                </span>
-              </li>
-            ))}
+          <ul style={{ display: 'flex', flexDirection: 'column', gap: 8, listStyle: 'none', margin: 0, padding: 0 }}>
+            {items.map((it) => {
+              const m = statusMeta(it.status);
+              return (
+                <li
+                  key={it.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: 12,
+                    borderRadius: 8,
+                    background: 'rgba(255,255,255,0.04)',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      padding: '2px 8px',
+                      borderRadius: 999,
+                      background: m.bg,
+                      color: m.color,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {m.label}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {it.is_short ? '▸ ' : ''}{it.title}
+                    </div>
+                    {it.error_message && (
+                      <div style={{ fontSize: 10.5, color: '#ffb1b8', marginTop: 2 }}>{it.error_message}</div>
+                    )}
+                  </div>
+                  {it.youtube_video_id && (
+                    <a
+                      href={`https://youtube.com/watch?v=${it.youtube_video_id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mono"
+                      style={{ fontSize: 10.5, color: 'var(--gold-soft)' }}
+                    >
+                      ver
+                    </a>
+                  )}
+                  <span className="mono" style={{ color: 'var(--text-secondary)', fontSize: 11 }}>
+                    {new Date(it.scheduled_at * 1000).toLocaleString('es-ES')}
+                  </span>
+                  <button
+                    className="btn-ghost"
+                    onClick={() => cancel(it)}
+                    aria-label={`Quitar ${it.title}`}
+                    style={{ padding: 6, height: 26 }}
+                  >
+                    <Trash size={14} />
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
-      </section>
-    </motion.div>
-  );
-}
-
-function NavBtn({
-  onClick, icon: Icon, ariaLabel,
-}: {
-  onClick: () => void;
-  icon: React.ComponentType<{ className?: string }>;
-  ariaLabel: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-label={ariaLabel}
-      className="p-1.5 rounded-md text-paper-300 hover:bg-obsidian-800 hover:text-paper-100"
-    >
-      <Icon className="w-4 h-4" />
-    </button>
+      </div>
+    </div>
   );
 }
 
@@ -183,7 +267,6 @@ function buildMonthGrid(monthCursor: Date): (Date | null)[] {
   const month = monthCursor.getMonth();
   const firstDay = new Date(year, month, 1);
   const lastDay = new Date(year, month + 1, 0);
-  // Start on Monday — JS Sunday=0
   const offset = (firstDay.getDay() + 6) % 7;
   const cells: (Date | null)[] = [];
   for (let i = 0; i < offset; i++) cells.push(null);

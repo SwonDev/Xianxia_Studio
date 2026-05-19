@@ -3,19 +3,19 @@
  *
  * Pick any MP4 → Whisper transcribes → LLM scores 12 candidates → top N
  * non-overlapping segments cut + reframed 1080×1920 + ASS karaoke burned in
- * with the chosen caption style.
+ * with the chosen caption style. 100 % local: no upload, no cloud.
  *
- * 100 % local: no upload, no cloud. Same hardware budget as the main pipeline.
+ * Visual: Liquid Glass (DESIGN.md v2). ALL wiring preserved (openDialog,
+ * fetch /shorts/from_video, query invalidation, drag-drop, data-testid).
  */
 import { createFileRoute } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { motion } from 'motion/react';
-import { Scissors, Upload, Loader2, AlertTriangle, CheckCircle2, Play, Sparkles } from 'lucide-react';
+import { Scissors, UploadSimple, CircleNotch, Warning, CheckCircle, Play, Sparkle } from '@phosphor-icons/react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc } from '@/lib/tauri-asset';
 import { useToast } from '@/components/toast';
-import { cn } from '@/lib/utils';
+import { PageHeader } from '@/components/ui-glass';
 
 export const Route = createFileRoute('/shorts')({
   component: ShortsRoute,
@@ -32,11 +32,11 @@ interface ShortInfo {
 }
 
 const CAPTION_STYLES = [
-  { id: 'hormozi', label: 'Hormozi', desc: 'Amarillo + outline negro · viral' },
+  { id: 'hormozi', label: 'Hormozi', desc: 'Amarillo + outline · viral' },
   { id: 'mrbeast', label: 'MrBeast', desc: 'Rojo highlight · alto contraste' },
   { id: 'xianxia', label: 'Xianxia', desc: 'Oro + jade · cinematográfico' },
   { id: 'minimal', label: 'Minimal', desc: 'Blanco simple · sin distraer' },
-  { id: 'neon',    label: 'Neon',    desc: 'Cyan + magenta · gamer/futuristic' },
+  { id: 'neon', label: 'Neon', desc: 'Cyan + magenta · futuristic' },
 ];
 
 function ShortsRoute() {
@@ -104,32 +104,16 @@ function ShortsRoute() {
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-      className="space-y-6 max-w-5xl"
-    >
-      <header>
-        <p className="text-xs uppercase tracking-[0.2em] text-gold-400 font-medium mb-2">
-          Auto-edición
-        </p>
-        <h1 className="font-display text-4xl font-medium flex items-center gap-3">
-          <Scissors className="w-9 h-9 text-gold-400" />
-          Smart Shorts
-        </h1>
-        <p className="text-paper-300 mt-2 max-w-2xl">
-          Sube un MP4 (podcast, charla, gameplay, vlog…) y la app extraerá
-          automáticamente <strong>{nShorts} Shorts virales</strong> de {duration}s usando Whisper +
-          LLM scoring (hook · climax · standalone). 100% local, ningún byte sale de tu máquina.
-        </p>
-      </header>
+    <div className="route-enter page" style={{ maxWidth: 1100 }}>
+      <PageHeader
+        title="Smart Shorts"
+        subtitle={`Sube un MP4 (podcast, charla, gameplay, vlog…) y extrae ${nShorts} Shorts virales de ${duration}s con Whisper + LLM scoring. 100% local.`}
+      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
-        {/* Form */}
-        <section className="rounded-xl border border-border/50 bg-card/60 backdrop-blur p-6 space-y-5">
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 320px', gap: 22, alignItems: 'start' }}>
+        <section className="group" style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 18 }}>
           <div>
-            <label className="block text-xs uppercase tracking-wide text-paper-300 mb-2 font-medium">
+            <label className="eyebrow" style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>
               Vídeo de entrada
             </label>
             <button
@@ -144,13 +128,8 @@ function ShortsRoute() {
                 e.preventDefault();
                 setDragOver(false);
                 const files = Array.from(e.dataTransfer.files ?? []);
-                const mp4 = files.find((f) =>
-                  /\.(mp4|mov|mkv|webm|avi)$/i.test(f.name),
-                );
+                const mp4 = files.find((f) => /\.(mp4|mov|mkv|webm|avi)$/i.test(f.name));
                 if (mp4) {
-                  // In Tauri webview the File object exposes `path` for dropped
-                  // files (custom Tauri augmentation). In browser-mode this
-                  // path is empty — fallback: ask user to use the picker.
                   const p = (mp4 as File & { path?: string }).path;
                   if (p) {
                     setVideoPath(p);
@@ -163,16 +142,26 @@ function ShortsRoute() {
                   }
                 }
               }}
-              className={cn(
-                'w-full inline-flex items-center justify-center gap-2 px-4 py-6 rounded-md text-sm text-paper-200 transition-colors border-2 border-dashed',
-                dragOver
-                  ? 'border-gold-500 bg-gold-500/10'
-                  : 'bg-obsidian-800 border-border/60 hover:border-gold-500/60',
-              )}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                padding: '24px 16px',
+                borderRadius: 12,
+                fontSize: 13,
+                color: 'var(--text-secondary)',
+                background: dragOver ? 'var(--accent-bg)' : 'rgba(0,0,0,0.22)',
+                boxShadow: dragOver
+                  ? '0 0 0 1.5px rgba(232, 201, 109,0.55)'
+                  : 'inset 0 0 0 1px rgba(255,255,255,0.08)',
+                transition: 'all 140ms',
+              }}
             >
-              <Upload className="w-5 h-5" />
+              <UploadSimple size={18} />
               {videoPath ? (
-                <span className="font-mono truncate max-w-[400px]" title={videoPath}>
+                <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 400 }} title={videoPath}>
                   {videoPath.split(/[\\/]/).pop()}
                 </span>
               ) : dragOver ? (
@@ -183,135 +172,142 @@ function ShortsRoute() {
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div>
-              <label className="block text-xs uppercase tracking-wide text-paper-300 mb-2 font-medium">
-                Cantidad de Shorts
-              </label>
+              <label className="eyebrow" style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>Cantidad de Shorts</label>
               <input
                 type="range"
+                className="range"
                 min={1}
                 max={10}
                 value={nShorts}
                 onChange={(e) => setNShorts(Number(e.target.value))}
                 data-testid="shorts-count"
-                className="w-full accent-gold-500"
               />
-              <div className="text-sm text-paper-200 mt-1 font-mono">{nShorts}</div>
+              <div className="mono" style={{ marginTop: 4 }}>{nShorts}</div>
             </div>
             <div>
-              <label className="block text-xs uppercase tracking-wide text-paper-300 mb-2 font-medium">
-                Duración objetivo (s)
-              </label>
+              <label className="eyebrow" style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>Duración objetivo (s)</label>
               <input
                 type="range"
+                className="range"
                 min={15}
                 max={60}
                 step={5}
                 value={duration}
                 onChange={(e) => setDuration(Number(e.target.value))}
                 data-testid="shorts-duration"
-                className="w-full accent-gold-500"
               />
-              <div className="text-sm text-paper-200 mt-1 font-mono">{duration}s</div>
+              <div className="mono" style={{ marginTop: 4 }}>{duration}s</div>
             </div>
           </div>
 
           <div>
-            <label className="block text-xs uppercase tracking-wide text-paper-300 mb-2 font-medium">
-              Estilo de subtítulos
-            </label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {CAPTION_STYLES.map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => setCaptionStyle(s.id)}
-                  data-testid={`caption-style-${s.id}`}
-                  className={cn(
-                    'px-3 py-2 rounded-md border text-left transition-all',
-                    captionStyle === s.id
-                      ? 'bg-gold-500/15 border-gold-500 text-paper-100'
-                      : 'bg-obsidian-800 border-border/40 text-paper-300 hover:border-gold-500/40',
-                  )}
-                >
-                  <div className="text-sm font-medium">{s.label}</div>
-                  <div className="text-[10px] text-paper-400 leading-tight">{s.desc}</div>
-                </button>
-              ))}
+            <label className="eyebrow" style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>Estilo de subtítulos</label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6 }}>
+              {CAPTION_STYLES.map((s) => {
+                const active = captionStyle === s.id;
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => setCaptionStyle(s.id)}
+                    data-testid={`caption-style-${s.id}`}
+                    style={{
+                      padding: '8px 10px',
+                      textAlign: 'left',
+                      borderRadius: 10,
+                      background: active ? 'var(--accent-bg)' : 'rgba(255,255,255,0.04)',
+                      boxShadow: active
+                        ? 'inset 0 0.5px 0 rgba(255,255,255,0.15), 0 0 0 0.5px rgba(232, 201, 109,0.40)'
+                        : 'inset 0 0.5px 0 rgba(255,255,255,0.06)',
+                    }}
+                  >
+                    <div style={{ fontSize: 12.5, fontWeight: 500 }}>{s.label}</div>
+                    <div className="caption" style={{ fontSize: 10 }}>{s.desc}</div>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          <label className="flex items-start gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={burnSubs}
-              onChange={(e) => setBurnSubs(e.target.checked)}
-              className="mt-0.5 accent-gold-500"
-            />
-            <div className="text-sm">
-              <div className="font-medium text-paper-100">Quemar subtítulos en el MP4</div>
-              <div className="text-xs text-paper-300">
-                Si está activo, el karaoke se imprime sobre el vídeo. Desactiva si solo quieres el corte.
-              </div>
+          <button
+            type="button"
+            onClick={() => setBurnSubs(!burnSubs)}
+            style={{
+              width: '100%',
+              textAlign: 'left',
+              padding: 12,
+              borderRadius: 10,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              background: burnSubs ? 'var(--accent-bg)' : 'rgba(255,255,255,0.04)',
+              boxShadow: burnSubs
+                ? '0 0 0 0.5px rgba(232, 201, 109,0.40)'
+                : 'inset 0 0.5px 0 rgba(255,255,255,0.06)',
+            }}
+          >
+            <span className={'toggle' + (burnSubs ? ' on' : '')} />
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 500 }}>Quemar subtítulos en el MP4</div>
+              <div className="caption">El karaoke se imprime sobre el vídeo. Desactiva si solo quieres el corte.</div>
             </div>
-          </label>
+          </button>
 
           <button
             onClick={run}
             data-testid="shorts-run"
             disabled={busy || !videoPath}
-            className={cn(
-              'w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-md font-medium text-sm transition-colors',
-              busy || !videoPath
-                ? 'bg-obsidian-800 text-paper-400 cursor-not-allowed'
-                : 'bg-gold-500 text-obsidian-950 hover:bg-gold-300 shadow-glow-gold',
-            )}
+            className="btn-primary large"
+            style={{ justifyContent: 'center', width: '100%' }}
           >
-            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            {busy ? (progress || 'Procesando…') : `Extraer ${nShorts} Shorts`}
+            {busy ? <CircleNotch size={13} className="pulse" /> : <Sparkle size={13} />}
+            {busy ? progress || 'Procesando…' : `Extraer ${nShorts} Shorts`}
           </button>
 
           {error && (
-            <div data-testid="shorts-error" className="p-3 rounded-md bg-crimson-500/15 border border-crimson-500/40 text-xs text-paper-100 flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 text-crimson-400 shrink-0 mt-0.5" />
+            <div
+              data-testid="shorts-error"
+              style={{ padding: 12, borderRadius: 10, background: 'var(--red-bg)', boxShadow: '0 0 0 0.5px rgba(200,82,94,0.45)', fontSize: 12, display: 'flex', gap: 8 }}
+            >
+              <Warning size={15} style={{ color: 'var(--red)', flexShrink: 0, marginTop: 1 }} />
               <span>{error}</span>
             </div>
           )}
         </section>
 
-        {/* Tips */}
-        <aside className="rounded-xl border border-border/50 bg-card/60 backdrop-blur p-5 text-sm text-paper-300 space-y-3 h-fit">
-          <h3 className="font-display text-lg text-paper-100">Cómo funciona</h3>
-          <ol className="list-decimal list-inside space-y-1.5 text-xs leading-relaxed">
-            <li>Whisper-large-v3 transcribe con timestamps por palabra (auto-detect idioma).</li>
-            <li>Agrupamos las palabras en frases por silencios &gt;0.4 s.</li>
-            <li>El LLM puntúa 12 segmentos candidatos en hook · climax · standalone.</li>
-            <li>Seleccionamos los top {nShorts} que no se solapan.</li>
-            <li>FFmpeg corta + crop 9:16 + lanczos + loudnorm -14 LUFS + NVENC p7.</li>
-            <li>Karaoke ASS quemado con safe zones TikTok (top 7%, bottom 18%).</li>
+        <aside className="group" style={{ padding: 18 }}>
+          <h3 className="title" style={{ marginBottom: 10 }}>
+            <Scissors size={15} style={{ verticalAlign: '-2px', marginRight: 6, color: 'var(--gold-soft)' }} />
+            Cómo funciona
+          </h3>
+          <ol style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 6, fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            <li>Whisper-large-v3 transcribe con timestamps por palabra.</li>
+            <li>Palabras agrupadas en frases por silencios &gt;0.4 s.</li>
+            <li>El LLM puntúa 12 candidatos: hook · climax · standalone.</li>
+            <li>Top {nShorts} sin solapamiento.</li>
+            <li>FFmpeg corta + crop 9:16 + loudnorm -14 LUFS + NVENC p7.</li>
+            <li>Karaoke ASS quemado con safe zones TikTok.</li>
           </ol>
-          <div className="pt-3 border-t border-border/40">
-            <p className="text-[11px] text-paper-400">
-              ⏱️ Tiempo estimado: ~1-2× duración del vídeo en RTX 4060 8 GB.
-            </p>
-          </div>
+          <div className="hr" style={{ margin: '12px 0' }} />
+          <p className="caption">⏱️ ~1-2× la duración del vídeo en RTX 4060 8 GB.</p>
         </aside>
       </div>
 
       {results && results.length > 0 && (
-        <section className="space-y-3" data-testid="shorts-results">
-          <h2 className="font-display text-2xl flex items-center gap-2">
-            <CheckCircle2 className="w-6 h-6 text-jade-400" />
+        <section data-testid="shorts-results" style={{ marginTop: 22 }}>
+          <h2 className="section-header" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <CheckCircle size={20} weight="fill" style={{ color: 'var(--green)' }} />
             {results.length} Shorts generados
           </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 16 }}>
             {results.map((s, i) => (
               <ShortResultCard key={s.output_path} short={s} index={i} />
             ))}
           </div>
         </section>
       )}
-    </motion.div>
+    </div>
   );
 }
 
@@ -320,11 +316,12 @@ function ShortResultCard({ short, index }: { short: ShortInfo; index: number }) 
   const total = (0.4 * short.hook_score + 0.4 * short.climax_score + 0.2 * short.standalone_score) * 100;
   return (
     <article
-      className="rounded-lg border border-border/50 bg-card/60 overflow-hidden hover:border-gold-500/40 transition-colors"
+      className="group"
+      style={{ overflow: 'hidden' }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <div className="relative aspect-[9/16] bg-obsidian-900">
+      <div style={{ position: 'relative', aspectRatio: '9/16', background: 'rgba(0,0,0,0.5)' }}>
         <video
           src={convertFileSrc(short.output_path)}
           muted
@@ -332,31 +329,31 @@ function ShortResultCard({ short, index }: { short: ShortInfo; index: number }) 
           playsInline
           autoPlay={hover}
           preload="metadata"
-          className="w-full h-full object-cover"
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
         />
         {!hover && (
-          <div className="absolute inset-0 flex items-center justify-center bg-obsidian-950/40">
-            <Play className="w-12 h-12 text-gold-300 drop-shadow-lg" />
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.4)' }}>
+            <Play size={42} weight="fill" style={{ color: 'var(--gold-soft)' }} />
           </div>
         )}
-        <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-obsidian-950/80 text-[11px] font-mono text-gold-300">
+        <span className="mono" style={{ position: 'absolute', top: 8, left: 8, padding: '1px 6px', borderRadius: 4, background: 'rgba(0,0,0,0.75)', color: 'var(--gold-soft)', fontSize: 11 }}>
           #{index + 1}
         </span>
-        <span className="absolute top-2 right-2 px-2 py-0.5 rounded bg-jade-500/30 border border-jade-500/50 text-[11px] font-bold text-jade-200">
+        <span style={{ position: 'absolute', top: 8, right: 8, padding: '1px 6px', borderRadius: 4, background: 'rgba(212, 184, 90,0.30)', boxShadow: '0 0 0 0.5px rgba(232, 201, 109,0.50)', color: 'var(--accent-soft)', fontSize: 11, fontWeight: 700 }}>
           {total.toFixed(0)}/100
         </span>
-        <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-obsidian-950/80 text-[10px] font-mono text-paper-200 tabular-nums">
+        <span className="mono" style={{ position: 'absolute', bottom: 8, right: 8, padding: '1px 6px', borderRadius: 4, background: 'rgba(0,0,0,0.75)', color: 'var(--text-secondary)', fontSize: 10 }}>
           {Math.round(short.duration_seconds)}s
         </span>
       </div>
-      <div className="p-3 space-y-2">
-        <p className="text-xs text-paper-200 line-clamp-3" title={short.text_preview}>
+      <div style={{ padding: 12 }}>
+        <p style={{ fontSize: 11.5, color: 'var(--text-secondary)', margin: '0 0 8px', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' } as CSSProperties} title={short.text_preview}>
           {short.text_preview}
         </p>
-        <div className="grid grid-cols-3 gap-1 text-[10px] text-paper-400">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6 }}>
           <ScoreBar label="Hook" value={short.hook_score} />
           <ScoreBar label="Climax" value={short.climax_score} />
-          <ScoreBar label="Standalone" value={short.standalone_score} />
+          <ScoreBar label="Solo" value={short.standalone_score} />
         </div>
       </div>
     </article>
@@ -365,20 +362,15 @@ function ShortResultCard({ short, index }: { short: ShortInfo; index: number }) 
 
 function ScoreBar({ label, value }: { label: string; value: number }) {
   const pct = Math.round(value * 100);
+  const color = pct >= 75 ? 'var(--green)' : pct >= 50 ? 'var(--gold)' : 'var(--red)';
   return (
-    <div className="space-y-0.5">
-      <div className="flex justify-between">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-tertiary)' }}>
         <span>{label}</span>
-        <span className="font-mono text-paper-300">{pct}</span>
+        <span className="mono">{pct}</span>
       </div>
-      <div className="h-1 rounded-full bg-obsidian-800 overflow-hidden">
-        <div
-          className={cn(
-            'h-full transition-all',
-            pct >= 75 ? 'bg-jade-400' : pct >= 50 ? 'bg-gold-400' : 'bg-crimson-400',
-          )}
-          style={{ width: `${pct}%` }}
-        />
+      <div style={{ height: 3, borderRadius: 999, background: 'rgba(0,0,0,0.4)', overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: color, transition: 'width 200ms' }} />
       </div>
     </div>
   );

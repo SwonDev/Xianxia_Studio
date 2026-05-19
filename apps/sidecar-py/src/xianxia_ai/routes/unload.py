@@ -5,7 +5,7 @@ The Xianxia Studio pipeline runs SEVEN GPU-resident model families:
   - Qwen3-TTS-12Hz-1.7B   (Phase 3: TTS, ~3 GB)
   - Z-Image-Turbo + GGUF text encoder (Phase 4 + Phase 7, via ComfyUI, ~7 GB)
   - rembg u2net / RMBG-2.0 (Phase 4b: depth/parallax, ~200 MB - 1.5 GB)
-  - ACE-Step / MusicGen   (Phase 5: music, ~2-4 GB)
+  - MusicGen-medium       (Phase 5: music, ~3-4 GB)
   - faster-whisper        (Phase 8: transcription, ~1 GB)
 
 On an 8 GB card these cannot co-reside. The pipeline calls /unload with
@@ -17,7 +17,7 @@ Targets (`POST /unload?target=<name>`):
   - "whisper" → unload faster-whisper
   - "image"   → unload diffusers ZImagePipeline (no-op if ComfyUI path is used)
   - "depth"   → drop rembg sessions + RMBG-2.0 weights
-  - "music"   → release MusicGen / ACE-Step PyTorch tensors
+  - "music"   → release MusicGen PyTorch tensors
   - "ollama"  → asks Ollama to unload via keep_alive=0 on `xianxia-llm`
                 AND polls /api/ps until the model is gone from VRAM
   - "comfyui" → asks ComfyUI to free GPU memory via /free
@@ -30,11 +30,14 @@ from __future__ import annotations
 import os
 import gc
 
+import asyncio
+
 import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from ..models import image_model, tts_model, whisper_model
+from ..llm_backend import get_backend
+from ..models import image_model, tts_model, tts_base_model, whisper_model
 
 router = APIRouter()
 
@@ -71,60 +74,90 @@ def _vram_free_gb() -> float | None:
         return None
 
 
-def _ollama_running_models() -> list[dict] | None:
-    """Returns the list of models Ollama currently has resident in VRAM."""
-    try:
-        r = httpx.get(f"{OLLAMA_URL}/api/ps", timeout=3)
-        if r.status_code != 200:
-            return None
-        return r.json().get("models", []) or []
-    except Exception:
-        return None
+def _unload_llm(model: str = "xianxia-llm", timeout_s: float = 20.0) -> tuple[bool, str]:
+    """Release the active LLM from VRAM between pipeline phases.
 
+    Two paths depending on which backend is currently serving:
+      * Ollama → POST /api/generate with keep_alive=0 + poll /api/ps until
+        the model is evicted (legacy v0.1.x behaviour, still supported).
+      * llama.cpp → **kill the `llama-server.exe` process** and create a
+        `.llamacpp_suspended` sentinel file under `<data_dir>/`. The Rust
+        supervisor reads that flag in `spawn_llama_if_needed` and stops
+        respawning while it exists, so VRAM stays free for the next phase
+        (ComfyUI image generation, TTS, etc.). The next LLM call clears
+        the flag and waits for the supervisor to bring the server back —
+        same "lazy reload" pattern v0.1.x had with Ollama's keep_alive.
 
-def _unload_ollama(model: str = "xianxia-llm", timeout_s: float = 20.0) -> tuple[bool, str]:
-    """Tell Ollama to unload the model and *wait until /api/ps confirms*.
-
-    `keep_alive=0` schedules the unload immediately but Ollama's response
-    is fire-and-forget — the model can linger in VRAM for a few seconds
-    while the runtime tears down. We poll /api/ps until the model is
-    gone (or no models are resident) so the next phase can load its own
-    model into a clean GPU.
+    Why: llama-server has NO keep_alive equivalent. The process retains
+    VRAM until it dies. Without this kill+suspend step llama.cpp would
+    keep ~5 GB pinned through the image phase, evicting Z-Image to RAM
+    and slowing ComfyUI from 1-2 s/iter to 50-90 s/iter (same OOM-spill
+    bug we hit in v0.1.28 for TTS).
     """
-    import time as _t
+    backend = get_backend()
+    if backend.name == "llamacpp":
+        return _kill_llamacpp_process(timeout_s=timeout_s)
+    # Ollama path — keep the original async unload semantics.
     try:
-        # Empty prompt is silently ignored by Ollama — keep_alive=0 only
-        # applies after a real request is processed. Send a 1-token dummy
-        # request so Ollama actually evaluates keep_alive and queues the
-        # unload. `num_predict=1` keeps the latency minimal (~50 ms).
-        r = httpx.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": model,
-                "keep_alive": 0,
-                "prompt": ".",
-                "stream": False,
-                "options": {"num_predict": 1},
-            },
-            timeout=15,
-        )
-        if r.status_code not in (200, 204):
-            return (False, f"ollama keep_alive=0 → {r.status_code}")
-    except Exception as e:
-        return (False, f"ollama unreachable: {e}")
+        return asyncio.run(backend.unload(model=model, timeout_s=timeout_s))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(backend.unload(model=model, timeout_s=timeout_s))
+        finally:
+            loop.close()
 
-    deadline = _t.time() + timeout_s
-    while _t.time() < deadline:
-        running = _ollama_running_models()
-        if running is None:
-            break  # /api/ps unavailable — assume succeeded
-        still_loaded = any(
-            (m.get("name") or "").startswith(model) for m in running
-        )
-        if not still_loaded:
-            return (True, f"ollama unloaded {model} (running={len(running)})")
-        _t.sleep(1.0)
-    return (True, f"ollama keep_alive=0 issued but {model} still resident after {timeout_s}s")
+
+def _data_dir_for_flag() -> "Path":  # type: ignore[name-defined]
+    """Same data_dir resolution the Rust supervisor uses. Kept local so this
+    module doesn't have to import the routes/models.py helpers (circular).
+    """
+    from pathlib import Path
+    if env := os.environ.get("XIANXIA_DATA_DIR"):
+        return Path(env)
+    if appdata := os.environ.get("APPDATA"):
+        return Path(appdata) / "xianxia" / "XianxiaStudio" / "data"
+    return Path.home() / ".local" / "share" / "xianxia" / "XianxiaStudio" / "data"
+
+
+def _kill_llamacpp_process(timeout_s: float = 10.0) -> tuple[bool, str]:
+    """Find and kill all `llama-server.exe` processes whose cmdline points
+    inside our runtime/ tree, then drop the suspend flag so the supervisor
+    won't immediately respawn. Idempotent — running twice in a row is fine.
+    """
+    flag = _data_dir_for_flag() / ".llamacpp_suspended"
+    try:
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text("suspended by /unload?target=llm\n", encoding="utf-8")
+    except OSError as exc:
+        return (False, f"could not write suspend flag: {exc}")
+
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return (True, "psutil not available; flag set, supervisor will catch up")
+
+    runtime_marker = str(_data_dir_for_flag() / "runtime").lower()
+    killed = 0
+    for proc in psutil.process_iter(["name", "exe", "cmdline"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+            if not name.startswith("llama-server"):
+                continue
+            exe = (proc.info.get("exe") or "").lower()
+            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+            # Match either the binary path or its cmdline pointing at our
+            # runtime dir so we never kill a llama-server from another app.
+            if runtime_marker in exe or runtime_marker in cmdline:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=timeout_s)
+                except psutil.TimeoutExpired:
+                    proc.kill()
+                killed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return (True, f"llamacpp killed {killed} process(es); suspended flag set at {flag}")
 
 
 def _comfyui_vram_free_gb() -> float | None:
@@ -211,15 +244,51 @@ def _unload_depth() -> tuple[bool, str]:
 
 
 def _unload_music() -> tuple[bool, str]:
-    """ACE-Step / MusicGen models are loaded as locals inside the route
-    handlers; once the request returns Python releases the references but
-    PyTorch keeps the GPU memory in its allocator pool. Forcing the cache
-    free here returns the bytes to the OS so the next phase can use them.
+    """Aggressively reclaim VRAM held by the music generator.
+
+    MusicGen is loaded as a LOCAL inside `routes/music.py::_musicgen`, so
+    by the time this runs the reference is already dropped — but PyTorch
+    keeps the bytes in its caching allocator and, worse, any CUDA context
+    state can linger. v0.2.5 had a real incident where the (now removed)
+    ACE-Step attempt left ~4 GB pinned through to the thumbnail phase,
+    starving the Z-Image cold reload into a 30-min Sysmem-fallback hang.
+
+    v0.2.6 — don't just *schedule* a cache free; do a hard reclaim here
+    and report the freed VRAM so the caller (and the Rust supervisor's
+    `ensure_comfyui_vram`) can make a real decision:
+      * multiple `gc.collect()` passes (torch nn.Modules form reference
+        cycles that a single pass won't break)
+      * `torch.cuda.empty_cache()` — return cached blocks to the driver
+      * `torch.cuda.ipc_collect()` — release cross-process IPC handles
+      * `torch.cuda.synchronize()` — make the free actually happen before
+        we measure
     """
-    # The actual unload work happens in _free_torch_caches() below; this
-    # function exists for symmetry and future explicit ACE-Step model
-    # caches we may add.
-    return (True, "music caches scheduled for torch empty_cache")
+    before = _vram_free_gb()
+    try:
+        import torch  # type: ignore
+    except Exception:
+        return (True, "music: torch unavailable, nothing to reclaim")
+
+    for _ in range(3):
+        gc.collect()
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+            torch.cuda.synchronize()
+    except Exception as e:
+        return (True, f"music reclaim partial ({e})")
+
+    after = _vram_free_gb()
+    if before is not None and after is not None:
+        return (
+            True,
+            f"music VRAM reclaimed ({before:.2f} → {after:.2f} GB free)",
+        )
+    return (True, "music VRAM reclaimed (hard gc + empty_cache + ipc_collect)")
 
 
 @router.post("", response_model=UnloadResponse)
@@ -229,8 +298,18 @@ def unload(target: str = "all") -> UnloadResponse:
     any_unloaded = False
 
     if target in ("tts", "all"):
+        # CustomVoice (built-in speakers).
         if tts_model.unload():
             detail_parts.append("tts")
+            any_unloaded = True
+        # Base (voice cloning) — v0.1.28: was being missed, leaving 7 GB
+        # of Qwen3-TTS-Base resident while ComfyUI tried to generate
+        # images. ComfyUI fell into CPU↔GPU swap and went from 1-2 s/iter
+        # to 50-90 s/iter (50× slower). When the user picks a clone voice
+        # the Base variant is what gets loaded; this branch must unload
+        # both so the SD phase has the full VRAM available.
+        if tts_base_model.unload():
+            detail_parts.append("tts_base")
             any_unloaded = True
     if target in ("whisper", "all"):
         if whisper_model.unload():
@@ -250,8 +329,11 @@ def unload(target: str = "all") -> UnloadResponse:
         if ok:
             any_unloaded = True
         detail_parts.append(msg)
-    if target in ("ollama", "all"):
-        ok, msg = _unload_ollama()
+    # `llm` is the v0.2.0 canonical target name; `ollama` kept as an alias
+    # so existing pipeline callers (Rust supervisor /unload?target=ollama)
+    # keep working during the migration.
+    if target in ("llm", "ollama", "all"):
+        ok, msg = _unload_llm()
         if ok:
             any_unloaded = True
         detail_parts.append(msg)

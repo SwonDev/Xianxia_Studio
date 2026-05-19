@@ -12,6 +12,12 @@ audiocraft>=1.3
 scenedetect>=0.7
 mediapipe>=0.10
 opencv-python>=4.10
+# v0.2.17 — AI-provenance watermark (Meta AudioSeal). Pure-python wheel
+# (~63 KB); its deps (numpy/omegaconf/einops/torch) are already pulled by
+# the stack above. DO NOT REMOVE: the best-effort /watermark phase 13
+# self-heals via pip if missing, but shipping it here means zero first-run
+# wait. Runs eager (TORCHDYNAMO_DISABLE) — the bundled runtime has no MSVC.
+audioseal>=0.2
 # ultralytics (YOLOv8) — only needed if you want full-body subject tracking
 # instead of MediaPipe Face. Uncomment to enable:
 # ultralytics>=8.3

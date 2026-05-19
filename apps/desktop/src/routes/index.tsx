@@ -1,114 +1,195 @@
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
-import { motion } from 'motion/react';
-import { Sparkles, Zap, Library, CalendarClock } from 'lucide-react';
+import {
+  Plus,
+  Sparkle,
+  Scissors,
+  Books,
+  CalendarBlank,
+  DownloadSimple,
+  Lightning,
+  CaretRight,
+} from '@phosphor-icons/react';
 import { tauri } from '@/lib/tauri';
+import { usePipelineStore } from '@/lib/pipelineStore';
+import { PageHeader, Group, Row } from '@/components/ui-glass';
 
 export const Route = createFileRoute('/')({
   component: Dashboard,
 });
 
-function Dashboard() {
-  const { data: version } = useQuery({
-    queryKey: ['app-version'],
-    queryFn: tauri.getAppVersion,
-  });
-  const { data: hw } = useQuery({
-    queryKey: ['hardware'],
-    queryFn: tauri.detectHardware,
-  });
+const PHASE_LABELS = [
+  'Guion', 'SEO', 'Voz', 'Imágenes', 'Música', 'Vídeo',
+  'Thumbnail', 'Subtítulos', 'Subida', 'Shorts', 'Engagement',
+  'SEO pack', 'Marca de agua',
+];
+const TOTAL_PHASES = 13;
 
+function LivePipelineStrip({ onClick }: { onClick: () => void }) {
+  const phaseState = usePipelineStore((s) => s.phaseState);
+  const phases = Object.values(phaseState);
+  const current =
+    phases.filter((p) => p.status === 'running').sort((a, b) => b.phase - a.phase)[0] ??
+    phases.sort((a, b) => b.phase - a.phase)[0];
+  if (!current) return null;
+  const ph = current.phase;
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-      className="space-y-10"
+    <button
+      onClick={onClick}
+      className="fade-up"
+      style={{
+        width: '100%',
+        background: 'var(--bg-list)',
+        borderRadius: 'var(--r-lg)',
+        padding: '12px 14px',
+        textAlign: 'left',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        marginBottom: 22,
+        transition: 'background 120ms',
+      }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-list-hover)')}
+      onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--bg-list)')}
     >
-      {/* Hero */}
-      <header className="space-y-3 max-w-3xl">
-        <p className="text-xs uppercase tracking-[0.2em] text-gold-400 font-medium">
-          Bienvenido al estudio
-        </p>
-        <h1 className="font-display text-5xl font-medium leading-tight">
-          <span className="text-shimmer-gold">El cultivo del contenido</span>
-          <span className="block text-paper-100 italic text-3xl mt-2">comienza aquí.</span>
-        </h1>
-        <p className="text-paper-300 text-base leading-relaxed max-w-2xl pt-2">
-          Xianxia Studio orquesta cada paso de la producción de tus vídeos —
-          desde el guión hasta la publicación — con inteligencia artificial que
-          se ejecuta enteramente en tu propia máquina.
-        </p>
-      </header>
-
-      {/* Quick stats grid */}
-      <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Proyectos" value="0" hint="ningún borrador todavía" icon={Sparkles} />
-        <StatCard label="En cola" value="0" hint="programaciones activas" icon={CalendarClock} />
-        <StatCard label="Publicados" value="0" hint="vídeos en YouTube" icon={Library} />
-        <StatCard
-          label="Hardware"
-          value={hw ? `${hw.cpu_cores}c · ${hw.total_ram_gb.toFixed(0)}GB` : '...'}
-          hint={hw?.cpu_brand ?? 'detectando'}
-          icon={Zap}
-        />
-      </section>
-
-      {/* CTA Card */}
-      <section className="rounded-xl border border-border/60 bg-gradient-to-br from-obsidian-900 via-obsidian-900 to-obsidian-800 p-8 relative overflow-hidden">
-        <div className="absolute inset-0 opacity-[0.04] pointer-events-none">
-          <div className="absolute top-0 right-0 w-96 h-96 bg-gold-500 rounded-full blur-3xl" />
-          <div className="absolute bottom-0 left-0 w-72 h-72 bg-jade-500 rounded-full blur-3xl" />
+      <div style={{ position: 'relative', width: 28, height: 28, flexShrink: 0 }}>
+        <svg width="28" height="28" viewBox="0 0 28 28" style={{ transform: 'rotate(-90deg)' }}>
+          <circle cx="14" cy="14" r="11" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="2" />
+          <circle
+            cx="14"
+            cy="14"
+            r="11"
+            fill="none"
+            stroke="var(--accent)"
+            strokeWidth="2"
+            strokeDasharray={`${(ph / TOTAL_PHASES) * 69} 69`}
+            strokeLinecap="round"
+            style={{ transition: 'stroke-dasharray 500ms var(--ease-spring)' }}
+          />
+        </svg>
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 10,
+            fontWeight: 600,
+          }}
+        >
+          {ph}
         </div>
-        <div className="relative">
-          <h2 className="font-display text-3xl font-medium mb-3">¿Listo para crear?</h2>
-          <p className="text-paper-300 max-w-xl mb-6">
-            Elige un tema, configura el tono y deja que el pipeline de 10 fases produzca
-            tu vídeo de forma autónoma. Script, narración, imágenes, música, subtítulos
-            multiidioma y publicación programada — todo desde una sola pantalla.
-          </p>
-          <a
-            href="/generator"
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-gold-500 text-obsidian-950 font-medium text-sm hover:bg-gold-300 transition-colors duration-150 shadow-glow-gold"
-          >
-            <Sparkles className="w-4 h-4" />
-            Generar nuevo vídeo
-          </a>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className="dot dot-running pulse" />
+          <span style={{ fontSize: 13, fontWeight: 500 }}>
+            Generando · {PHASE_LABELS[ph - 1] ?? `Fase ${ph}`}
+          </span>
         </div>
-      </section>
-
-      {/* Footer info */}
-      <footer className="text-xs text-muted-foreground pt-6 border-t border-border/30 flex items-center justify-between">
-        <span>
-          Xianxia Studio {version?.version ?? '...'} · Tauri {version?.tauri ?? '...'}
-        </span>
-        <span className="font-mono">{hw?.os}/{hw?.arch}</span>
-      </footer>
-    </motion.div>
+        <div className="caption" style={{ marginTop: 2 }}>
+          {current.message ?? `Fase ${ph} de ${TOTAL_PHASES}`}
+        </div>
+      </div>
+      <CaretRight size={12} className="chev" />
+    </button>
   );
 }
 
-function StatCard({
-  label,
-  value,
-  hint,
-  icon: Icon,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  icon: React.ComponentType<{ className?: string }>;
-}) {
+function Dashboard() {
+  const navigate = useNavigate();
+  const { data: version } = useQuery({ queryKey: ['app-version'], queryFn: tauri.getAppVersion });
+  const { data: hw } = useQuery({ queryKey: ['hardware'], queryFn: tauri.detectHardware });
+  const running = usePipelineStore((s) =>
+    Object.values(s.phaseState).some((p) => p.status === 'running'),
+  );
+
+  const hwValue = hw
+    ? `${hw.cpu_cores}c · ${hw.total_ram_gb.toFixed(0)} GB${hw.gpu ? ` · ${hw.gpu.name}` : ''}`
+    : 'Detectando…';
+
   return (
-    <div className="rounded-lg border border-border/50 bg-card/60 backdrop-blur p-5 hover:border-gold-500/40 transition-colors duration-200">
-      <div className="flex items-start justify-between mb-3">
-        <span className="text-[10.5px] uppercase tracking-[0.15em] text-muted-foreground font-medium">
-          {label}
-        </span>
-        <Icon className="w-4 h-4 text-gold-400/60" />
+    <div className="route-enter page">
+      <PageHeader
+        title="Resumen"
+        subtitle="Todo lo que ocurre en el estudio en una sola pantalla."
+        action={
+          <button className="btn-primary large" onClick={() => navigate({ to: '/generator' })}>
+            <Plus size={11} weight="bold" />
+            Nuevo vídeo
+          </button>
+        }
+      />
+
+      {running && <LivePipelineStrip onClick={() => navigate({ to: '/generator' })} />}
+
+      <Group label="Sistema">
+        <Row
+          icon={Lightning}
+          iconColor="#d4b85a"
+          title="Hardware"
+          sub={hw?.cpu_brand ?? 'Detectando…'}
+          value={hwValue}
+          chev
+          onClick={() => navigate({ to: '/settings' })}
+        />
+        <Row
+          icon={DownloadSimple}
+          iconColor="#7a8a8a"
+          title="Instalador"
+          sub="Modelos y runtime local"
+          chev
+          onClick={() => navigate({ to: '/install' })}
+        />
+      </Group>
+
+      <Group label="Contenido">
+        <Row
+          icon={Books}
+          iconColor="#e8c96d"
+          title="Biblioteca"
+          sub="Vídeos producidos en este equipo"
+          chev
+          onClick={() => navigate({ to: '/library' })}
+        />
+        <Row
+          icon={CalendarBlank}
+          iconColor="#d4b85a"
+          title="Planificador"
+          sub="Cola de publicación de YouTube"
+          chev
+          onClick={() => navigate({ to: '/scheduler' })}
+        />
+      </Group>
+
+      <Group label="Atajos">
+        <Row
+          icon={Sparkle}
+          iconColor="#d4b85a"
+          title="Generar vídeo nuevo"
+          sub="Tema → vídeo cinematográfico"
+          value="⌘K"
+          chev
+          onClick={() => navigate({ to: '/generator' })}
+        />
+        <Row
+          icon={Scissors}
+          iconColor="#c9a84c"
+          title="Smart Shorts"
+          sub="Extraer clips virales de un MP4"
+          chev
+          onClick={() => navigate({ to: '/shorts' })}
+        />
+      </Group>
+
+      <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--text-tertiary)', marginTop: 32 }}>
+        Xianxia Studio {version?.version ?? '…'} · Tauri {version?.tauri ?? '…'} ·{' '}
+        <span style={{ fontFamily: 'var(--font-mono)' }}>
+          {hw?.os ?? '—'}/{hw?.arch ?? '—'}
+        </span>{' '}
+        · 100% local
       </div>
-      <div className="font-display text-3xl font-medium text-paper-100">{value}</div>
-      <div className="text-xs text-muted-foreground mt-1">{hint}</div>
     </div>
   );
 }

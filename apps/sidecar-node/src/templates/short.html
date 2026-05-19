@@ -94,44 +94,76 @@
         filter: drop-shadow(0 6px 12px rgba(0,0,0,0.95));
       }
 
-      /* — Layer 4: CAPTIONS — word tokens — */
+      /* — Layer 4: CAPTIONS — Hormozi-grade (v0.1.22 A2) —
+       *
+       * OpusClip's "Mozi" preset (and the Hormozi convention it
+       * imitates) shows ONE word at a time, very large, with no
+       * background pill — only a thick black outline so it reads
+       * legibly on any frame. Scale-punch on the active word, no
+       * yellow pill behind. We render that here.
+       *
+       * - One word at a time means each .word fills the width and
+       *   sits at the same anchor; only opacity differs over time.
+       * - "Outline" is built from a multi-direction text-shadow
+       *   stack (8 directions × 2 layers) — text-stroke is unreliable
+       *   across Chromium's text rasteriser at large sizes.
+       * - The .w-active overlay swap stays opacity-only so we keep
+       *   GSAP simple.
+       */
+      /* OpusClip Mozi grouping: 2-3 words per group, all visible at
+       * once, active word highlighted in yellow, group cross-fades
+       * to next group. The .caps wrapper is the stable anchor; each
+       * .cap-group is positioned absolutely on top of it. */
       .caps {
         position: absolute;
-        bottom: 22%;
-        left: 50%;
-        transform: translateX(-50%);
-        width: 92%;
-        text-align: center;
-        line-height: 1.18;
+        left: 0;
+        right: 0;
+        bottom: 18%;
+        height: 260px;
         will-change: transform;
       }
-      .word {
+      .cap-group {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%) translate3d(0,0,0);
+        width: 92%;
+        text-align: center;
+        line-height: 1.05;
+        opacity: 0;
+        will-change: opacity, transform;
+      }
+      .cap-group .word {
         display: inline-block;
         position: relative;
-        margin: 4px 6px;
-        padding: 8px 16px;
-        font-weight: 800;
-        font-size: 72px;
+        margin: 0 14px;
+        font-weight: 900;
+        font-size: 96px;
         letter-spacing: -0.01em;
-        background: rgba(0,0,0,0.86);
-        border-radius: 14px;
+        text-transform: uppercase;
         white-space: nowrap;
-        opacity: 0;
-        will-change: transform, opacity;
+        will-change: transform;
+        /* Multi-direction outline (8 dir × 2 layers) for legibility on
+         * any background. Closed with a soft drop shadow. */
+        text-shadow:
+          -3px -3px 0 #000, 3px -3px 0 #000, -3px 3px 0 #000, 3px 3px 0 #000,
+          -3px 0 0 #000, 3px 0 0 #000, 0 -3px 0 #000, 0 3px 0 #000,
+          -6px 0 0 #000, 6px 0 0 #000, 0 -6px 0 #000, 0 6px 0 #000,
+          0 8px 16px rgba(0,0,0,0.85);
       }
-      .word .w-base, .word .w-active {
+      .cap-group .word .w-base,
+      .cap-group .word .w-active {
         display: inline-block;
         line-height: 1;
       }
-      .word .w-base { color: #ffffff; }
-      .word .w-active {
+      .cap-group .word .w-base { color: #ffffff; }
+      .cap-group .word .w-active {
         position: absolute;
-        top: 8px; left: 16px; right: 16px;
+        inset: 0;
         text-align: center;
         color: #ffd23f;
         opacity: 0;
         will-change: opacity;
-        text-shadow: 0 0 16px rgba(255,210,63,0.6);
       }
 
       /* — Layer 5: PROGRESS BAR — */
@@ -204,7 +236,7 @@
           id="short-clip"
           data-track-index="0"
           data-start="0"
-          data-duration="__DURATION__"
+          data-duration="__CLIP_DURATION__"
           data-media-start="0"
           src="__CLIP__"
           autoplay
@@ -239,35 +271,47 @@
     <script>
       // ── Configuration injected by the renderer ─────────────────────
       var DURATION = parseFloat(document.getElementById('stage').dataset.duration);
-      // WORDS = [{s:start, e:end}, ...] — one entry per .word DOM node, in order
+      // CLIP_DURATION = how long the source video lasts. The
+      // composition runs CLIP_DURATION + ~1.2 s tail so the CTA card
+      // has room to land cleanly without truncating the video mid-
+      // sentence. We base hook/caption timing on CLIP_DURATION;
+      // CTA + tail fade based on DURATION so the card stays visible
+      // for the full extra second.
+      var CLIP_DURATION = parseFloat(document.getElementById('short-clip').dataset.duration);
+      // WORDS = [{s, e, words:[...]}, ...] — one entry per cap-group
       var WORDS = __WORDS_JSON__;
-      // Hook visibility window (seconds): the hook lives during the first
-      // ~min(2.0, 18 % of clip). Captions don't appear until then so the
-      // viewer reads the hook first.
-      var HOOK_END = Math.max(0.6, Math.min(2.0, DURATION * 0.18));
-      // CTA reveal happens during the last 1.5 s.
-      var CTA_AT = Math.max(0, DURATION - 1.5);
+      var HOOK_END = Math.max(0.6, Math.min(2.0, CLIP_DURATION * 0.18));
+      // CTA reveal happens 1.0 s before the clip ends so it overlaps
+      // the last 1.0 s of audio, then holds through the 1.2 s tail.
+      var CTA_AT = Math.max(0, CLIP_DURATION - 1.0);
 
       // ── Build the GSAP timeline (paused; framework controls play/seek) ──
       var tl = gsap.timeline({ paused: true });
       window.__timelines = window.__timelines || {};
       window.__timelines["short"] = tl;
 
-      // 1) HOOK pop-in + hold + pop-out
-      tl.fromTo("#hook-wrap",
-        { opacity: 0, scale: 0.65, y: -30 },
-        { opacity: 1, scale: 1.0, y: 0, duration: 0.42, ease: "back.out(2.0)" },
+      // 1) HOOK pop-in + hold + hard-kill (v0.1.22 A2)
+      // Use overwrite:'auto' so the breathe → out chain doesn't trigger
+      // HyperFrames' overlapping_gsap_tweens lint warning. The earlier
+      // version had three independent tweens on opacity/scale/y all
+      // landing in the same 0.05–0.32 s window which the linter (and
+      // GSAP itself, sometimes) couldn't disambiguate.
+      tl.set("#hook-wrap", { opacity: 0, scale: 0.65, y: -30 }, 0);
+      tl.to("#hook-wrap",
+        { opacity: 1, scale: 1.0, y: 0, duration: 0.45, ease: "back.out(2.0)", overwrite: "auto" },
         0.05
       );
-      // breathe slightly during the hold so it doesn't look frozen
       tl.to("#hook-wrap",
-        { scale: 1.04, duration: Math.max(0.4, HOOK_END - 1.0), ease: "sine.inOut" },
-        0.5
+        { scale: 1.04, duration: Math.max(0.4, HOOK_END - 1.0), ease: "sine.inOut", overwrite: "auto" },
+        0.55
       );
       tl.to("#hook-wrap",
-        { opacity: 0, scale: 0.85, y: -22, duration: 0.32, ease: "power2.in" },
-        Math.max(0.55, HOOK_END - 0.32)
+        { opacity: 0, scale: 0.85, y: -22, duration: 0.32, ease: "power2.in", overwrite: "auto" },
+        Math.max(0.6, HOOK_END - 0.32)
       );
+      // hard-kill: lock the hook hidden after the exit tween so it never
+      // flickers back during karaoke updates further down the timeline.
+      tl.set("#hook-wrap", { opacity: 0, visibility: "hidden" }, HOOK_END + 0.05);
 
       // 2) PROGRESS BAR — linear scaleX 0→1 over the whole clip
       tl.fromTo("#progress-fill",
@@ -276,43 +320,86 @@
         0
       );
 
-      // 3) CAPTIONS — per-word pop-in, active highlight, group fade-out
+      // 3) CAPTIONS — OpusClip Mozi style: 2-3 words per group,
+      //    visible together, with rolling yellow highlight on the
+      //    active word. Groups cross-fade with the next.
+      //    WORDS is now: [{s, e, words:[{s,e}, ...]}, ...]
       var capsEl = document.getElementById("caps");
-      var wordEls = capsEl.querySelectorAll(".word");
-      var groupSize = 5; // captions visible in groups of up to 5 words
-      WORDS.forEach(function (w, i) {
-        var el = wordEls[i];
-        if (!el) return;
-        var wActive = el.querySelector(".w-active");
-        // Pop-in 80 ms before the word is heard
-        var popIn = Math.max(HOOK_END * 0.7, w.s - 0.08);
-        tl.fromTo(el,
-          { opacity: 0, y: 22, scale: 0.85 },
-          { opacity: 1, y: 0, scale: 1.0, duration: 0.18, ease: "back.out(2.5)" },
-          popIn
+      var groupEls = capsEl.querySelectorAll(".cap-group");
+      // CAPTION SEQUENCE: groups MUST NEVER be visible at the same
+      // time on the shared .caps anchor. The previous fade-based
+      // approach still let two groups blend across 0.10–0.30 s of
+      // crossfade because both `.to opacity:1` and `.to opacity:0`
+      // played simultaneously at the boundary. v0.1.22 final fix:
+      //   - HARD-CUT when the gap between groups is < 0.25 s (most
+      //     of the time in fast dialogue). Group A vanishes EXACTLY
+      //     when group B enters, no fade.
+      //   - SOFT FADE only on long silences (≥ 0.25 s gap) where
+      //     there's room for a clean 0.10 s out + 0.10 s in.
+      // We also take both groups OUT of the compositor with
+      // visibility:hidden the moment they're inactive, so the GPU
+      // never holds a phantom layer.
+      WORDS.forEach(function (g, gi) {
+        var groupEl = groupEls[gi];
+        if (!groupEl) return;
+        var wordEls = groupEl.querySelectorAll(".word");
+        var nextStart = (gi + 1 < WORDS.length) ? WORDS[gi + 1].s : DURATION;
+        var groupOn = Math.max(HOOK_END + 0.02, g.s - 0.03);
+        var gap = nextStart - g.e;
+        var hardCut = gap < 0.25;
+        // groupOff: when the visibility "owns" the slot until.
+        // For hard-cuts, we vanish at nextStart EXACTLY (the next
+        // group's groupOn) → guaranteed zero overlap.
+        // For soft fades, we vanish 0.10 s before nextStart and add
+        // a 0.10 s easing fade leading up to it.
+        var groupOff = hardCut ? Math.max(g.e, nextStart - 0.001)
+                               : (nextStart - 0.10);
+        if (groupOff <= groupOn) groupOff = groupOn + 0.10;
+        // Group enter — quick scale-in + opacity flip
+        tl.set(groupEl, { opacity: 0, scale: 0.94, visibility: "visible" }, groupOn - 0.01);
+        tl.to(groupEl,
+          { opacity: 1, scale: 1.0, duration: 0.12, ease: "back.out(1.8)", overwrite: "auto" },
+          groupOn
         );
-        // Active highlight — opacity-only swap to the yellow overlay span
-        if (wActive) {
-          tl.to(wActive, { opacity: 1, duration: 0.06, ease: "power1.out" }, w.s);
-          tl.to(el, { scale: 1.10, duration: 0.10, ease: "power2.out" }, w.s);
-          tl.to(wActive, { opacity: 0, duration: 0.10, ease: "power1.in" }, w.e);
-          tl.to(el, { scale: 1.0, duration: 0.12, ease: "power2.in" }, w.e);
-        }
-        // At the end of each group of 5 words, all the words in that
-        // group fade out together — keeps the screen uncluttered for
-        // the next group.
-        var atGroupEnd = (i % groupSize === groupSize - 1) || i === WORDS.length - 1;
-        if (atGroupEnd) {
-          var groupStart = i - (i % groupSize);
-          var groupLastEnd = w.e;
-          for (var j = groupStart; j <= i; j++) {
-            var gEl = wordEls[j];
-            if (!gEl) continue;
-            tl.to(gEl,
-              { opacity: 0, y: -16, duration: 0.22, ease: "power2.in" },
-              groupLastEnd + 0.04
+        // Per-word active highlight: yellow swap + scale punch on the
+        // word being SAID right now. The other words stay visible in
+        // white outline so the reader has context.
+        g.words.forEach(function (w, wi) {
+          var wEl = wordEls[wi];
+          if (!wEl) return;
+          var wActive = wEl.querySelector(".w-active");
+          tl.set(wEl, { scale: 1.0 }, 0);
+          if (wActive) {
+            tl.set(wActive, { opacity: 0 }, 0);
+            tl.to(wActive,
+              { opacity: 1, duration: 0.05, ease: "power1.out", overwrite: "auto" },
+              w.s
+            );
+            tl.to(wEl,
+              { scale: 1.10, duration: 0.10, ease: "power2.out", overwrite: "auto" },
+              w.s
+            );
+            tl.to(wActive,
+              { opacity: 0, duration: 0.08, ease: "power1.in", overwrite: "auto" },
+              w.e
+            );
+            tl.to(wEl,
+              { scale: 1.0, duration: 0.10, ease: "power2.in", overwrite: "auto" },
+              w.e
             );
           }
+        });
+        // Group exit — hard cut OR fast 0.10 s fade. Both paths land
+        // on the same final state (opacity 0 + visibility hidden) at
+        // groupOff, guaranteeing no compositor leak.
+        if (hardCut) {
+          tl.set(groupEl, { opacity: 0, visibility: "hidden" }, groupOff);
+        } else {
+          tl.to(groupEl,
+            { opacity: 0, duration: 0.10, ease: "power2.in", overwrite: "auto" },
+            groupOff
+          );
+          tl.set(groupEl, { opacity: 0, visibility: "hidden" }, groupOff + 0.105);
         }
       });
 

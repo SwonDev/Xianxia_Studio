@@ -62,6 +62,26 @@ pub enum AssetKind {
     /// Place a HuggingFace single file at a target path (used to drop the
     /// Comfy-Org/z_image_turbo split files into ComfyUI's models/ directories).
     HuggingfaceFileTo { repo: String, filename: String, target_path: String },
+    /// v0.1.38 — set up the DepthFlow 2.5D parallax tool in its OWN venv
+    /// at `runtime/depthflow-venv/`. We isolate it because its torch /
+    /// transformers / pillow / numpy pins conflict with the main sidecar
+    /// (qwen-tts, audiocraft, rembg). The runner creates the
+    /// venv with the embedded Python, installs CUDA-12.1 torch first
+    /// (so DepthFlow's auto-installer doesn't pick a GPU driver-mismatched
+    /// wheel), then `pip install depthflow`. On first /depthflow/clip
+    /// the Depth-Anything-V2-small weights download (~140 MB) and cache.
+    DepthFlowVenv,
+    /// v0.2.8 — set up ACE-Step v1.5 (best open-source music generator)
+    /// in its OWN venv at `runtime/acestep-venv/` + clone the repo at
+    /// `runtime/acestep-repo/`. Isolated because ACE-Step-1.5 @ v0.1.7
+    /// hard-pins `torch==2.7.1+cu128` + a local-editable `nano-vllm` +
+    /// flash-attn / transformers>=4.51, all of which conflict with the
+    /// main sidecar's torch 2.5.1+cu121. Opt-in (Settings toggle); the
+    /// music phase auto-detects this venv and falls back MusicGen →
+    /// library when it's absent, so the pipeline never blocks. The 2B
+    /// SFT checkpoint (~4 GB) downloads on first /music use into the
+    /// app hf-cache and runs GPU-only (no CPU offload) on 8 GB.
+    AceStepVenv,
 }
 
 /// The full install plan, in dependency order. A consumer (the runner) walks
@@ -223,15 +243,17 @@ pub fn full_manifest() -> Vec<Component> {
             depends_on: vec!["python-deps-core".to_string()],
         },
 
-        // ─── Python deps (música — ACE-Step v1.5 preferred + MusicGen fallback) ──
-        // Optional: app falls back to local music library if neither backend
-        // is installed. ~5-8 GB total. ACE-Step downloads its checkpoint to
-        // ~/.cache/ace-step on first inference (≈3.5 GB Apache 2.0 weights).
+        // ─── Python deps (música — MusicGen-medium GPU-only · v0.2.6) ──
+        // Optional: app falls back to the local music library when MusicGen
+        // isn't installed. ~3-4 GB total in fp16. ACE-Step v1.5 was removed
+        // in v0.2.6 because on 8 GB VRAM it needs cpu_offload=True (per its
+        // README) which violates the project's GPU-only rule, and on Windows
+        // the offload-disabled path hangs indefinitely (WDDM thrash).
         Component {
             id: "python-deps-music".to_string(),
-            label: "ACE-Step v1.5 + MusicGen-medium (música cinematográfica generada)".to_string(),
+            label: "MusicGen-medium (música cinematográfica generada en GPU)".to_string(),
             category: Category::Postinstall,
-            size_bytes: 6 * 1024 * 1024 * 1024,
+            size_bytes: 4 * 1024 * 1024 * 1024,
             url: String::new(),
             url_macos: None,
             url_linux: None,
@@ -263,6 +285,54 @@ pub fn full_manifest() -> Vec<Component> {
             },
             required: false,
             depends_on: vec!["python-deps-core".to_string()],
+        },
+
+        // ─── Python deps (DepthFlow — 2.5D parallax via Depth-Anything-V2 + GLSL) ──
+        // v0.1.38: each generated still gets converted into a short parallax
+        // MP4 by DepthFlow, replacing the old rembg+inpaint approach. The
+        // pipeline auto-detects whether this venv is installed (via
+        // /depthflow/health) and falls back to single-image + KenBurns
+        // when it's missing — so the app stays functional even if the user
+        // skips this component. License: AGPL-3.0 (commercial OK as long
+        // as you publish source modifications).
+        Component {
+            id: "python-deps-depthflow".to_string(),
+            label: "DepthFlow (2.5D parallax cinematográfico, recomendado)".to_string(),
+            category: Category::Postinstall,
+            // ~3 GB: torch CUDA 12.1 (~2.5 GB) + depthflow + deps (~500 MB).
+            // First /depthflow/clip downloads Depth-Anything-V2-small (~140 MB).
+            size_bytes: 3 * 1024 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::DepthFlowVenv,
+            required: false,
+            depends_on: vec!["python-3.11".to_string()],
+        },
+
+        // ─── ACE-Step v1.5 (best open-source music generator, opt-in) ──
+        // v0.2.8: highest-quality cinematic instrumental, far above
+        // MusicGen for structured multi-minute pieces. Isolated venv
+        // because v0.1.7 pins torch 2.7.1+cu128 + nano-vllm (local) +
+        // flash-attn — conflicts with the main sidecar's 2.5.1+cu121.
+        // Opt-in (Settings toggle gated like Ollama): the music phase
+        // falls back MusicGen → library when this venv is absent or the
+        // toggle is off, so the pipeline never blocks. Apache-2.0.
+        // ~6 GB: torch cu128 (~3 GB) + repo deps + 2B SFT ckpt (~4 GB
+        // on first use into hf-cache).
+        Component {
+            id: "python-deps-acestep".to_string(),
+            label: "ACE-Step v1.5 (música cinematográfica IA · opt-in, mejor calidad)".to_string(),
+            category: Category::Postinstall,
+            size_bytes: 6 * 1024 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::AceStepVenv,
+            required: false,
+            depends_on: vec!["python-3.11".to_string()],
         },
 
         // ─── Node deps for the HyperFrames sidecar ──────────────────

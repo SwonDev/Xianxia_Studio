@@ -54,10 +54,14 @@ async function copyPySource() {
 
 async function buildAndCopyNode() {
   console.log('\n[2/2] sidecar-node');
-  if (!existsSync(join(SRC_NODE, 'dist', 'server.js'))) {
-    console.log('  building TypeScript first…');
-    run('pnpm --filter @xianxia/sidecar-node build', ROOT);
-  }
+  // v0.1.45: ALWAYS rebuild. Previously this only ran `tsc` if
+  // `dist/server.js` was missing — but that meant any edit to a .ts
+  // file (e.g. render.ts thumbnail fix in v0.1.42) silently shipped
+  // with the STALE `dist/*.js` from the previous build. Every install
+  // since the thumbnail regression had the unfixed bundle even though
+  // the source code was correct.
+  console.log('  building TypeScript (always, to avoid stale dist)…');
+  run('pnpm --filter @xianxia/sidecar-node build', ROOT);
   await rimraf(OUT_NODE);
   await mkdir(OUT_NODE, { recursive: true });
 

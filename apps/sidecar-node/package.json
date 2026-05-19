@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs'),p=require('path');const src=p.join('src','templates'),dst=p.join('dist','templates');fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src))fs.copyFileSync(p.join(src,f),p.join(dst,f));console.log('copied templates ->',dst)\"",
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs'),p=require('path');function cp(src,dst){fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src,{withFileTypes:true})){const s=p.join(src,f.name),d=p.join(dst,f.name);if(f.isDirectory())cp(s,d);else fs.copyFileSync(s,d);}console.log('copied',src,'->',dst);}cp(p.join('src','templates'),p.join('dist','templates'));cp(p.join('src','assets'),p.join('dist','assets'));\"",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js"
   },

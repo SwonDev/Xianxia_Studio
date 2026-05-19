@@ -1,3 +1,4 @@
+mod app_settings;
 mod commands;
 mod db;
 mod diag;
@@ -7,6 +8,7 @@ mod pipeline;
 mod process_ext;
 mod scheduler;
 mod sidecars;
+mod tiktok;
 mod youtube;
 
 use std::sync::Arc;
@@ -37,6 +39,8 @@ pub fn run() {
             commands::greet,
             commands::get_app_version,
             commands::list_projects,
+            commands::list_scheduled,
+            commands::cancel_scheduled,
             commands::create_project,
             commands::start_generation,
             pipeline::abort_generation,
@@ -52,6 +56,7 @@ pub fn run() {
             commands::library::library_list_videos,
             commands::library::library_delete_video,
             commands::library::library_open_video_folder,
+            commands::library::library_reveal_video,
             hardware::detect_hardware,
             hardware::safe_llm_alternative,
             installer::runner::run_install,
@@ -60,9 +65,13 @@ pub fn run() {
             installer::llm::install_llm,
             installer::verify::verify_stack,
             installer::detect::detect_installed_tools,
+            installer::llamacpp::llamacpp_status,
+            installer::llamacpp::llamacpp_install,
             sidecars::get_sidecar_state,
             sidecars::get_workspace_root,
             sidecars::get_sidecar_logs,
+            app_settings::app_settings_get,
+            app_settings::app_settings_set_ollama_enabled,
             youtube::commands::youtube_status,
             youtube::commands::youtube_disconnect,
             youtube::commands::youtube_oauth_start,
@@ -71,6 +80,9 @@ pub fn run() {
             youtube::commands::youtube_app_status,
             youtube::commands::youtube_set_app_credentials,
             youtube::commands::youtube_clear_app_credentials,
+            tiktok::commands::tiktok_status,
+            tiktok::commands::tiktok_set_session,
+            tiktok::commands::tiktok_clear_session,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

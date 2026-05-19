@@ -9,7 +9,7 @@ Endpoints:
                            sidecar-node, comfyui and vram streams,
                            filtered by project_id / since / level.
 * `GET  /diag/vram`      — current VRAM snapshot (Comfy /system_stats +
-                           Ollama /api/ps + torch.cuda.mem_get_info).
+                           LLM backend list_running() + torch.cuda.mem_get_info).
 """
 
 from __future__ import annotations
@@ -21,9 +21,13 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+import asyncio
+
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+from ..llm_backend import get_backend
 
 router = APIRouter()
 
@@ -70,14 +74,22 @@ def diag_health() -> dict:
 # ─── /diag/vram ─────────────────────────────────────────────────────────
 
 
-def _ollama_running() -> list[dict]:
+def _llm_running() -> list[dict]:
+    """Models the active LLM backend has pinned in VRAM.
+
+    Routes through `llm_backend.get_backend().list_running()` so the response
+    shape is identical whether the runtime is Ollama (rich `size_vram` /
+    `expires_at` metadata) or llama.cpp (synthesised single-entry list).
+    """
+    backend = get_backend()
     try:
-        r = httpx.get(f"{OLLAMA_URL}/api/ps", timeout=2)
-        if r.status_code == 200:
-            return r.json().get("models", []) or []
-    except Exception:
-        pass
-    return []
+        return asyncio.run(backend.list_running())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(backend.list_running())
+        finally:
+            loop.close()
 
 
 def _comfyui_devices() -> list[dict]:
@@ -115,13 +127,14 @@ def diag_vram() -> dict:
             }
             for d in _comfyui_devices()
         ],
-        "ollama_running": [
+        "llm_running": [
             {
                 "name": m.get("name"),
                 "size_vram_gb": (m.get("size_vram") or 0) / (1024**3),
                 "expires_at": m.get("expires_at"),
+                "backend": get_backend().name,
             }
-            for m in _ollama_running()
+            for m in _llm_running()
         ],
         "python_cuda_free_gb": _python_cuda_free(),
     }
@@ -266,6 +279,81 @@ def diag_snapshot(req: SnapshotRequest) -> dict:
 
 
 # ─── /diag/list ─────────────────────────────────────────────────────────
+
+
+# ─── /diag/library ──────────────────────────────────────────────────────
+# Browser-mode equivalent of the Rust `library_list_videos` Tauri command.
+# Scans `<data_dir>/projects/<project_id>/*.mp4` and returns the same
+# `LibraryVideo` shape the prod UI expects. Without this the dev Library
+# page is permanently "Aún no hay vídeos" even when the disk has dozens
+# of generated MP4s.
+@router.get("/library")
+def diag_library() -> dict:
+    out_dir = os.environ.get("XIANXIA_OUT_DIR")
+    if not out_dir:
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            out_dir = str(Path(appdata) / "xianxia" / "XianxiaStudio" / "data" / "projects")
+    if not out_dir or not Path(out_dir).is_dir():
+        return {"videos": [], "root": out_dir or ""}
+    videos: list[dict] = []
+    root = Path(out_dir)
+    for proj in root.iterdir():
+        if not proj.is_dir():
+            continue
+        # Prefer top-level video.mp4 (the canonical final asset); fall
+        # back to any .mp4 directly under the project for legacy runs.
+        candidates = list(proj.glob("video.mp4")) or list(proj.glob("*.mp4"))
+        for mp4 in candidates:
+            try:
+                stat = mp4.stat()
+            except OSError:
+                continue
+            if stat.st_size < 1024:
+                continue
+            poster = None
+            for png in ("thumbnail.jpg", "thumbnail.png"):
+                p = proj / png
+                if p.is_file():
+                    poster = str(p)
+                    break
+            videos.append({
+                "project_id": proj.name,
+                "title": proj.name,
+                "video_path": str(mp4),
+                "poster_path": poster,
+                "size_bytes": stat.st_size,
+                "duration_seconds": None,
+                "width": None,
+                "height": None,
+                "modified_at": int(stat.st_mtime),
+            })
+    videos.sort(key=lambda v: v["modified_at"], reverse=True)
+    return {"videos": videos, "root": str(root)}
+
+
+# ─── /diag/file ─────────────────────────────────────────────────────────
+# Serve any file under <data_dir> so browser-mode (no Tauri `asset://`
+# protocol) can show <img> / <video> for paths returned by the sidecars.
+# Path containment is strict: only files under data_dir (projects, runtime
+# outputs) — never the filesystem root.
+from fastapi.responses import FileResponse  # noqa: E402
+
+@router.get("/file")
+def diag_file(path: str) -> FileResponse:
+    p = Path(path).resolve()
+    # Allowed roots: anything under the supervisor's data_dir, plus the
+    # ComfyUI output dir (which the supervisor doesn't have to own).
+    allowed: list[Path] = []
+    if env := os.environ.get("XIANXIA_DATA_DIR"):
+        allowed.append(Path(env).resolve())
+    if appdata := os.environ.get("APPDATA"):
+        allowed.append((Path(appdata) / "xianxia" / "XianxiaStudio" / "data").resolve())
+    if not p.is_file():
+        raise HTTPException(404, f"not a file: {path}")
+    if not any(str(p).lower().startswith(str(root).lower()) for root in allowed):
+        raise HTTPException(403, "path outside data_dir")
+    return FileResponse(p)
 
 
 @router.get("/list")

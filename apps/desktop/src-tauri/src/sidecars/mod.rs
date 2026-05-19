@@ -29,6 +29,17 @@ use crate::installer::paths;
 use crate::installer::python_env;
 use crate::process_ext::HideConsole;
 
+/// Max age (seconds) for the `.llamacpp_suspended` sentinel before the
+/// supervisor treats it as stale and respawns llama-server anyway. The
+/// longest legitimate non-LLM stretch is TTS (~10 min) + image batch
+/// (~16-20 min for 16 beats) + DepthFlow (~4 min) + MusicGen (up to
+/// 40 min on long videos) = ~75 min. We pick 90 min so a healthy long-
+/// form run never trips the TTL while still capping a forgotten suspend.
+/// Combined with the proactive `wake_llm()` calls in `pipeline/mod.rs`
+/// before any LLM-bearing phase, this TTL acts as a safety net rather
+/// than the primary recovery mechanism.
+const SUSPEND_FLAG_TTL_SECS: u64 = 90 * 60;
+
 /// Builds a PATH for spawned sidecars that ALWAYS includes the locations
 /// where ffmpeg/ffprobe might live, in addition to the parent process's PATH.
 /// This is the cornerstone of the Auto principle for video tooling: the
@@ -132,6 +143,21 @@ pub fn kill_orphan_sidecars() {
     if killed > 0 {
         tracing::info!(killed, "purged orphan sidecars; new supervisor can now bind ports cleanly");
     }
+
+    // v0.2.2 self-heal — drop any leftover `.llamacpp_suspended` from a
+    // previous instance that crashed mid-pipeline. The orphaned llama-server
+    // was just killed above, so the sentinel is meaningless; carrying it
+    // into the new session would suppress the very first respawn and leave
+    // the user staring at a stopped dot. Independent of the TTL check in
+    // `spawn_llama_if_needed` (which guards against in-session stalls).
+    if let Ok(p) = paths::paths() {
+        let flag = p.data_dir.join(".llamacpp_suspended");
+        if flag.is_file() {
+            if std::fs::remove_file(&flag).is_ok() {
+                tracing::info!("cleared stale llama-server suspend flag from previous session");
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -151,6 +177,11 @@ pub struct SidecarState {
     pub ollama: SidecarStatus,
     #[serde(default = "default_status")]
     pub comfyui: SidecarStatus,
+    /// v0.2.0 — llama.cpp llama-server on :8733. Coexists with `ollama`
+    /// so the UI can show both dots; the backend abstraction
+    /// (`llm_backend.py`) decides which one to call per request.
+    #[serde(default = "default_status")]
+    pub llamacpp: SidecarStatus,
 }
 
 #[allow(dead_code)] // serde default — reachable when older state JSONs deserialize
@@ -186,9 +217,20 @@ pub struct Supervisor {
     python_child: Arc<Mutex<Option<Child>>>,
     node_child: Arc<Mutex<Option<Child>>>,
     comfy_child: Arc<Mutex<Option<Child>>>,
+    llama_child: Arc<Mutex<Option<Child>>>,
     python_guard: Arc<Mutex<SpawnGuard>>,
     node_guard: Arc<Mutex<SpawnGuard>>,
     comfy_guard: Arc<Mutex<SpawnGuard>>,
+    llama_guard: Arc<Mutex<SpawnGuard>>,
+    /// Set to `true` while a background `install_llamacpp` task is running.
+    /// Prevents the health loop from kicking off a second auto-install while
+    /// the first is still downloading the ~110 MB archive.
+    llama_autoinstall_inflight: Arc<Mutex<bool>>,
+    /// Set to `true` once `try_autoinstall_llamacpp` has fired this session.
+    /// Without this guard a transient install failure (network drop, antivirus
+    /// quarantine) would retry on every health tick (every 3 s) and DDoS the
+    /// GitHub releases endpoint with our own client.
+    llama_autoinstall_attempted: Arc<Mutex<bool>>,
 }
 
 impl Supervisor {
@@ -199,13 +241,18 @@ impl Supervisor {
                 node: SidecarStatus::Stopped,
                 ollama: SidecarStatus::Stopped,
                 comfyui: SidecarStatus::Stopped,
+                llamacpp: SidecarStatus::Stopped,
             })),
             python_child: Arc::new(Mutex::new(None)),
             node_child: Arc::new(Mutex::new(None)),
             comfy_child: Arc::new(Mutex::new(None)),
+            llama_child: Arc::new(Mutex::new(None)),
             python_guard: Arc::new(Mutex::new(SpawnGuard::default())),
             node_guard: Arc::new(Mutex::new(SpawnGuard::default())),
             comfy_guard: Arc::new(Mutex::new(SpawnGuard::default())),
+            llama_guard: Arc::new(Mutex::new(SpawnGuard::default())),
+            llama_autoinstall_inflight: Arc::new(Mutex::new(false)),
+            llama_autoinstall_attempted: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -220,17 +267,28 @@ impl Supervisor {
     pub async fn probe_snapshot(&self) -> SidecarState {
         let py_ok = probe_python().await;
         let node_ok = probe_node().await;
-        let ollama_ok = crate::installer::ollama::is_running().await;
+        // v0.2.2 — Ollama is opt-in. When disabled we skip the probe so a
+        // user with `ollama.exe` in PATH for unrelated reasons doesn't see
+        // its dot light up in the topbar. Returning false here also keeps
+        // the UI panel hidden via the explicit toggle gate on the frontend.
+        let ollama_ok = if crate::app_settings::load().ollama_enabled {
+            crate::installer::ollama::is_running().await
+        } else {
+            false
+        };
         let comfy_ok = probe_comfyui().await;
+        let llama_ok = probe_llamacpp().await;
         // Same tolerance logic as the health loop: child alive + port bound = Running.
         let py_alive = self.python_child.lock().await.is_some() && port_is_bound("127.0.0.1:8731").await;
         let node_alive = self.node_child.lock().await.is_some() && port_is_bound("127.0.0.1:8732").await;
         let comfy_alive = self.comfy_child.lock().await.is_some() && port_is_bound("127.0.0.1:8188").await;
+        let llama_alive = self.llama_child.lock().await.is_some() && port_is_bound("127.0.0.1:8733").await;
         let mut s = self.state.lock().await;
         if py_ok || py_alive { s.python = SidecarStatus::Running; }
         if node_ok || node_alive { s.node = SidecarStatus::Running; }
         if ollama_ok { s.ollama = SidecarStatus::Running; }
         if comfy_ok || comfy_alive { s.comfyui = SidecarStatus::Running; }
+        if llama_ok || llama_alive { s.llamacpp = SidecarStatus::Running; }
         s.clone()
     }
 
@@ -238,7 +296,15 @@ impl Supervisor {
     pub async fn start_all(&self) -> Result<()> {
         let _ = self.spawn_python_if_needed().await;
         let _ = self.spawn_node_if_needed().await;
-        let _ = crate::installer::ollama::ensure_running().await;
+        // v0.2.2 — Ollama is opt-in. Only `ensure_running` it when the
+        // user explicitly toggled it from Settings. Without this gate
+        // a stray `ollama.exe` left over from a v0.1.x install would
+        // get auto-started on every app launch and silently reserve
+        // VRAM the user expected to be free.
+        if crate::app_settings::load().ollama_enabled {
+            let _ = crate::installer::ollama::ensure_running().await;
+        }
+        let _ = self.spawn_llama_if_needed().await;
         let _ = self.spawn_comfyui_if_needed().await;
         Ok(())
     }
@@ -302,6 +368,117 @@ impl Supervisor {
         }
     }
 
+    /// v0.2.0 — spawn llama-server if (a) the binary is installed and
+    /// (b) an active model config (or a discoverable GGUF) is available.
+    /// Returns Ok(()) on every path the user shouldn't see as an error —
+    /// missing install or missing model is "feature not enabled yet",
+    /// not "the supervisor crashed".
+    async fn spawn_llama_if_needed(&self) -> Result<()> {
+        // Fast-path: already responding on :8733.
+        if probe_llamacpp().await {
+            self.state.lock().await.llamacpp = SidecarStatus::Running;
+            self.llama_guard.lock().await.record_success();
+            return Ok(());
+        }
+        // v0.2.0 VRAM coordination — the Python sidecar drops a
+        // `.llamacpp_suspended` sentinel at `<data_dir>/` when the
+        // pipeline calls `/unload?target=llm` between phases. While that
+        // flag exists we MUST NOT respawn llama-server, otherwise its
+        // ~5 GB of VRAM would compete with ComfyUI / TTS for the GPU.
+        // The next LLM call (from `LlamaCppBackend.chat`) deletes the
+        // flag and we get spawned on the very next health-loop tick.
+        //
+        // v0.2.2 self-heal — TTL of `SUSPEND_FLAG_TTL_SECS`. If the
+        // pipeline phase that was supposed to reclaim the LLM (music,
+        // subtitles, shorts captions) crashes or simply never calls into
+        // `LlamaCppBackend.chat()` (legacy clients, library-only music
+        // path), the flag would stay forever and the user would see a
+        // dead llama-server with no UI feedback. After the TTL elapses
+        // we treat the flag as stale, remove it, and respawn. This
+        // matches the "autoreparación" contract — the pipeline always
+        // recovers without the user noticing.
+        if let Ok(p) = crate::installer::paths::paths() {
+            let flag = p.data_dir.join(".llamacpp_suspended");
+            if flag.is_file() {
+                let stale = std::fs::metadata(&flag)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .map(|d| d.as_secs() > SUSPEND_FLAG_TTL_SECS)
+                    .unwrap_or(false);
+                if stale {
+                    let _ = std::fs::remove_file(&flag);
+                    tracing::warn!(
+                        ttl_secs = SUSPEND_FLAG_TTL_SECS,
+                        "llama-server suspend flag exceeded TTL — clearing and respawning"
+                    );
+                    // fall through to spawn path below
+                } else {
+                    self.state.lock().await.llamacpp = SidecarStatus::Stopped;
+                    return Ok(());
+                }
+            }
+        }
+        // Auto-install path: if the binary isn't on disk yet but the user
+        // already has an LLM-compatible GGUF (legacy v0.1.x install) or an
+        // active model config (T4 model browser), download llama.cpp in the
+        // background. The first health-loop tick that sees the binary on
+        // disk will then spawn llama-server normally.
+        let install = match crate::installer::llamacpp::detect_llamacpp() {
+            Some(i) => i,
+            None => {
+                let want_install = crate::installer::llamacpp::read_active_config()
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    || !crate::installer::llamacpp::discover_gguf_paths().is_empty();
+                if want_install {
+                    self.maybe_trigger_llama_autoinstall().await;
+                } else {
+                    self.state.lock().await.llamacpp = SidecarStatus::Stopped;
+                }
+                return Ok(());
+            }
+        };
+        // Resolve the active model config. Fall back to a discovered GGUF
+        // (legacy Ollama HF cache) so v0.1.x users land on a usable
+        // default before T4's model browser writes a real config.
+        let cfg = match crate::installer::llamacpp::read_active_config()? {
+            Some(c) => c,
+            None => match crate::installer::llamacpp::discover_default_config() {
+                Some(c) => c,
+                None => {
+                    self.state.lock().await.llamacpp = SidecarStatus::Stopped;
+                    tracing::info!(
+                        "llama-server: no GGUF discovered yet — skipping spawn until T4 downloads one"
+                    );
+                    return Ok(());
+                }
+            },
+        };
+        if self.llama_guard.lock().await.should_skip() {
+            return Err(anyhow!("llama.cpp in cooldown after repeated failures"));
+        }
+        self.llama_guard.lock().await.record_attempt();
+        self.kill_llama_child().await;
+        if port_is_bound("127.0.0.1:8733").await {
+            self.llama_guard.lock().await.record_failure();
+            return Err(anyhow!(":8733 already bound"));
+        }
+        match spawn_llama_server(&install.server_binary, &cfg).await {
+            Ok(child) => {
+                *self.llama_child.lock().await = Some(child);
+                self.state.lock().await.llamacpp = SidecarStatus::Starting;
+                Ok(())
+            }
+            Err(e) => {
+                self.llama_guard.lock().await.record_failure();
+                tracing::warn!(error = %e, "llama-server spawn failed");
+                Err(e)
+            }
+        }
+    }
+
     async fn spawn_comfyui_if_needed(&self) -> Result<()> {
         if probe_comfyui().await {
             self.state.lock().await.comfyui = SidecarStatus::Running;
@@ -359,6 +536,69 @@ impl Supervisor {
         }
     }
 
+    async fn kill_llama_child(&self) {
+        let mut guard = self.llama_child.lock().await;
+        if let Some(mut child) = guard.take() {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
+    }
+
+    /// Trigger `install_llamacpp(pick_flavor())` in a background task IFF:
+    ///   * we haven't already attempted it this session (avoid retry loops
+    ///     on transient network failure)
+    ///   * no install is in flight right now
+    /// While the install runs the topbar dot shows `Starting` so the user
+    /// gets feedback. When the install task finishes the next health-loop
+    /// tick will `detect_llamacpp` and spawn `llama-server` normally.
+    ///
+    /// This is the canonical "autoinstalable" path the user asked for —
+    /// llama.cpp behaves like the other runtimes (Python, Node, FFmpeg):
+    /// the supervisor handles it without UI plumbing.
+    async fn maybe_trigger_llama_autoinstall(&self) {
+        {
+            let attempted = self.llama_autoinstall_attempted.lock().await;
+            if *attempted {
+                self.state.lock().await.llamacpp = SidecarStatus::Stopped;
+                return;
+            }
+        }
+        {
+            let inflight = self.llama_autoinstall_inflight.lock().await;
+            if *inflight {
+                self.state.lock().await.llamacpp = SidecarStatus::Starting;
+                return;
+            }
+        }
+        // Surface "starting" as soon as the download begins so the topbar
+        // dot flips to gold while bytes stream. The health loop will flip
+        // it to Running once /health on :8733 answers.
+        self.state.lock().await.llamacpp = SidecarStatus::Starting;
+        let inflight_flag = Arc::clone(&self.llama_autoinstall_inflight);
+        let attempted_flag = Arc::clone(&self.llama_autoinstall_attempted);
+        let state_for_task = Arc::clone(&self.state);
+        tokio::spawn(async move {
+            *inflight_flag.lock().await = true;
+            let flavor = crate::installer::llamacpp::pick_flavor();
+            tracing::info!(?flavor, "auto-installing llama.cpp in background");
+            match crate::installer::llamacpp::install_llamacpp(flavor, None).await {
+                Ok(inst) => {
+                    tracing::info!(
+                        flavor = ?inst.flavor,
+                        binary = %inst.server_binary.display(),
+                        "llama.cpp auto-install OK"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "llama.cpp auto-install failed");
+                    state_for_task.lock().await.llamacpp = SidecarStatus::Stopped;
+                }
+            }
+            *inflight_flag.lock().await = false;
+            *attempted_flag.lock().await = true;
+        });
+    }
+
     async fn kill_comfy_child(&self) {
         let mut guard = self.comfy_child.lock().await;
         if let Some(mut child) = guard.take() {
@@ -367,14 +607,47 @@ impl Supervisor {
         }
     }
 
+    /// v0.2.6 — Force kill + respawn ComfyUI.
+    ///
+    /// The pipeline's `ensure_comfyui_vram` calls this when ComfyUI's
+    /// worker is wedged on a hung prompt (the Windows CUDA-Sysmem-fallback
+    /// thrash failure: ≈958 s/step instead of ≈7 s/step). ComfyUI's
+    /// async `/free` cannot recover a stuck worker — only a fresh process
+    /// can. A new ComfyUI holds zero models, so the card returns to
+    /// ~full free for the phase that needed the VRAM (Whisper, the
+    /// thumbnail cold reload). Symmetric to `respawn_python`.
+    pub async fn respawn_comfyui(&self) {
+        // Reset the cooldown so the kill below isn't blocked by a stale
+        // fail count, and the immediate respawn isn't skipped.
+        *self.comfy_guard.lock().await = SpawnGuard::default();
+        self.kill_comfy_child().await;
+        // A worker stuck in a CUDA call can take a few seconds to die
+        // after TerminateProcess; ComfyUI holds :8188 until the Python
+        // process is fully gone. Wait for the port to release (≤10 s) so
+        // the respawn doesn't bail with ":8188 already bound".
+        for _ in 0..20 {
+            if !port_is_bound("127.0.0.1:8188").await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let _ = self.spawn_comfyui_if_needed().await;
+    }
+
     pub async fn run_health_loop(self: Arc<Self>) {
         loop {
             // Probe FIRST so the very first iteration (within ~1s of app boot)
             // already updates the dots to green if services are up. Then sleep.
             let py_ok = probe_python().await;
             let node_ok = probe_node().await;
-            let ollama_ok = crate::installer::ollama::is_running().await;
+            // v0.2.2 — Ollama probe is opt-in. See `probe_snapshot` for rationale.
+            let ollama_ok = if crate::app_settings::load().ollama_enabled {
+                crate::installer::ollama::is_running().await
+            } else {
+                false
+            };
             let comfy_ok = probe_comfyui().await;
+            let llama_ok = probe_llamacpp().await;
 
             // Reap dead children to avoid Zombies. If process exited, drop
             // the handle so the next spawn can start fresh.
@@ -402,6 +675,14 @@ impl Supervisor {
                     }
                 }
             }
+            {
+                let mut g = self.llama_child.lock().await;
+                if let Some(child) = g.as_mut() {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        *g = None;
+                    }
+                }
+            }
 
             // Restart only if not responsive AND we don't already hold a live child
             if !py_ok {
@@ -422,6 +703,12 @@ impl Supervisor {
                     let _ = self.spawn_comfyui_if_needed().await;
                 }
             }
+            if !llama_ok {
+                let has_live = self.llama_child.lock().await.is_some();
+                if !has_live {
+                    let _ = self.spawn_llama_if_needed().await;
+                }
+            }
 
             // A "busy" sidecar (e.g. Python mid-TTS torch.generate) may not respond
             // to /health within the probe timeout, but it's still alive and serving.
@@ -430,9 +717,11 @@ impl Supervisor {
             let py_child_alive = self.python_child.lock().await.is_some();
             let node_child_alive = self.node_child.lock().await.is_some();
             let comfy_child_alive = self.comfy_child.lock().await.is_some();
+            let llama_child_alive = self.llama_child.lock().await.is_some();
             let py_port = port_is_bound("127.0.0.1:8731").await;
             let node_port = port_is_bound("127.0.0.1:8732").await;
             let comfy_port = port_is_bound("127.0.0.1:8188").await;
+            let llama_port = port_is_bound("127.0.0.1:8733").await;
 
             {
                 let mut s = self.state.lock().await;
@@ -448,6 +737,15 @@ impl Supervisor {
                 s.comfyui = if comfy_ok || (comfy_child_alive && comfy_port) {
                     SidecarStatus::Running
                 } else if comfy_child_alive {
+                    SidecarStatus::Starting
+                } else {
+                    SidecarStatus::Stopped
+                };
+                // llama-server: model loading can take 10-30 s on first spawn
+                // (mmap + GPU layer offload). Same Starting fallback as Comfy.
+                s.llamacpp = if llama_ok || (llama_child_alive && llama_port) {
+                    SidecarStatus::Running
+                } else if llama_child_alive {
                     SidecarStatus::Starting
                 } else {
                     SidecarStatus::Stopped
@@ -519,6 +817,23 @@ async fn probe_comfyui() -> bool {
         .unwrap_or(false)
 }
 
+async fn probe_llamacpp() -> bool {
+    // llama-server's /health returns 200 once the model is fully loaded
+    // and 503 while it's still mmapping / offloading layers. Either is a
+    // sign that the process is live and serving — we treat both as "up"
+    // so the UI doesn't flap during the 10-30 s warmup window.
+    reqwest::Client::new()
+        .get("http://127.0.0.1:8733/health")
+        .timeout(std::time::Duration::from_secs(1))
+        .send()
+        .await
+        .map(|r| {
+            let s = r.status().as_u16();
+            s == 200 || s == 503
+        })
+        .unwrap_or(false)
+}
+
 async fn port_is_bound(addr: &str) -> bool {
     tokio::net::TcpStream::connect(addr).await.is_ok()
 }
@@ -551,6 +866,26 @@ async fn spawn_python() -> Result<Child> {
     // don't get re-downloaded into our isolated data_dir cache. Hardlinks
     // when possible (zero disk overhead), copy fallback. Idempotent.
     hf_seed::seed_from_user_cache(&hf_home);
+    // v0.2.2 — LLM backend is llama.cpp by default and ONLY. Ollama is
+    // available behind an explicit opt-in (Settings → "Activar Ollama"),
+    // which flips `app-settings.json::ollama_enabled` and respawns this
+    // sidecar with `XIANXIA_LLM_BACKEND=ollama`. The previous "auto"
+    // mode silently fell back to Ollama whenever the llama-server
+    // health probe failed, which contradicted the product promise that
+    // llama.cpp is the always-on runtime and Ollama is a strict
+    // alternative. If llama-server is genuinely unreachable we surface
+    // it as a backend error instead of switching engines mid-pipeline.
+    //
+    // Explicit env override (`XIANXIA_LLM_BACKEND=...` exported by the
+    // user or a dev launch script) still takes precedence — it's the
+    // tester escape hatch.
+    let llm_backend = std::env::var("XIANXIA_LLM_BACKEND").unwrap_or_else(|_| {
+        if crate::app_settings::load().ollama_enabled {
+            "ollama".to_string()
+        } else {
+            "llamacpp".to_string()
+        }
+    });
     let child = Command::new(&py)
         .arg(&server)
         .current_dir(&cwd)
@@ -565,6 +900,64 @@ async fn spawn_python() -> Result<Child> {
         // automatically if ComfyUI isn't reachable on :8188.
         .env("XIANXIA_USE_COMFYUI", "1")
         .env("XIANXIA_COMFY_DIR", comfy_dir)
+        .env("XIANXIA_LLM_BACKEND", &llm_backend)
+        .env("XIANXIA_LLAMACPP_URL", "http://127.0.0.1:8733")
+        .env("XIANXIA_OLLAMA_URL", "http://127.0.0.1:11434")
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .hide_console()
+        .spawn()?;
+    Ok(child)
+}
+
+/// Spawn `llama-server` with the flags derived from `LlmModelConfig`.
+///
+/// All flags come from the config; nothing is hardcoded in this function
+/// so the model browser (T4) is the single source of truth for performance
+/// tuning. Errors here are visible to the supervisor — they roll up into
+/// `record_failure()` and trigger backoff so a broken config never starves
+/// the rest of the pipeline.
+async fn spawn_llama_server(
+    binary: &std::path::Path,
+    cfg: &crate::installer::llamacpp::LlmModelConfig,
+) -> Result<Child> {
+    if !binary.is_file() {
+        return Err(anyhow!(
+            "llama-server binary missing at {} — run the install wizard",
+            binary.display()
+        ));
+    }
+    let gguf = PathBuf::from(&cfg.gguf_path);
+    if !gguf.is_file() {
+        return Err(anyhow!(
+            "GGUF file missing at {} — model was moved or never downloaded",
+            gguf.display()
+        ));
+    }
+
+    let log = open_log("llama-server.log")?;
+    let log_err = log.try_clone()?;
+    let args = cfg.to_args();
+
+    tracing::info!(
+        binary = %binary.display(),
+        model = %gguf.display(),
+        context = cfg.context_size,
+        ngl = cfg.gpu_layers,
+        "spawning llama-server :8733",
+    );
+
+    // On Windows CUDA, llama-server.exe needs cudart DLLs next to it. The
+    // T2 installer extracts them into the same directory so a plain Command
+    // launch works — Windows' DLL search starts from the exe's directory.
+    let cwd = binary.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    let child = Command::new(binary)
+        .args(&args)
+        .current_dir(&cwd)
+        .env("PATH", augmented_path())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
         .stdin(Stdio::null())
