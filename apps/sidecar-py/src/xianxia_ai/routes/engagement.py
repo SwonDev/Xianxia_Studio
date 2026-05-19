@@ -256,7 +256,35 @@ def _run_tribe_inference(video_path: str, mode: str):
 
     from tribev2 import TribeModel  # type: ignore
 
-    model = TribeModel.from_pretrained("facebook/tribev2", cache_folder="./.cache/tribev2")
+    # WINDOWS BUG WORKAROUND. tribev2.demo_utils.from_pretrained wraps its
+    # first arg in Path() then str()s it back, so on Windows
+    # Path("facebook/tribev2") -> "facebook\\tribev2", which
+    # huggingface_hub rejects (HFValidationError) BEFORE any download —
+    # the model could never load on Windows (real user 500 / "Failed to
+    # fetch"). Resolve the repo to a LOCAL directory ourselves
+    # (snapshot_download validates the forward-slash id correctly); when
+    # the path exists the library takes its local branch and never builds
+    # the mangled repo id.
+    try:
+        from huggingface_hub import snapshot_download
+
+        try:
+            _model_dir = snapshot_download(repo_id="facebook/tribev2")
+        except Exception:
+            # Already cached / offline: restrict to local files.
+            _model_dir = snapshot_download(
+                repo_id="facebook/tribev2", local_files_only=True
+            )
+        model = TribeModel.from_pretrained(
+            _model_dir, cache_folder="./.cache/tribev2"
+        )
+    except Exception as e:
+        raise HTTPException(
+            503,
+            "TRIBE v2 model unavailable (HF repo 'facebook/tribev2'). "
+            "First use needs connectivity to download it; afterwards it "
+            f"runs offline. Detail: {e}",
+        ) from e
 
     # In "light" mode we skip the text encoder by passing only video+audio to
     # get_events_dataframe — TRIBE handles None inputs gracefully per its API.
@@ -340,7 +368,17 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
 
     import numpy as np
 
-    activations, tr_seconds, atlas_labels = _run_tribe_inference(req.video_path, req.mode)
+    try:
+        activations, tr_seconds, atlas_labels = _run_tribe_inference(
+            req.video_path, req.mode
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Never leak an unhandled 500 (plain-text body the webview
+        # surfaces as "TypeError: Failed to fetch" when the connection
+        # drops). Return a clean JSON 503 the UI can show.
+        raise HTTPException(503, f"engagement analysis failed: {e}") from e
     networks = _aggregate_to_networks(activations, atlas_labels)
     score = _engagement_from_networks(networks)
 

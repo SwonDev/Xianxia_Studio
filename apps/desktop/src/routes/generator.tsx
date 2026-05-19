@@ -138,10 +138,13 @@ function GeneratorWizard() {
   });
   const languages = Array.from(new Set([audioLanguage, ...subtitleLanguages]));
   const [experimental, setExperimental] = useState(false);
-  const [useMusicgen, setUseMusicgen] = useState(false);
+  // v0.6.6 — música IA y auto-optimización ON por defecto (petición del
+  // usuario). ACE-Step preferido con fallback automático MusicGen →
+  // biblioteca; auto-optimizar depende de analyzeEngagement (ya ON).
+  const [useMusicgen, setUseMusicgen] = useState(true);
   const [autoShorts, setAutoShorts] = useState(false);
   const [analyzeEngagement, setAnalyzeEngagement] = useState(true);
-  const [autoOptimizeEngagement, setAutoOptimizeEngagement] = useState(false);
+  const [autoOptimizeEngagement, setAutoOptimizeEngagement] = useState(true);
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [animationPreset, setAnimationPreset] = useState<'cinematic' | 'dynamic' | 'minimal' | 'dramatic'>(draft?.animation ?? 'cinematic');
   const [captionStyle, setCaptionStyle] = useState<'xianxia' | 'hormozi' | 'mrbeast' | 'minimal' | 'neon'>(draft?.caption ?? 'xianxia');

@@ -6,6 +6,41 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.6.6] — 2026-05-19
+
+### Engagement (TRIBE v2) arreglado + música IA y auto-optimización ON por defecto
+
+- **FIX raíz del "Analizar engagement → Failed to fetch / 500"**: NO era
+  VRAM ni 8 GB. `tribev2.demo_utils.from_pretrained` envuelve su primer
+  argumento en `Path()` y luego lo `str()`-ea; en Windows
+  `Path("facebook/tribev2")` → `"facebook\tribev2"`, que huggingface_hub
+  rechaza (`HFValidationError`) **antes de descargar nada** → el modelo
+  no cargaba JAMÁS en Windows (excepción no controlada → HTTP 500, que
+  el webview mostraba como "TypeError: Failed to fetch" al caer la
+  conexión). Confirmado leyendo el traceback real del sidecar y el
+  código de la librería (su propia docstring documenta el repo
+  `facebook/tribev2` con `config.yaml`+`best.ckpt` y que acepta un dir
+  local). Fix en `engagement.py::_run_tribe_inference`: resolvemos el
+  repo a un **directorio local** con `snapshot_download` (el id con `/`
+  se valida bien) y se lo pasamos a `from_pretrained`; al existir la
+  ruta, la librería toma su rama local y nunca construye el id
+  mangleado. Reintento `local_files_only` para uso offline.
+- **Sin más 500 sin controlar**: `/engagement/analyze` envuelve la
+  inferencia y devuelve un **503 JSON limpio** con mensaje accionable
+  (no un 500 de texto plano que el webview convierte en "Failed to
+  fetch").
+- **Defaults ON** (petición del usuario): "Generar música con IA"
+  (ACE-Step, con su fallback automático MusicGen → biblioteca) y
+  "Auto-optimizar valles aburridos" arrancan activados; el análisis de
+  engagement ya estaba ON, del que depende auto-optimizar.
+
+> Caveat honesto: el fix elimina el bug de carga (probado: la rama local
+> evita el mangleo) y hace que los errores sean limpios. TRIBE v2 es un
+> modelo fundacional fMRI; su **descarga inicial** (varios GB) requiere
+> conectividad y su inferencia en una 4060 8 GB no está validada E2E en
+> esta sesión — si en ese HW no rinde, ahora **falla con mensaje claro**
+> en vez de colgar/500.
+
 ## [0.6.5] — 2026-05-19
 
 ### Diversidad de imágenes — anti-repetición de sujeto determinista
