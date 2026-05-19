@@ -75,6 +75,7 @@ from xianxia_ai.routes import (  # noqa: E402
     health,
     image,
     install,
+    ltx_video,
     models,
     music,
     reframe,
@@ -218,6 +219,7 @@ app.include_router(script.router, prefix="/script", tags=["script"])
 app.include_router(tts.router, prefix="/tts", tags=["tts"])
 app.include_router(voice_acquisition.router, prefix="/voices", tags=["voices"])
 app.include_router(image.router, prefix="/image", tags=["image"])
+app.include_router(ltx_video.router, prefix="/ltx_video", tags=["ltx_video"])
 app.include_router(music.router, prefix="/music", tags=["music"])
 app.include_router(transcribe.router, prefix="/transcribe", tags=["transcribe"])
 app.include_router(subtitles.router, prefix="/subtitles", tags=["subtitles"])
