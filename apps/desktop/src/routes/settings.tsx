@@ -1013,7 +1013,7 @@ function LtxVideoPanel() {
         LTX-2.3 es el motor de vídeo neuronal de Lightricks. Requiere mínimo{' '}
         <strong style={{ color: 'var(--text-primary)' }}>24 GB VRAM</strong> (GGUF Q4) o{' '}
         <strong style={{ color: 'var(--text-primary)' }}>32 GB VRAM</strong> (fp8 completo).
-        En tu equipo de 8 GB el pipeline siempre usa <strong style={{ color: 'var(--text-primary)' }}>
+        En equipos no compatibles el pipeline siempre usa <strong style={{ color: 'var(--text-primary)' }}>
         Imágenes + HyperFrames</strong> (motor por defecto, sin cambios).
       </p>
       <Row label="Capacidad detectada" value={capLabel} highlight={cap !== undefined && cap !== 'none'} />

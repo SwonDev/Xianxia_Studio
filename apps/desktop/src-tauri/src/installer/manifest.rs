@@ -97,9 +97,7 @@ pub enum AssetKind {
     ///       -> comfyui/models/vae/
     ///     unsloth/LTX-2.3-GGUF -> text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors (2.2 GB)
     ///       -> comfyui/models/text_encoders/
-    ///     unsloth/LTX-2.3-GGUF -> gemma-3-12b-it-qat-UD-Q4_K_XL.gguf (mandatory Gemma-3 text encoder)
-    ///       -> comfyui/models/text_encoders/
-    ///     unsloth/LTX-2.3-GGUF -> mmproj-BF16.gguf (multimodal projector for Gemma-3)
+    ///     Lightricks/LTX-2.3  -> comfy_gemma_3_12B_it.safetensors (Gemma-3 ComfyUI text encoder)
     ///       -> comfyui/models/text_encoders/
     ///   ComfyUI nodes:
     ///     Lightricks/ComfyUI-LTXVideo @ commit 229437c
@@ -114,7 +112,7 @@ pub enum AssetKind {
     ///
     /// size_bytes covers Gguf-tier worst case:
     ///   14.2 GB model + 1.35 GB VAE + 2.2 GB connector +
-    ///   ~8 GB Gemma-3 Q4 + ~0.5 GB mmproj + ~30 MB node clone ~ 27 GB
+    ///   ~8 GB comfy_gemma_3_12B_it.safetensors + ~30 MB node clone ~ 26 GB
     Ltx23VideoInstall,
 }
 
@@ -637,8 +635,8 @@ pub fn full_manifest() -> Vec<Component> {
         // ─── LTX-2.3 video generation (opt-in, tier-gated) ──────────
         // v0.6.0: declared here so the installer knows the component exists.
         // Downloads: GGUF Q4_K_M diffusion model (14.2 GB), Video VAE (1.35 GB),
-        // embeddings connector (2.2 GB), Gemma-3-12B GGUF text encoder (~8 GB),
-        // mmproj-BF16.gguf, and clones ComfyUI-LTXVideo @ 229437c.
+        // embeddings connector (2.2 GB), comfy_gemma_3_12B_it.safetensors (Gemma-3
+        // ComfyUI encoder, from Lightricks/LTX-2.3), and clones ComfyUI-LTXVideo @ 229437c.
         // NEVER auto-installed: gating on LtxCapability and user opt-in
         // is enforced in later pipeline/UI tasks (Task 4+).
         // Requires comfyui-clone + comfyui-gguf-node (GGUF loader).

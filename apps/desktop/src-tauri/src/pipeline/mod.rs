@@ -1486,7 +1486,6 @@ async fn run(
                         continue;
                     }
 
-                    let clip_out = format!("{}/ltx-beat-{}.mp4", ltx_dir, i);
                     let ltx_result = client
                         .post(format!("{}/ltx_video/clip", PY_SIDECAR))
                         .timeout(std::time::Duration::from_secs(15 * 60))
@@ -1499,7 +1498,7 @@ async fn run(
                             "seconds": beat_seconds,
                             "fps": 24,
                             "seed": i as u64,
-                            "out_path": clip_out,
+                            "out_dir": ltx_dir,
                         }))
                         .send()
                         .await;
