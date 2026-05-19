@@ -1,20 +1,20 @@
 {
-  "_comment": "LTX-2.3 img2video — full fp8 safetensors path. CheckpointLoaderSimple loads ltx-2.3-22b-dev.safetensors (model+VAE); LTXAVTextEncoderLoader loads comfy_gemma_3_12B_it.safetensors (Gemma-3 CLIP). Distilled one-stage sampler (ManualSigmas 8-step). Node class names verified from ComfyUI-LTXVideo __init__.py + example_workflows/2.3/LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json.",
+  "_comment": "LTX-2.3 img2video — FULL FP8 path. CheckpointLoaderSimple loads ltx-2.3-22b-dev-fp8.safetensors from models/checkpoints/ (both diffusion model and embeddings connector come from this single checkpoint). LTXAVTextEncoderLoader loads comfy_gemma_3_12B_it.safetensors (text_encoders/) + ltx-2.3-22b-dev-fp8.safetensors (checkpoints/). VAE is embedded in the checkpoint (output slot 2). Distilled one-stage sampler (ManualSigmas 8-step). Node class names verified from ComfyUI core nodes_lt_audio.py + example_workflows/2.3/LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json. CORRECTED 2026-05-19: filenames now match installer exactly (ltx-2.3-22b-dev-fp8.safetensors, comfy_gemma_3_12B_it.safetensors).",
   "_placeholders": "%INIT_IMAGE% %PROMPT% %WIDTH% %HEIGHT% %FRAMES% %FPS% %SEED%",
   "1": {
     "class_type": "CheckpointLoaderSimple",
-    "_meta": {"title": "LTX-2.3 22B (model + VAE)"},
+    "_meta": {"title": "LTX-2.3 22B FP8 (model + VAE + connector)"},
     "inputs": {
-      "ckpt_name": "ltx-2.3-22b-dev.safetensors"
+      "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors"
     }
   },
   "2": {
     "class_type": "LTXAVTextEncoderLoader",
-    "_meta": {"title": "Gemma-3 12B CLIP encoder (mandatory for LTX-2.3)"},
+    "_meta": {"title": "Gemma-3 12B CLIP encoder + embeddings connector (mandatory for LTX-2.3)"},
     "inputs": {
-      "clip_name1": "comfy_gemma_3_12B_it.safetensors",
-      "clip_name2": "ltx-2.3-22b-dev.safetensors",
-      "type": "default"
+      "text_encoder": "comfy_gemma_3_12B_it.safetensors",
+      "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors",
+      "device": "default"
     }
   },
   "3": {
@@ -123,7 +123,7 @@
   },
   "15": {
     "class_type": "LTXVTiledVAEDecode",
-    "_meta": {"title": "Tiled VAE decode (video latent → frames)"},
+    "_meta": {"title": "Tiled VAE decode (video latent to frames)"},
     "inputs": {
       "vae": ["1", 2],
       "latents": ["14", 0],

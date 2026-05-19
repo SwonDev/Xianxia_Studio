@@ -1,27 +1,27 @@
 {
-  "_comment": "LTX-2.3 img2video — GGUF path. UnetLoaderGGUF loads GGUF diffusion model (ComfyUI-GGUF v2.0.0); separate VAELoader; LTXAVTextEncoderLoader loads comfy_gemma_3_12B_it.safetensors (Gemma-3 CLIP). Distilled one-stage sampler (ManualSigmas 8-step). Node class names verified from ComfyUI-GGUF nodes.py NODE_CLASS_MAPPINGS + ComfyUI-LTXVideo __init__.py + example_workflows/2.3/LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json.",
+  "_comment": "LTX-2.3 img2video — GGUF Q4_K_M path. UnetLoaderGGUF loads ltx-2.3-22b-dev-Q4_K_M.gguf from models/diffusion_models/ (ComfyUI-GGUF maps 'unet_gguf' key to diffusion_models/). Separate VAELoader loads ltx-2.3-22b-dev_video_vae.safetensors from models/vae/. LTXAVTextEncoderLoader loads comfy_gemma_3_12B_it.safetensors (text_encoders/) + ltx-2.3-22b-dev_embeddings_connectors.safetensors (checkpoints/). Distilled one-stage sampler (ManualSigmas 8-step). Node class names verified from ComfyUI core nodes_lt_audio.py + ComfyUI-GGUF nodes.py + example_workflows/2.3/LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json. CORRECTED 2026-05-19: all 4 filenames now match installer exactly (Q4_K_M.gguf, comfy_gemma_3_12B_it.safetensors, ltx-2.3-22b-dev_embeddings_connectors.safetensors, ltx-2.3-22b-dev_video_vae.safetensors).",
   "_placeholders": "%INIT_IMAGE% %PROMPT% %WIDTH% %HEIGHT% %FRAMES% %FPS% %SEED%",
   "1": {
     "class_type": "UnetLoaderGGUF",
-    "_meta": {"title": "LTX-2.3 22B GGUF model (ComfyUI-GGUF UnetLoaderGGUF)"},
+    "_meta": {"title": "LTX-2.3 22B GGUF Q4_K_M diffusion model (ComfyUI-GGUF)"},
     "inputs": {
-      "unet_name": "ltx-2.3-22b-dev.gguf"
+      "unet_name": "ltx-2.3-22b-dev-Q4_K_M.gguf"
     }
   },
   "2": {
     "class_type": "VAELoader",
-    "_meta": {"title": "LTX video VAE"},
+    "_meta": {"title": "LTX-2.3 video VAE"},
     "inputs": {
       "vae_name": "ltx-2.3-22b-dev_video_vae.safetensors"
     }
   },
   "3": {
     "class_type": "LTXAVTextEncoderLoader",
-    "_meta": {"title": "Gemma-3 12B CLIP encoder (mandatory for LTX-2.3)"},
+    "_meta": {"title": "Gemma-3 12B CLIP encoder + embeddings connector (mandatory for LTX-2.3)"},
     "inputs": {
-      "clip_name1": "comfy_gemma_3_12B_it.safetensors",
-      "clip_name2": "ltx-2.3-22b-dev.safetensors",
-      "type": "default"
+      "text_encoder": "comfy_gemma_3_12B_it.safetensors",
+      "ckpt_name": "ltx-2.3-22b-dev_embeddings_connectors.safetensors",
+      "device": "default"
     }
   },
   "4": {

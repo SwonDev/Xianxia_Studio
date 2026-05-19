@@ -519,22 +519,32 @@ async fn acestep_venv_install(app: &AppHandle, c: &Component) -> Result<()> {
 /// este arm añade una comprobación defensiva adicional para rechazar
 /// hardware incapaz incluso si se llama directamente por error.
 ///
-/// Assets (de docs/superpowers/ltx23-pinned-facts.md — EXACTOS):
+/// Assets (set canónico derivado del example_workflow instalado —
+///   LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json — CORREGIDO 2026-05-19;
+///   la versión anterior conflaba nombres de unsloth/LTX-2.3-GGUF con los
+///   nombres que espera ComfyUI; ahora TODOS los nombres coinciden exactamente):
+///
 ///   Tier Full (>=32 GB VRAM):
 ///     Lightricks/LTX-2.3 → ltx-2.3-22b-dev-fp8.safetensors
-///       → comfyui/models/diffusion_models/
+///       → comfyui/models/checkpoints/ltx-2.3-22b-dev-fp8.safetensors
+///       (CheckpointLoaderSimple ckpt_name + LTXAVTextEncoderLoader ckpt_name)
+///
 ///   Tier Gguf (>=24 GB VRAM):
 ///     unsloth/LTX-2.3-GGUF → ltx-2.3-22b-dev-Q4_K_M.gguf
-///       → comfyui/models/diffusion_models/
-///   Compartidos (ambos tiers):
+///       → comfyui/models/diffusion_models/ltx-2.3-22b-dev-Q4_K_M.gguf
+///       (UnetLoaderGGUF unet_name; ComfyUI-GGUF mapea 'unet_gguf' → diffusion_models/)
 ///     unsloth/LTX-2.3-GGUF → vae/ltx-2.3-22b-dev_video_vae.safetensors
-///       → comfyui/models/vae/
+///       → comfyui/models/vae/ltx-2.3-22b-dev_video_vae.safetensors
+///       (VAELoader vae_name; descarga con rename de subpath 'vae/...')
 ///     unsloth/LTX-2.3-GGUF → text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors
-///       → comfyui/models/text_encoders/
-///     unsloth/LTX-2.3-GGUF → gemma-3-12b-it-qat-UD-Q4_K_XL.gguf
-///       → comfyui/models/text_encoders/
-///     unsloth/LTX-2.3-GGUF → mmproj-BF16.gguf
-///       → comfyui/models/text_encoders/
+///       → comfyui/models/checkpoints/ltx-2.3-22b-dev_embeddings_connectors.safetensors
+///       (LTXAVTextEncoderLoader ckpt_name; checkpoints/ según folder_paths.py)
+///
+///   Compartidos (ambos tiers):
+///     Lightricks/LTX-2.3 → comfy_gemma_3_12B_it.safetensors
+///       → comfyui/models/text_encoders/comfy_gemma_3_12B_it.safetensors
+///       (LTXAVTextEncoderLoader text_encoder; ComfyUI canonical name)
+///
 ///   Nodo ComfyUI:
 ///     git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo
 ///     + git checkout 229437c
@@ -613,64 +623,70 @@ async fn install_ltx23_video(app: &AppHandle, c: &Component) -> Result<()> {
         Ok(())
     }
 
-    // ── Asset 1: modelo difusión (tier-aware) ─────────────────────────
-    let (diff_repo, diff_filename, diff_dest) = if cap == LtxCapability::Full {
-        (
-            "Lightricks/LTX-2.3",
-            "ltx-2.3-22b-dev-fp8.safetensors",
-            "comfyui/models/diffusion_models/ltx-2.3-22b-dev-fp8.safetensors",
-        )
-    } else {
-        // Gguf tier (>=24 GB VRAM)
-        (
-            "unsloth/LTX-2.3-GGUF",
-            "ltx-2.3-22b-dev-Q4_K_M.gguf",
-            "comfyui/models/diffusion_models/ltx-2.3-22b-dev-Q4_K_M.gguf",
-        )
-    };
+    // ── Asset 1: modelo difusión principal (tier-aware) ───────────────
+    // Full tier: CheckpointLoaderSimple ckpt_name  → models/checkpoints/
+    // Gguf tier: UnetLoaderGGUF unet_name          → models/diffusion_models/
+    //            (ComfyUI-GGUF registra 'unet_gguf' → diffusion_models/ en folder_paths)
     let tier_label = if cap == LtxCapability::Full { "FP8 Full" } else { "GGUF Q4_K_M" };
     emit(
         app, &c.id, ProgressStatus::Downloading, 5.0,
         &format!("Descargando modelo difusión LTX-2.3 {} (~14–26 GB)…", tier_label),
     );
-    download_asset(&client, &stage_dir, &rt, diff_repo, diff_filename, diff_dest).await
-        .context("modelo difusión LTX-2.3")?;
+    if cap == LtxCapability::Full {
+        // Descarga el checkpoint FP8 y lo coloca en models/checkpoints/
+        // (CheckpointLoaderSimple lo usa tanto como diffusion model como VAE como connector)
+        download_asset(
+            &client, &stage_dir, &rt,
+            "Lightricks/LTX-2.3",
+            "ltx-2.3-22b-dev-fp8.safetensors",
+            "comfyui/models/checkpoints/ltx-2.3-22b-dev-fp8.safetensors",
+        ).await.context("modelo FP8 LTX-2.3")?;
+    } else {
+        // Gguf tier: GGUF unet → diffusion_models/
+        download_asset(
+            &client, &stage_dir, &rt,
+            "unsloth/LTX-2.3-GGUF",
+            "ltx-2.3-22b-dev-Q4_K_M.gguf",
+            "comfyui/models/diffusion_models/ltx-2.3-22b-dev-Q4_K_M.gguf",
+        ).await.context("modelo GGUF LTX-2.3")?;
 
-    // ── Asset 2: VAE de vídeo ─────────────────────────────────────────
-    emit(app, &c.id, ProgressStatus::Downloading, 45.0, "Descargando VAE de vídeo LTX-2.3 (~1.35 GB)…");
+        // ── Asset 2a (solo Gguf): VAE de vídeo ────────────────────────
+        // VAELoader vae_name → models/vae/
+        // El HF path tiene el subdirectorio 'vae/' — se descarga y renombra al destino final.
+        emit(app, &c.id, ProgressStatus::Downloading, 45.0, "Descargando VAE de vídeo LTX-2.3 (~1.35 GB)…");
+        download_asset(
+            &client, &stage_dir, &rt,
+            "unsloth/LTX-2.3-GGUF",
+            "vae/ltx-2.3-22b-dev_video_vae.safetensors",
+            "comfyui/models/vae/ltx-2.3-22b-dev_video_vae.safetensors",
+        ).await.context("VAE vídeo LTX-2.3")?;
+
+        // ── Asset 2b (solo Gguf): embeddings connector ────────────────
+        // LTXAVTextEncoderLoader ckpt_name → models/checkpoints/
+        // (ComfyUI folder_paths['checkpoints'] = models/checkpoints/)
+        // HF path: text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors
+        // ComfyUI dest name: ltx-2.3-22b-dev_embeddings_connectors.safetensors
+        emit(app, &c.id, ProgressStatus::Downloading, 55.0, "Descargando embeddings connector LTX-2.3 (~2.2 GB)…");
+        download_asset(
+            &client, &stage_dir, &rt,
+            "unsloth/LTX-2.3-GGUF",
+            "text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors",
+            "comfyui/models/checkpoints/ltx-2.3-22b-dev_embeddings_connectors.safetensors",
+        ).await.context("embeddings connector LTX-2.3")?;
+    }
+
+    // ── Asset 3: Gemma-3-12B text encoder (compartido, ambos tiers) ───
+    // LTXAVTextEncoderLoader text_encoder → models/text_encoders/
+    // Nombre canónico ComfyUI: comfy_gemma_3_12B_it.safetensors
+    // Fuente HF: Lightricks/LTX-2.3 → comfy_gemma_3_12B_it.safetensors
+    let gemma_pct = if cap == LtxCapability::Full { 45.0_f64 } else { 65.0_f64 };
+    emit(app, &c.id, ProgressStatus::Downloading, gemma_pct, "Descargando Gemma-3-12B text encoder ComfyUI (~8 GB)…");
     download_asset(
         &client, &stage_dir, &rt,
-        "unsloth/LTX-2.3-GGUF",
-        "vae/ltx-2.3-22b-dev_video_vae.safetensors",
-        "comfyui/models/vae/ltx-2.3-22b-dev_video_vae.safetensors",
-    ).await.context("VAE vídeo LTX-2.3")?;
-
-    // ── Asset 3: embeddings connector ─────────────────────────────────
-    emit(app, &c.id, ProgressStatus::Downloading, 55.0, "Descargando embeddings connector LTX-2.3 (~2.2 GB)…");
-    download_asset(
-        &client, &stage_dir, &rt,
-        "unsloth/LTX-2.3-GGUF",
-        "text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors",
-        "comfyui/models/text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors",
-    ).await.context("embeddings connector LTX-2.3")?;
-
-    // ── Asset 4: Gemma-3-12B text encoder (obligatorio) ───────────────
-    emit(app, &c.id, ProgressStatus::Downloading, 65.0, "Descargando Gemma-3-12B text encoder (~8 GB)…");
-    download_asset(
-        &client, &stage_dir, &rt,
-        "unsloth/LTX-2.3-GGUF",
-        "gemma-3-12b-it-qat-UD-Q4_K_XL.gguf",
-        "comfyui/models/text_encoders/gemma-3-12b-it-qat-UD-Q4_K_XL.gguf",
+        "Lightricks/LTX-2.3",
+        "comfy_gemma_3_12B_it.safetensors",
+        "comfyui/models/text_encoders/comfy_gemma_3_12B_it.safetensors",
     ).await.context("Gemma-3-12B text encoder LTX-2.3")?;
-
-    // ── Asset 5: mmproj multimodal projector ─────────────────────────
-    emit(app, &c.id, ProgressStatus::Downloading, 80.0, "Descargando mmproj-BF16 (~0.5 GB)…");
-    download_asset(
-        &client, &stage_dir, &rt,
-        "unsloth/LTX-2.3-GGUF",
-        "mmproj-BF16.gguf",
-        "comfyui/models/text_encoders/mmproj-BF16.gguf",
-    ).await.context("mmproj-BF16 LTX-2.3")?;
 
     // ── Asset 6: clonar ComfyUI-LTXVideo @ 229437c ───────────────────
     let node_dir = rt.join("comfyui").join("custom_nodes").join("ComfyUI-LTXVideo");
