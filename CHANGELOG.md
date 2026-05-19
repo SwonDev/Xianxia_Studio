@@ -6,6 +6,31 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.6.4] — 2026-05-19
+
+### HOTFIX — UI/animaciones rotas por la transparencia (vibrancy revertida)
+
+La ventana transparente + acrylic de v0.6.2 rompía la **composición de
+WebView2**: el feedback animado de progreso del pipeline no se veía y
+los botones salían lavados (el "Cancelar" como un borrón rojo sin cara
+sólida). Misma clase de bug WebView2 que el documentado en v0.3.0→v0.3.1
+(`backdrop-filter`/`mix-blend` se recomponen mal), pero ahora **global**
+porque toda la ventana era `transparent:true`.
+
+- **Fix**: `tauri.conf.json` vuelve a `transparent:false`, se elimina
+  `windowEffects` (acrylic) y se restaura `backgroundColor` opaco;
+  `globals.css` vuelve el lienzo a `#15151c` opaco. Esto restaura de
+  golpe **todas** las animaciones y el render correcto de controles.
+- **Se conserva** lo bueno de la ventana macOS: `decorations:false`
+  (frameless), esquinas redondeadas Win11 (`shadow:true`), semáforos
+  funcionales (`MacTitlebar`), arranque maximizado y los permisos
+  `core:window` de v0.6.3. La ventana sigue pareciendo macOS 2026, solo
+  que con fondo sólido en vez de see-through.
+- Decisión: la vibrancy see-through real es inviable de forma fiable con
+  este diseño Liquid Glass (cargado de `backdrop-filter`) sobre WebView2;
+  romper el render de la app es peor que no tener vibrancy. Revisitable
+  más adelante con una técnica segura.
+
 ## [0.6.3] — 2026-05-19
 
 ### HOTFIX P0 — ventana frameless atrapada (faltaban permisos de ventana)
