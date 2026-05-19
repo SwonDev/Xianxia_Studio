@@ -299,3 +299,44 @@ Avoid:
 Return ONLY a JSON array, no commentary, no markdown:
 [{{ "start": <sec>, "end": <sec>, "hook": "<<=80 char teaser line>", "score": <0.0-1.0>, "reason": "<why viral>" }}]
 """
+
+OUTLINE_PROMPT_TEMPLATE = """You are the story architect for a {minutes}-minute long-form documentary narration about: {topic}.
+
+{context_facts}
+
+Design a chapter outline of EXACTLY {n_chapters} chapters that STAGES the topic like a mystery (hook → setup → escalation → reveal → resolution), NOT a flat list. Each chapter must move the narrative forward and not overlap the others.
+
+Return ONLY a JSON object, no prose, no code fence:
+{{"chapters":[{{"index":1,"title":"<2-4 evocative words in {language_name}, NOT 'Chapter 1'>","synopsis":"<2-3 sentences, what this chapter covers>","target_words":<int ~ {minutes}*150/{n_chapters}>,"beats":["<concrete beat>","<concrete beat>"]}}]}}"""
+
+CHAPTER_PROMPT_TEMPLATE = """You are narrating chapter {chapter_index} of a long-form documentary in {language_name} about: {topic}.
+
+FULL OUTLINE (for global coherence — do NOT re-tell other chapters):
+{outline_block}
+
+WHAT HAS ALREADY BEEN NARRATED (running summary — continue from here, never repeat it):
+{running_summary}
+
+Write ONLY chapter {chapter_index} — "{chapter_title}".
+Synopsis: {chapter_synopsis}
+Beats to hit, in order: {chapter_beats}
+Length: about {target_words} words.
+
+Rules:
+- Open the chapter with the marker [CHAPTER: {chapter_title}] on its own line.
+- Insert [IMAGE: english visual description] every 25-40 words, matching the LITERAL narrated content.
+- Insert [MUSIC: mood=epic|serene|mystic|emotional|tense|melancholic|reveal] at mood shifts.
+- Narration prose in {language_name}; marker bodies in English.
+- Stay strictly on topic. Do NOT summarise other chapters. Do NOT write a closing/CTA unless told this is the final chapter.
+{final_clause}"""
+
+SUMMARY_PROMPT_TEMPLATE = """Summarise the documentary narration so far so the next chapter can continue coherently WITHOUT repeating anything.
+
+NARRATION SO FAR (chapters 1..{chapter_index}):
+{running_summary}
+
+NEW CHAPTER JUST WRITTEN:
+{new_chapter}
+
+Return ONLY a JSON object, no prose:
+{{"told":"<=120 words, the storyline covered so far>","open_threads":["<unresolved hook/question>"],"used_facts":["<specific fact/name/date already used>"],"last_paragraph":"<verbatim last paragraph of the new chapter, for voice continuity>"}}"""
