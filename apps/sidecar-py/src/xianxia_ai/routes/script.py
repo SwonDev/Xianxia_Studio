@@ -456,6 +456,28 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
             if is_final:
                 break
 
+    return await _finalize_script(
+        script, req.topic, language_name, req.target_minutes, model,
+        raw_brief or distilled_facts,
+    )
+
+
+async def _finalize_script(
+    script: str,
+    topic: str,
+    language_name: str,
+    target_minutes: int,
+    model: str,
+    context_brief: str = "",
+) -> ScriptResponse:
+    """Shared post-processing block for both /script and /script/postprocess.
+
+    Accepts the raw assembled script text plus the minimal context needed to
+    run every post-processing step (setting_tag, image-prompt grounding,
+    auto-marker injection, subject diversification) and returns the fully
+    processed ScriptResponse.  The short path (/script) is byte-identical to
+    its previous behaviour — this is a pure extract-method refactor.
+    """
     narration, markers = parse_markers(script)
     word_count = len(narration.split())
     # ~150 words per minute narration in English
@@ -468,7 +490,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
     # actual TTS duration. Higher counts let the storytelling stay coherent
     # with the script — fewer images means the visuals drift away from
     # what's being narrated.
-    expected_min = max(5, req.target_minutes * 5)
+    expected_min = max(5, target_minutes * 5)
     log_event(
         "info",
         "script_generate_done",
@@ -477,7 +499,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
         markers_total=len(markers),
         markers_image=len(image_markers),
         markers_image_expected_min=expected_min,
-        truncated=word_count < req.target_minutes * 100,
+        truncated=word_count < target_minutes * 100,
     )
     # Safety net: if Gemma produced far fewer image markers than the script
     # length warrants, weave in evenly-spaced auto-markers whose prompt is
@@ -489,7 +511,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
     # Renaissance — the setting tag matches THAT world. No hardcoded
     # culture list, no examples of other topics that could bleed in.
     setting_tag = await _generate_setting_tag(
-        req.topic, model=model, context_brief=raw_brief or distilled_facts,
+        topic, model=model, context_brief=context_brief,
     )
 
     if len(image_markers) < expected_min:
@@ -497,7 +519,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
             narration=narration,
             existing=markers,
             target_count=expected_min,
-            topic=req.topic,
+            topic=topic,
             setting_tag=setting_tag,
         )
         image_markers = [m for m in markers if m.kind == "image"]
@@ -530,7 +552,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
     #      default to jade-green.
     markers = await _rewrite_image_prompts_from_narration(
         narration, markers,
-        topic=req.topic,
+        topic=topic,
         setting_tag=setting_tag,
         language_name=language_name,
         model=model,
@@ -544,7 +566,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
     if adaptation_hits:
         log_event(
             "warning", "narration_adaptation_leak_detected",
-            topic=req.topic,
+            topic=topic,
             hits=len(adaptation_hits),
             samples=list({h.lower() for h in adaptation_hits})[:6],
         )
@@ -568,6 +590,23 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
         word_count=word_count,
         estimated_seconds=estimated_seconds,
         setting_tag=setting_tag or None,
+    )
+
+
+class PostprocessRequest(BaseModel):
+    script: str
+    topic: str
+    languages: list[str] = ["es"]
+    target_minutes: int
+    model: str = "xianxia-llm"
+
+
+@router.post("/postprocess", response_model=ScriptResponse)
+async def postprocess_script(req: PostprocessRequest) -> ScriptResponse:
+    language_name = _LANG_TO_NAME.get((req.languages or ["en"])[0], "English")
+    return await _finalize_script(
+        req.script, req.topic, language_name, req.target_minutes,
+        req.model, "",
     )
 
 
