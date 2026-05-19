@@ -54,3 +54,11 @@ def assemble_script(chapter_texts: list[str]) -> str:
     multi-pass used, so parse_markers() never merges sentences across a
     chapter boundary."""
     return "\n\n".join(t.strip() for t in chapter_texts if t.strip())
+
+
+def expected_crossfade_duration(seg_seconds: list[float], xfade: float) -> float:
+    """Total duration after chaining N segments with `xfade` s crossfade
+    on each of the N-1 joins."""
+    if not seg_seconds:
+        return 0.0
+    return sum(seg_seconds) - xfade * (len(seg_seconds) - 1)

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from xianxia_ai.chapters import (  # noqa: E402
-    parse_outline, chapter_count_for, assemble_script,
+    parse_outline, chapter_count_for, assemble_script, expected_crossfade_duration,
 )
 
 
@@ -42,6 +42,13 @@ def test_parse_outline_invalid_raises():
         parse_outline("not json at all")
     with pytest.raises(ValueError):
         parse_outline('{"chapters":[]}')
+
+
+def test_expected_crossfade_duration():
+    from xianxia_ai.chapters import expected_crossfade_duration
+    assert abs(expected_crossfade_duration([10.0, 10.0, 10.0], 0.08) - 29.84) < 1e-6
+    assert expected_crossfade_duration([], 0.08) == 0.0
+    assert expected_crossfade_duration([5.0], 0.08) == 5.0
 
 
 def test_assemble_script_preserves_markers():
