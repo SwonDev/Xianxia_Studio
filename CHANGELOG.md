@@ -6,6 +6,28 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-05-19
+
+### HOTFIX P0 — ventana frameless atrapada (faltaban permisos de ventana)
+
+v0.6.2 dejó la ventana **inutilizable**: sin marco de Windows, los
+semáforos no cerraban/minimizaban/maximizaban y la ventana no se podía
+mover. Causa raíz: en Tauri 2 el set `core:window:default` **no concede**
+las operaciones mutadoras de ventana; con marco nativo (≤ v0.6.1) no se
+notaba porque el cromo del SO las hacía, pero al ir frameless (v0.6.2)
+la ventana quedaba sin ningún control.
+
+- **Fix**: `capabilities/default.json` concede explícitamente
+  `core:window:allow-start-dragging`, `allow-minimize`, `allow-maximize`,
+  `allow-unmaximize`, `allow-toggle-maximize`,
+  `allow-internal-toggle-maximize`, `allow-is-maximized`, `allow-close`,
+  `allow-destroy`. Ahora arrastrar la ventana y los tres semáforos
+  funcionan. Validado con `cargo check` (valida el schema de
+  capabilities; un permiso inválido rompería el build).
+- Sin esto la ventana macOS de v0.6.2 era una regresión bloqueante: hay
+  que matar el proceso (Alt+F4 / Administrador de tareas). Quien
+  auto-actualice se auto-cura al relanzar (updater pasivo trae v0.6.3).
+
 ## [0.6.2] — 2026-05-19
 
 ### Ventana estilo macOS 2026 (frameless + vibrancy + semáforos funcionales)
