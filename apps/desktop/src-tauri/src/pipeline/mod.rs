@@ -600,7 +600,7 @@ pub async fn abort_generation(
 /// Returns true if the files for the tier that matches the current hardware
 /// capability are ALL present. Returns false when paths() fails, capability
 /// is None, or any key file is missing.
-fn ltx_models_installed() -> bool {
+pub(crate) fn ltx_models_installed() -> bool {
     let cap = crate::hardware::ltx_video_capability();
     if cap == crate::hardware::LtxCapability::None {
         return false;

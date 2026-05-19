@@ -383,6 +383,11 @@ export interface GenerateRequest {
   analyze_engagement?: boolean;
   /** When true, auto-applies cuts + audio swells to fix detected boring spots. */
   auto_optimize_engagement?: boolean;
+  /** v0.6.0 — Opt-in LTX-2.3 real-video engine. When true, the Rust pipeline
+   *  uses LTX-2.3 instead of HyperFrames for the video phase. Requires
+   *  hardware capability !== 'none' AND models installed; otherwise the
+   *  pipeline falls back to HyperFrames silently. Default false (absent). */
+  use_ltx_video?: boolean;
 }
 
 export interface PhaseUpdate {
@@ -422,6 +427,7 @@ export const tauri = {
   safeLlmAlternative: (tier: string) =>
     invoke<ModelRecommendation>('safe_llm_alternative', { tier }),
   ltxCapability: () => invoke<LtxCapability>('ltx_capability'),
+  ltxModelsInstalled: () => invoke<boolean>('ltx_models_installed'),
   getInstallManifest: (options: InstallOptions) =>
     invoke<InstallComponent[]>('get_install_manifest', { options }),
   runInstall: (options: InstallOptions) =>
