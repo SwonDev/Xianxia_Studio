@@ -19,7 +19,13 @@ from pydantic import BaseModel
 from ..llm import generate as llm_generate
 from ..logging_utils import log_event
 from ..chapters import chapter_count_for, parse_outline
-from ..prompts import SCRIPT_PROMPT_TEMPLATE, METADATA_PROMPT_TEMPLATE, OUTLINE_PROMPT_TEMPLATE
+from ..prompts import (
+    SCRIPT_PROMPT_TEMPLATE,
+    METADATA_PROMPT_TEMPLATE,
+    OUTLINE_PROMPT_TEMPLATE,
+    CHAPTER_PROMPT_TEMPLATE,
+    SUMMARY_PROMPT_TEMPLATE,
+)
 
 router = APIRouter()
 
@@ -113,6 +119,121 @@ async def generate_outline(req: OutlineRequest) -> OutlineResponse:
             except ValueError as e:
                 log_event("warn", "outline_parse_failed", attempt=attempt, error=str(e)[:160])
     raise HTTPException(status_code=422, detail="outline could not be parsed after 2 attempts")
+
+
+# ── /chapter ────────────────────────────────────────────────────────────────
+
+class ChapterRequest(BaseModel):
+    topic: str
+    language: str = "es"
+    outline: list[dict]
+    chapter_index: int          # 1-based
+    running_summary: str = ""
+    is_final: bool = False
+    model: str = "xianxia-llm"
+
+
+class ChapterResponse(BaseModel):
+    text: str
+    running_summary: str
+    words: int
+
+
+def _outline_block(outline: list[dict]) -> str:
+    return "\n".join(
+        f'{c.get("index")}. {c.get("title", "")} — {c.get("synopsis", "")}' for c in outline
+    )
+
+
+@router.post("/chapter", response_model=ChapterResponse)
+async def generate_chapter(req: ChapterRequest) -> ChapterResponse:
+    language_name = _LANG_TO_NAME.get(req.language, "English")
+    ch = next((c for c in req.outline if c.get("index") == req.chapter_index), None)
+    if ch is None:
+        raise HTTPException(status_code=422, detail="chapter_index not in outline")
+    final_clause = (
+        "This IS the final chapter: after the beats, deliver a narrative "
+        f"resolution that echoes the opening, then a short {language_name} "
+        "audience CTA (like, share, subscribe, thanks)."
+        if req.is_final else
+        "This is NOT the final chapter: keep building, do not close."
+    )
+    prompt = CHAPTER_PROMPT_TEMPLATE.format(
+        topic=req.topic,
+        language_name=language_name,
+        outline_block=_outline_block(req.outline),
+        running_summary=req.running_summary or "(this is the first chapter)",
+        chapter_index=req.chapter_index,
+        chapter_title=ch.get("title", ""),
+        chapter_synopsis=ch.get("synopsis", ""),
+        chapter_beats="; ".join(ch.get("beats", [])) or "(use your judgement)",
+        target_words=ch.get("target_words", 0) or 350,
+        final_clause=final_clause,
+    )
+    system_prompt = (
+        f"YOU MUST WRITE THE ENTIRE NARRATION IN {language_name.upper()}. "
+        f"Marker bodies (IMAGE, MUSIC, CHAPTER) stay in English; narration "
+        f"prose is in {language_name}. No exceptions."
+    )
+    log_event(
+        "info", "chapter_start",
+        topic=req.topic[:60], chapter=req.chapter_index, is_final=req.is_final,
+    )
+    async with httpx.AsyncClient(timeout=900.0) as client:
+        try:
+            result = await llm_generate(
+                model=req.model,
+                system=system_prompt,
+                prompt=prompt,
+                options={
+                    "temperature": 0.85,
+                    "top_p": 0.92,
+                    "num_ctx": 16384,
+                    "num_predict": 4096,
+                },
+                think=False,
+                max_continuations=0,
+                client=client,
+                timeout=900.0,
+            )
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
+        chapter_text = (result.get("response") or "").strip()
+        if "[CHAPTER:" not in chapter_text:
+            chapter_text = f'[CHAPTER: {ch.get("title", "")}]\n' + chapter_text
+
+        summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(
+            chapter_index=req.chapter_index,
+            running_summary=req.running_summary or "(nothing yet)",
+            new_chapter=chapter_text[-4000:],
+        )
+        try:
+            s = await llm_generate(
+                model=req.model,
+                system=None,
+                prompt=summary_prompt,
+                options={
+                    "temperature": 0.3,
+                    "num_ctx": 8192,
+                    "num_predict": 700,
+                },
+                think=False,
+                max_continuations=0,
+                client=client,
+                timeout=900.0,
+            )
+            new_summary = (s.get("response") or "").strip()
+        except httpx.HTTPError:
+            new_summary = req.running_summary  # graceful: keep previous
+    log_event(
+        "info", "chapter_done",
+        chapter=req.chapter_index, words=len(chapter_text.split()), has_summary=bool(new_summary),
+    )
+    return ChapterResponse(
+        text=chapter_text,
+        running_summary=new_summary or req.running_summary,
+        words=len(chapter_text.split()),
+    )
 
 
 _LANG_TO_NAME = {
