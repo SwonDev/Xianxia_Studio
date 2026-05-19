@@ -1,4 +1,4 @@
-//! Pipeline orchestration — coordinates the 10-phase production via the Python +
+﻿//! Pipeline orchestration — coordinates the 10-phase production via the Python +
 //! Node sidecars and persists state to SQLite.
 
 use anyhow::{Context, Result};
@@ -788,26 +788,27 @@ async fn run(
             // Assemble the full script from chapter parts.
             let assembled_script = chapter_texts.join("\n\n");
 
-            // Parse markers and narration from the assembled script, replicating
-            // Python's parse_markers logic (150 wpm timestamp estimation).
-            // We scan for [IMAGE: ...], [MUSIC: ...], [CHAPTER: ...] in bracket
-            // form, plus **IMAGE: ...**  / **MUSIC: ...** / **CHAPTER: ...**
-            // markdown bold form (same two forms that Python accepts).
-            let (narration_str, markers_arr) = parse_script_markers(&assembled_script);
-            let word_count = narration_str.split_whitespace().count();
-            let estimated_seconds = (word_count as f64 / 150.0) * 60.0;
-
-            serde_json::json!({
-                "script": assembled_script,
-                "narration": narration_str,
-                "markers": markers_arr,
-                "word_count": word_count,
-                "estimated_seconds": estimated_seconds,
-                // setting_tag is not available in the chapter path without an
-                // extra LLM call; downstream (music style hint) handles None
-                // gracefully by using the topic itself.
-                "setting_tag": null,
-            })
+            // POST to /script/postprocess — runs the identical Python post-processing
+            // (setting_tag inference, image-prompt grounding, auto-marker injection,
+            // diversify) and returns the SAME ScriptResponse shape as /script.
+            // wake_llm was already called at the top of phase 1 (line ~600) and
+            // covers this call too — postprocess runs in the same LLM session.
+            client
+                .post(format!("{}/script/postprocess", PY_SIDECAR))
+                .timeout(std::time::Duration::from_secs(15 * 60))
+                .json(&serde_json::json!({
+                    "script": assembled_script,
+                    "topic": req.topic,
+                    "languages": req.languages,
+                    "target_minutes": req.target_minutes,
+                    "model": req.llm_model.clone().unwrap_or_else(|| "xianxia-llm".into()),
+                }))
+                .send()
+                .await
+                .context("phase 1 long-form: /script/postprocess request failed")?
+                .json::<serde_json::Value>()
+                .await
+                .context("phase 1 long-form: /script/postprocess JSON decode failed")?
         }
     } else {
         // ── Legacy path (< 7 min): single /script call, byte-identical ──
@@ -2057,177 +2058,6 @@ async fn run(
     }
 
     Ok(())
-}
-
-/// Parse `[IMAGE: ...]`, `[MUSIC: ...]`, `[CHAPTER: ...]` markers out of a
-/// raw script string, replicating Python's `parse_markers` logic so the
-/// long-form assembled script produces the SAME JSON marker shape that
-/// downstream phases (Phase 4 images, beat timeline) expect.
-///
-/// Supports both bracket form `[KIND: body]` and markdown bold
-/// `**KIND: body**` (the two forms Python's `MARKER_RE` accepts).
-/// Timestamps are estimated at 150 wpm from narration words before each
-/// marker, matching Python's formula: `(words_before / 150.0) * 60.0`.
-///
-/// Returns `(narration, markers_json_array)` where `narration` is the
-/// script with all markers stripped and consecutive whitespace collapsed,
-/// and `markers_json_array` is a `serde_json::Value::Array` of objects
-/// with keys `seq`, `kind`, `timestamp_seconds`, `prompt`/`mood`/`title`.
-fn parse_script_markers(script: &str) -> (String, serde_json::Value) {
-    // We scan the script manually (no regex crate) for marker patterns:
-    //   Bracket:   [IMAGE: body]  [MUSIC: body]  [CHAPTER: body]
-    //   Bold MD:   **IMAGE: body**  **MUSIC: body**  **CHAPTER: body**
-    // Both forms are case-insensitive for KIND.
-    let mut markers: Vec<serde_json::Value> = Vec::new();
-    let mut narration_parts: Vec<&str> = Vec::new();
-    let mut seq: u32 = 0;
-    let mut pos = 0;
-    let len = script.len();
-
-    while pos < len {
-        // Try to find the next marker start. We look for '[' or "**".
-        // Find the nearest of the two.
-        let next_bracket = script[pos..].find('[').map(|i| (pos + i, false));
-        let next_bold = script[pos..].find("**").map(|i| (pos + i, true));
-
-        let (marker_start, is_bold) = match (next_bracket, next_bold) {
-            (Some((a, _)), Some((b, _))) => {
-                if a <= b { (a, false) } else { (b, true) }
-            }
-            (Some((a, _)), None) => (a, false),
-            (None, Some((b, _))) => (b, true),
-            (None, None) => break,
-        };
-
-        // Push narration text before the potential marker.
-        let pre = &script[pos..marker_start];
-
-        // Try to parse a complete marker at `marker_start`.
-        let parsed = if is_bold {
-            parse_bold_marker(&script[marker_start..])
-        } else {
-            parse_bracket_marker(&script[marker_start..])
-        };
-
-        if let Some((kind, body, advance)) = parsed {
-            narration_parts.push(pre);
-            // Estimate timestamp from word count of narration accumulated so far.
-            let words_before: usize = narration_parts
-                .iter()
-                .flat_map(|s| s.split_whitespace())
-                .count();
-            let ts = (words_before as f64 / 150.0) * 60.0;
-            seq += 1;
-            let marker = match kind.to_ascii_lowercase().as_str() {
-                "image" => serde_json::json!({
-                    "seq": seq,
-                    "kind": "image",
-                    "timestamp_seconds": ts,
-                    "prompt": body,
-                    "mood": null,
-                    "title": null,
-                }),
-                "music" => {
-                    let mood = if body.contains('=') {
-                        body.splitn(2, '=').nth(1).unwrap_or(&body).trim().to_string()
-                    } else {
-                        body.clone()
-                    };
-                    serde_json::json!({
-                        "seq": seq,
-                        "kind": "music",
-                        "timestamp_seconds": ts,
-                        "prompt": null,
-                        "mood": mood,
-                        "title": null,
-                    })
-                }
-                "chapter" => serde_json::json!({
-                    "seq": seq,
-                    "kind": "chapter",
-                    "timestamp_seconds": ts,
-                    "prompt": null,
-                    "mood": null,
-                    "title": body,
-                }),
-                _ => {
-                    // Unknown kind — treat as narration, do not consume.
-                    pos = marker_start + 1;
-                    continue;
-                }
-            };
-            markers.push(marker);
-            pos = marker_start + advance;
-        } else {
-            // Not a valid marker — include up to and including this char in
-            // narration by advancing past the '[' or "**" opener so we don't
-            // loop forever.
-            narration_parts.push(&script[pos..marker_start + if is_bold { 2 } else { 1 }]);
-            pos = marker_start + if is_bold { 2 } else { 1 };
-        }
-    }
-    // Any trailing text after the last marker.
-    if pos < len {
-        narration_parts.push(&script[pos..]);
-    }
-
-    // Collapse narration and normalise whitespace (Python does `re.sub(r"\s{2,}", " ", …)`).
-    let narration = narration_parts.join("");
-    // Collapse runs of 2+ whitespace chars to a single space, preserve newlines
-    // that aren't part of a run — a simple pass is sufficient for our purposes.
-    let mut collapsed = String::with_capacity(narration.len());
-    let mut prev_was_space = false;
-    for ch in narration.chars() {
-        if ch == ' ' || ch == '\t' {
-            if !prev_was_space {
-                collapsed.push(' ');
-            }
-            prev_was_space = true;
-        } else {
-            collapsed.push(ch);
-            prev_was_space = false;
-        }
-    }
-    let narration = collapsed.trim().to_string();
-
-    (narration, serde_json::Value::Array(markers))
-}
-
-/// Try to parse `[KIND: body]` at the start of `s`.
-/// Returns `Some((kind, body, bytes_consumed))` on success, None otherwise.
-fn parse_bracket_marker(s: &str) -> Option<(String, String, usize)> {
-    if !s.starts_with('[') {
-        return None;
-    }
-    let end = s.find(']')?;
-    let inner = &s[1..end]; // "KIND: body"
-    let colon = inner.find(':')?;
-    let kind = inner[..colon].trim().to_string();
-    // Only accept the three marker kinds.
-    if !matches!(kind.to_ascii_uppercase().as_str(), "IMAGE" | "MUSIC" | "CHAPTER") {
-        return None;
-    }
-    let body = inner[colon + 1..].trim().to_string();
-    Some((kind, body, end + 1)) // +1 for the ']'
-}
-
-/// Try to parse `**KIND: body**` at the start of `s`.
-/// Returns `Some((kind, body, bytes_consumed))` on success, None otherwise.
-fn parse_bold_marker(s: &str) -> Option<(String, String, usize)> {
-    if !s.starts_with("**") {
-        return None;
-    }
-    // Find the closing "**" (must be at least 2 chars after the opening).
-    let inner_start = 2;
-    let closing = s[inner_start..].find("**")?;
-    let inner = &s[inner_start..inner_start + closing]; // "KIND: body"
-    let colon = inner.find(':')?;
-    let kind = inner[..colon].trim().to_string();
-    if !matches!(kind.to_ascii_uppercase().as_str(), "IMAGE" | "MUSIC" | "CHAPTER") {
-        return None;
-    }
-    let body = inner[colon + 1..].trim().to_string();
-    Some((kind, body, inner_start + closing + 2)) // +2 for closing "**"
 }
 
 async fn persist_step(
