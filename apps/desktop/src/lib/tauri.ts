@@ -390,6 +390,16 @@ export interface PhaseUpdate {
   message: string;
 }
 
+/** Emitted by the long-form chapter loop for each chapter written or resumed. */
+export interface ChapterUpdate {
+  project_id: string;
+  index: number;
+  total: number;
+  title: string;
+  status: string;
+  words: number;
+}
+
 export interface ImageReadyEvent {
   project_id: string;
   index: number;
@@ -636,6 +646,8 @@ export const events = {
     listen<{ project_id: string; error: string }>('pipeline:error', (e) => cb(e.payload)),
   onImageReady: (cb: (p: ImageReadyEvent) => void): Promise<UnlistenFn> =>
     listen<ImageReadyEvent>('pipeline:image_ready', (e) => cb(e.payload)),
+  onChapterProgress: (cb: (p: ChapterUpdate) => void): Promise<UnlistenFn> =>
+    listen<ChapterUpdate>('pipeline:chapter', (e) => cb(e.payload)),
   onYoutubeConnected: (cb: () => void): Promise<UnlistenFn> =>
     listen<unknown>('youtube:connected', () => cb()),
   onYoutubeError: (cb: (msg: string) => void): Promise<UnlistenFn> =>

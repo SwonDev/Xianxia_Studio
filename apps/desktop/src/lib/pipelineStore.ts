@@ -21,6 +21,7 @@ import {
   events,
   type PhaseUpdate,
   type ImageReadyEvent,
+  type ChapterUpdate,
 } from '@/lib/tauri';
 
 interface PipelineState {
@@ -28,6 +29,11 @@ interface PipelineState {
   phaseState: Record<number, PhaseUpdate>;
   imageThumbs: ImageReadyEvent[];
   error: string | null;
+
+  /** Per-chapter progress (long-form only). Keyed by 1-based index. */
+  chapters: Record<number, { title: string; status: 'pending' | 'writing' | 'done' | 'failed'; words: number }>;
+  /** ETA for long-form generation. Populated by Task 14; null here. */
+  eta: { secondsLeft: number; basis: string } | null;
 
   /** Called by handleStart BEFORE the backend id is known: seeds an
    * immediate phase-1 "running" so the user sees feedback at once. */
@@ -42,6 +48,7 @@ interface PipelineState {
   _applyProgress: (p: PhaseUpdate) => void;
   _applyError: (e: { project_id: string; error: string }) => void;
   _applyImage: (p: ImageReadyEvent) => void;
+  applyChapter: (c: { index: number; title: string; status: 'pending' | 'writing' | 'done' | 'failed'; words: number }) => void;
 }
 
 /** Accept an event when no project is bound yet (events can arrive
@@ -56,6 +63,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   phaseState: {},
   imageThumbs: [],
   error: null,
+  chapters: {},
+  eta: null,
 
   seedStarting: () =>
     set({
@@ -80,6 +89,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       phaseState: {},
       imageThumbs: [],
       error: null,
+      chapters: {},
+      eta: null,
     }),
 
   setError: (e) => set({ error: e }),
@@ -103,6 +114,14 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       };
     });
   },
+
+  applyChapter: (c) =>
+    set((s) => ({
+      chapters: {
+        ...s.chapters,
+        [c.index]: { title: c.title, status: c.status, words: c.words },
+      },
+    })),
 }));
 
 /**
@@ -117,9 +136,17 @@ let _subscribed = false;
 export function ensurePipelineSubscription(): void {
   if (_subscribed) return;
   _subscribed = true;
-  const { _applyProgress, _applyError, _applyImage } =
+  const { _applyProgress, _applyError, _applyImage, applyChapter } =
     usePipelineStore.getState();
   void events.onPipelineProgress(_applyProgress);
   void events.onPipelineError(_applyError);
   void events.onImageReady(_applyImage);
+  void events.onChapterProgress((p: ChapterUpdate) =>
+    applyChapter({
+      index: p.index,
+      title: p.title,
+      status: p.status as 'pending' | 'writing' | 'done' | 'failed',
+      words: p.words,
+    }),
+  );
 }

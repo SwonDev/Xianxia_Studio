@@ -714,6 +714,10 @@ async fn run(
                                     (idx as f64 / total as f64) * 90.0,
                                     &format!("Capítulo {idx}/{total} (resumido)"),
                                 );
+                                emit_chapter(
+                                    app, pid, idx, total as i64, &chapter_title, "done",
+                                    row.words.unwrap_or(0),
+                                );
                                 continue;
                             }
                         }
@@ -725,6 +729,7 @@ async fn run(
                     5.0 + (idx as f64 / total as f64) * 85.0,
                     &format!("Escribiendo capítulo {idx}/{total}…"),
                 );
+                emit_chapter(app, pid, idx, total as i64, &chapter_title, "writing", 0);
 
                 let is_final = idx_zero + 1 == total;
                 let chapter_resp: serde_json::Value = client
@@ -760,6 +765,8 @@ async fn run(
                 running_summary = new_summary.clone();
 
                 // Persist chapter state (best-effort; never fails the pipeline).
+                // Clone title before moving it into NewChapter so emit_chapter can use it.
+                let chapter_title_clone = chapter_title.clone();
                 if let Err(e) = db::chapters::upsert_chapter(
                     pool,
                     &db::chapters::NewChapter {
@@ -781,6 +788,7 @@ async fn run(
                         "long-form: could not persist chapter state (best-effort)"
                     );
                 }
+                emit_chapter(app, pid, idx, total as i64, &chapter_title_clone, "done", words);
 
                 chapter_texts.push(text);
             }
@@ -2255,6 +2263,41 @@ fn emit(app: &AppHandle, pid: &str, phase: u8, status: &str, progress: f64, msg:
             status: status.to_string(),
             progress,
             message: msg.to_string(),
+        },
+    );
+}
+
+/// Emitted by the long-form chapter loop so the UI can track individual
+/// chapter progress. Best-effort: failures are silently ignored (same
+/// policy as `emit`).
+#[derive(Debug, Serialize, Clone)]
+struct ChapterUpdate {
+    project_id: String,
+    index: i64,
+    total: i64,
+    title: String,
+    status: String,
+    words: i64,
+}
+
+fn emit_chapter(
+    app: &AppHandle,
+    pid: &str,
+    index: i64,
+    total: i64,
+    title: &str,
+    status: &str,
+    words: i64,
+) {
+    let _ = app.emit(
+        "pipeline:chapter",
+        ChapterUpdate {
+            project_id: pid.to_string(),
+            index,
+            total,
+            title: title.to_string(),
+            status: status.to_string(),
+            words,
         },
     );
 }
