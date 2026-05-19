@@ -1247,6 +1247,30 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.6.5) Deterministic image-subject diversification ────────────
+//   The chronic "muchas imágenes iguales" fix: _enforce_subject_diversity
+//   must EXIST and be CALLED inside _rewrite_image_prompts_from_narration
+//   (not left observational like the old _diversify_subjects). If this
+//   regresses, abstract/single-subject topics collapse to one repeated
+//   subject re-coloured per beat.
+{
+  const scriptPy = join(ROOT, 'apps/sidecar-py/src/xianxia_ai/routes/script.py');
+  const txt = existsSync(scriptPy) ? readFileSync(scriptPy, 'utf8') : '';
+  const rwIdx = txt.indexOf('async def _rewrite_image_prompts_from_narration(');
+  const rwEnd = txt.indexOf('\nasync def ', rwIdx + 1);
+  const rwBody = rwIdx >= 0
+    ? txt.slice(rwIdx, rwEnd > rwIdx ? rwEnd : rwIdx + 8000)
+    : '';
+  check(
+    'script.py defines _facet_pool + _enforce_subject_diversity AND calls the enforcer in _rewrite_image_prompts_from_narration',
+    txt.includes('def _facet_pool(')
+      && txt.includes('def _enforce_subject_diversity(')
+      && rwBody.includes('_enforce_subject_diversity(')
+      && rwBody.includes('_facet_pool('),
+    'subject diversification must stay ENFORCING (called per-generation), not observational — abstract topics regress to identical re-coloured frames otherwise',
+  );
+}
+
 // ── (v0.5.0 T15-3) Pipeline long-form/short split preserved ─────────
 //   The >= 7 long-form branch must exist AND the legacy /script call for
 //   the < 7 short path must not have been removed.
