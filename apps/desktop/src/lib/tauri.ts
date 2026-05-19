@@ -166,6 +166,9 @@ export interface SidecarState {
   llamacpp?: 'stopped' | 'starting' | 'running' | 'failed';
 }
 
+/** v0.6.0 — LTX-2.3 video hardware capability gate. */
+export type LtxCapability = 'none' | 'gguf' | 'full';
+
 /** v0.2.2 — User preferences persisted in `<data_dir>/app-settings.json`. */
 export interface AppSettings {
   /** When false (default) the supervisor never touches Ollama. Toggle from Settings. */
@@ -418,6 +421,7 @@ export const tauri = {
   detectHardware: () => invoke<HardwareInfo>('detect_hardware'),
   safeLlmAlternative: (tier: string) =>
     invoke<ModelRecommendation>('safe_llm_alternative', { tier }),
+  ltxCapability: () => invoke<LtxCapability>('ltx_capability'),
   getInstallManifest: (options: InstallOptions) =>
     invoke<InstallComponent[]>('get_install_manifest', { options }),
   runInstall: (options: InstallOptions) =>

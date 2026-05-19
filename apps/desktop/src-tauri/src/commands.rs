@@ -31,6 +31,12 @@ pub fn get_app_version() -> AppVersion {
     }
 }
 
+/// v0.6.0 — LTX-2.3 hardware capability gate (None | Gguf | Full).
+#[tauri::command]
+pub fn ltx_capability() -> Result<crate::hardware::LtxCapability, String> {
+    Ok(crate::hardware::ltx_video_capability())
+}
+
 #[tauri::command]
 pub async fn list_projects(pool: tauri::State<'_, Arc<DbPool>>) -> Result<Vec<Project>, String> {
     projects::list(&pool).await.map_err(|e| e.to_string())

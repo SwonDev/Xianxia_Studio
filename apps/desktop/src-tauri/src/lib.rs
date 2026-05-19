@@ -60,6 +60,7 @@ pub fn run() {
             commands::library::library_reveal_video,
             hardware::detect_hardware,
             hardware::safe_llm_alternative,
+            commands::ltx_capability,
             installer::runner::run_install,
             installer::runner::get_install_manifest,
             installer::runner::install_optional_component,
