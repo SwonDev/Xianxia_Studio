@@ -48,7 +48,7 @@ interface PipelineState {
   _applyProgress: (p: PhaseUpdate) => void;
   _applyError: (e: { project_id: string; error: string }) => void;
   _applyImage: (p: ImageReadyEvent) => void;
-  applyChapter: (c: { index: number; title: string; status: 'pending' | 'writing' | 'done' | 'failed'; words: number }) => void;
+  applyChapter: (c: { index: number; title: string; status: 'pending' | 'writing' | 'done' | 'failed'; words: number; etaSeconds?: number | null }) => void;
 }
 
 /** Accept an event when no project is bound yet (events can arrive
@@ -116,12 +116,21 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   applyChapter: (c) =>
-    set((s) => ({
-      chapters: {
-        ...s.chapters,
-        [c.index]: { title: c.title, status: c.status, words: c.words },
-      },
-    })),
+    set((s) => {
+      const updates: Partial<PipelineState> = {
+        chapters: {
+          ...s.chapters,
+          [c.index]: { title: c.title, status: c.status, words: c.words },
+        },
+      };
+      // Apply ETA only when Rust provides a real sample (eta_seconds present
+      // and non-null). Never fabricate or zero-out: if undefined, keep the
+      // current store value unchanged.
+      if (c.etaSeconds != null) {
+        updates.eta = { secondsLeft: c.etaSeconds, basis: 'capítulos' };
+      }
+      return updates;
+    }),
 }));
 
 /**
@@ -147,6 +156,7 @@ export function ensurePipelineSubscription(): void {
       title: p.title,
       status: p.status as 'pending' | 'writing' | 'done' | 'failed',
       words: p.words,
+      etaSeconds: p.eta_seconds ?? null,
     }),
   );
 }

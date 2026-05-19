@@ -398,6 +398,10 @@ export interface ChapterUpdate {
   title: string;
   status: string;
   words: number;
+  /** Wall-clock ETA in seconds for remaining chapters. Present only after
+   *  ≥1 fresh chapter completes; undefined/null when writing pre-emit or
+   *  resumed chapters. */
+  eta_seconds?: number | null;
 }
 
 export interface ImageReadyEvent {

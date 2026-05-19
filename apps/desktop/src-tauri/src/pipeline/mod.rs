@@ -683,6 +683,10 @@ async fn run(
             let mut running_summary = String::new();
             let mut chapter_texts: Vec<String> = Vec::with_capacity(total);
 
+            // ETA tracking — only counts freshly-generated chapters (not resumed ones).
+            let mut fresh_start: Option<std::time::Instant> = None;
+            let mut fresh_done: usize = 0;
+
             for (idx_zero, chapter_val) in chapters_arr.iter().enumerate() {
                 let idx = (idx_zero + 1) as i64; // 1-based
                 let chapter_title = chapter_val
@@ -716,7 +720,7 @@ async fn run(
                                 );
                                 emit_chapter(
                                     app, pid, idx, total as i64, &chapter_title, "done",
-                                    row.words.unwrap_or(0),
+                                    row.words.unwrap_or(0), None,
                                 );
                                 continue;
                             }
@@ -729,7 +733,14 @@ async fn run(
                     5.0 + (idx as f64 / total as f64) * 85.0,
                     &format!("Escribiendo capítulo {idx}/{total}…"),
                 );
-                emit_chapter(app, pid, idx, total as i64, &chapter_title, "writing", 0);
+                emit_chapter(app, pid, idx, total as i64, &chapter_title, "writing", 0, None);
+
+                // ETA: start the clock just before the first fresh HTTP call so
+                // elapsed after chapter-1 completes reflects real generation time
+                // (not ~0 as it would if set after the response arrives).
+                if fresh_start.is_none() {
+                    fresh_start = Some(std::time::Instant::now());
+                }
 
                 let is_final = idx_zero + 1 == total;
                 let chapter_resp: serde_json::Value = client
@@ -788,7 +799,21 @@ async fn run(
                         "long-form: could not persist chapter state (best-effort)"
                     );
                 }
-                emit_chapter(app, pid, idx, total as i64, &chapter_title_clone, "done", words);
+                // ETA: count completed fresh chapters for average calculation.
+                fresh_done += 1;
+                let eta_seconds: Option<i64> = if let Some(t0) = fresh_start {
+                    let remaining = total.saturating_sub(idx_zero + 1);
+                    if remaining > 0 {
+                        let elapsed_secs = t0.elapsed().as_secs_f64();
+                        let avg = elapsed_secs / fresh_done as f64;
+                        Some((avg * remaining as f64).round() as i64)
+                    } else {
+                        Some(0)
+                    }
+                } else {
+                    None
+                };
+                emit_chapter(app, pid, idx, total as i64, &chapter_title_clone, "done", words, eta_seconds);
 
                 chapter_texts.push(text);
             }
@@ -2270,6 +2295,11 @@ fn emit(app: &AppHandle, pid: &str, phase: u8, status: &str, progress: f64, msg:
 /// Emitted by the long-form chapter loop so the UI can track individual
 /// chapter progress. Best-effort: failures are silently ignored (same
 /// policy as `emit`).
+///
+/// `eta_seconds`: wall-clock estimate of remaining chapter-writing time.
+/// Only present after ≥1 fresh chapter completes; None for resumed chapters
+/// and for the "writing" pre-emit. The UI stores this as `pipelineStore.eta`
+/// with basis "capítulos".
 #[derive(Debug, Serialize, Clone)]
 struct ChapterUpdate {
     project_id: String,
@@ -2278,6 +2308,8 @@ struct ChapterUpdate {
     title: String,
     status: String,
     words: i64,
+    /// None → UI keeps its current eta unchanged (e.g. resume or writing pre-emit).
+    eta_seconds: Option<i64>,
 }
 
 fn emit_chapter(
@@ -2288,6 +2320,7 @@ fn emit_chapter(
     title: &str,
     status: &str,
     words: i64,
+    eta_seconds: Option<i64>,
 ) {
     let _ = app.emit(
         "pipeline:chapter",
@@ -2298,6 +2331,7 @@ fn emit_chapter(
             title: title.to_string(),
             status: status.to_string(),
             words,
+            eta_seconds,
         },
     );
 }

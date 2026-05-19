@@ -13,6 +13,7 @@ import { convertFileSrc } from '@/lib/tauri-asset';
 import { useToast } from '@/components/toast';
 import { VoiceWizard } from '@/components/voice-wizard';
 import { PageHeader } from '@/components/ui-glass';
+import { ChapterPreview } from '@/components/chapter-preview';
 
 interface VoiceProfile {
   id: string;
@@ -798,6 +799,8 @@ function GeneratorWizard() {
               </div>
             </div>
           )}
+
+          <ChapterPreview />
 
           {error && (
             <div
