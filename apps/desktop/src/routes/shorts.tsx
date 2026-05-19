@@ -107,7 +107,7 @@ function ShortsRoute() {
     <div className="route-enter page" style={{ maxWidth: 1100 }}>
       <PageHeader
         title="Smart Shorts"
-        subtitle={`Sube un MP4 (podcast, charla, gameplay, vlog…) y extrae ${nShorts} Shorts virales de ${duration}s con Whisper + LLM scoring. 100% local.`}
+        subtitle={`Sube un MP4 (podcast, charla, gameplay, vlog…) y extrae ${nShorts} Shorts virales de ${duration}s con Whisper + LLM scoring.`}
       />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 320px', gap: 22, alignItems: 'start' }}>

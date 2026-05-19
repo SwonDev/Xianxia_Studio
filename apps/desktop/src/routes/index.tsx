@@ -187,8 +187,7 @@ function Dashboard() {
         Xianxia Studio {version?.version ?? '…'} · Tauri {version?.tauri ?? '…'} ·{' '}
         <span style={{ fontFamily: 'var(--font-mono)' }}>
           {hw?.os ?? '—'}/{hw?.arch ?? '—'}
-        </span>{' '}
-        · 100% local
+        </span>
       </div>
     </div>
   );

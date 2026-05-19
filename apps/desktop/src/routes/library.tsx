@@ -47,6 +47,12 @@ export const Route = createFileRoute('/library')({
   component: LibraryRoute,
 });
 
+/** A video is vertical (9:16 Shorts) when its height exceeds its width.
+ *  Dimensions can be null while metadata is still being read — treat
+ *  those as horizontal so they group with the 16:9 catalogue. */
+const isVerticalVideo = (v: LibraryVideo): boolean =>
+  !!(v.height && v.width && v.height > v.width);
+
 function LibraryRoute() {
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -138,18 +144,74 @@ function LibraryRoute() {
       )}
 
       {videos.length > 0 && (
-        <div
-          data-testid="library-grid"
-          style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 16 }}
-        >
-          {videos.map((v) => (
-            <VideoCard key={v.video_path} video={v} onPlay={() => setPreviewing(v)} onDelete={() => remove(v)} />
-          ))}
+        <div data-testid="library-grid" style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+          <VideoSection
+            label="Horizontal"
+            hint="16:9 · YouTube"
+            testid="library-grid-horizontal"
+            minCardWidth={280}
+            videos={videos.filter((v) => !isVerticalVideo(v))}
+            onPlay={setPreviewing}
+            onDelete={remove}
+          />
+          <VideoSection
+            label="Vertical · Shorts"
+            hint="9:16 · Shorts / TikTok"
+            testid="library-grid-vertical"
+            minCardWidth={210}
+            videos={videos.filter(isVerticalVideo)}
+            onPlay={setPreviewing}
+            onDelete={remove}
+          />
         </div>
       )}
 
       {previewing && <FullscreenPreview video={previewing} onClose={() => setPreviewing(null)} />}
     </div>
+  );
+}
+
+/** One labelled catalogue section (horizontal or vertical). Renders
+ *  nothing when it has no videos, so a library with only one orientation
+ *  shows a single clean section instead of an empty header. */
+function VideoSection({
+  label,
+  hint,
+  testid,
+  minCardWidth,
+  videos,
+  onPlay,
+  onDelete,
+}: {
+  label: string;
+  hint: string;
+  testid: string;
+  minCardWidth: number;
+  videos: LibraryVideo[];
+  onPlay: (v: LibraryVideo) => void;
+  onDelete: (v: LibraryVideo) => void;
+}) {
+  if (videos.length === 0) return null;
+  return (
+    <section data-testid={testid}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
+        <h2 className="section-header" style={{ margin: 0 }}>{label}</h2>
+        <span className="caption">
+          {hint} · {videos.length} vídeo{videos.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(auto-fill,minmax(${minCardWidth}px,1fr))`,
+          gap: 16,
+        }}
+      >
+        {videos.map((v) => (
+          <VideoCard key={v.video_path} video={v} onPlay={() => onPlay(v)} onDelete={() => onDelete(v)} />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -172,7 +234,7 @@ function VideoCard({
   const [seoLoading, setSeoLoading] = useState(false);
   const [seoError, setSeoError] = useState<string | null>(null);
   const [seoLang, setSeoLang] = useState<string | null>(null);
-  const isVertical = video.height && video.width && video.height > video.width;
+  const isVertical = isVerticalVideo(video);
 
   const analyzeNow = async () => {
     setAnalyzing(true); setEngageError(null);

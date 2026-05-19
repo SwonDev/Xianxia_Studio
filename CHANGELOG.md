@@ -6,6 +6,31 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-05-19
+
+### Pulido de UI — ventana nativa, arranque maximizado, biblioteca por formato
+
+Lote de pulido visual sobre v0.6.0. **Cambios estrictamente cosméticos**:
+ni el pipeline ni los invariantes triple-gate de LTX-2.3 se tocan
+(parity-check verde, default Z-Image+HyperFrames intacto).
+
+- **Ventana estilo nativo** — eliminados los falsos puntos de semáforo
+  macOS (rojo/amarillo/verde) que eran mera decoración. La ventana usa
+  los controles reales del sistema operativo. Se conserva la zona de
+  arrastre (`data-tauri-drag-region`) y la alineación vertical de la
+  barra lateral con la barra de título nativa.
+- **Arranque maximizado** — la aplicación se inicia con la ventana
+  maximizada por defecto (`maximized: true` en `tauri.conf.json`;
+  `decorations` nativas intactas).
+- **Biblioteca separada por formato** — los vídeos horizontales (16:9 ·
+  YouTube) y verticales (9:16 · Shorts / TikTok) se muestran en secciones
+  diferenciadas con su propia cuadrícula y contador, en vez de mezclados
+  en una sola rejilla. Cada sección se oculta si no tiene vídeos.
+- **Sin frases de relleno** — retiradas las coletillas que no aportan
+  ("Procesamiento 100 % local. Sin APIs externas." en la barra lateral,
+  "· 100 % local" en el pie del Resumen, "100 % local." en el subtítulo
+  de Smart Shorts).
+
 ## [0.6.0] — 2026-05-19
 
 ### LTX-2.3 vídeo real — opción opt-in, tier-gated (enfoque C "capa de movimiento")

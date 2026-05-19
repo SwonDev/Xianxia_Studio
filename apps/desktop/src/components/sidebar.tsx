@@ -126,28 +126,13 @@ export function Sidebar() {
         overflow: 'hidden',
       }}
     >
-      {/* Traffic-light drag zone (Mac convention) */}
+      {/* Drag region — keeps the window draggable here and the nav
+          vertically aligned with the native title bar. No fake macOS
+          traffic-light dots: the real OS window controls are used. */}
       <div
         data-tauri-drag-region
-        style={{
-          height: 'var(--toolbar-h)',
-          display: 'flex',
-          alignItems: 'center',
-          padding: collapsed ? '0' : '0 14px',
-          justifyContent: collapsed ? 'center' : 'flex-start',
-          gap: 8,
-        }}
-      >
-        {!collapsed ? (
-          <>
-            <span style={{ width: 12, height: 12, borderRadius: 999, background: '#ff5f57' }} />
-            <span style={{ width: 12, height: 12, borderRadius: 999, background: '#febc2e' }} />
-            <span style={{ width: 12, height: 12, borderRadius: 999, background: '#28c840' }} />
-          </>
-        ) : (
-          <span style={{ width: 10, height: 10, borderRadius: 999, background: '#febc2e' }} />
-        )}
-      </div>
+        style={{ height: 'var(--toolbar-h)', flexShrink: 0 }}
+      />
 
       <nav style={{ flex: 1, padding: collapsed ? '4px 8px' : '4px 10px', overflowY: 'auto', overflowX: 'hidden' }}>
         {NAV_GROUPS.map((g) => (
@@ -295,10 +280,7 @@ export function Sidebar() {
               </div>
             </div>
           )}
-          <p style={{ fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: 0 }}>
-            Procesamiento 100% local. Sin APIs externas.
-          </p>
-          <p style={{ fontSize: 10, color: 'var(--text-quaternary)', display: 'flex', alignItems: 'center', gap: 5, margin: '5px 0 0' }}>
+          <p style={{ fontSize: 10, color: 'var(--text-quaternary)', display: 'flex', alignItems: 'center', gap: 5, margin: 0 }}>
             Pulsa <span className="kbd">?</span> para ver atajos
           </p>
           <p style={{ fontSize: 10, color: 'var(--text-quaternary)', margin: '6px 0 0' }}>
