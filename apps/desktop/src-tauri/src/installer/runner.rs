@@ -208,6 +208,13 @@ async fn install_one(app: &AppHandle, c: &Component, workspace: Option<&Path>) -
         AssetKind::AceStepVenv => {
             acestep_venv_install(app, c).await
         }
+        AssetKind::Ltx23VideoInstall => {
+            // v0.6.0 Task 3: component declared; runner logic implemented in Task 4.
+            // This arm prevents a non-exhaustive match error at compile time.
+            // The component is opt-in and tier-gated; it should never reach
+            // this branch until the full runner implementation lands.
+            Err(anyhow!("ltx23-video runner not yet implemented (Task 4)"))
+        }
     }
 }
 
