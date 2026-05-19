@@ -593,21 +593,276 @@ async fn run(
     let out_dir = project_dir.to_string_lossy().to_string();
 
     // ─── Phase 1: Script ─────────────────────────────────────────────
+    // Project rule: wake llama-server before any LLM-bearing phase so the
+    // supervisor respawns it before the first request arrives. Phase 1 is
+    // always an LLM phase (both legacy and long-form paths), so wake_llm
+    // unconditionally here (same pattern as phases 7 and 8+sub-phases).
+    wake_llm(&client).await;
     emit(app, pid, 1, "running", 0.0, "Generando guion…");
-    let script_resp: serde_json::Value = client
-        .post(format!("{}/script", PY_SIDECAR))
-        .json(&serde_json::json!({
-            "topic": req.topic,
-            "target_minutes": req.target_minutes,
-            "languages": req.languages,
-            "model": req.llm_model.clone().unwrap_or_else(|| "xianxia-llm".to_string()),
-            "experimental": req.experimental_llm,
-        }))
-        .send()
-        .await
-        .context("phase 1: script request failed")?
-        .json()
-        .await?;
+
+    let llm_model = req.llm_model.clone().unwrap_or_else(|| "xianxia-llm".to_string());
+    // Primary language tag: used by /script/outline and /script/chapter
+    // (which take a single `language` string, unlike legacy /script which
+    // takes `languages: list`).
+    let lang_tag = req.languages.first().map(|s| s.as_str()).unwrap_or("en");
+
+    let script_resp: serde_json::Value = if req.target_minutes >= 7 {
+        // ── Long-form branch: outline + per-chapter loop + resume ────────
+        // Step 1: get outline (reuse persisted if resuming)
+        let outline_json: String = match db::chapters::get_outline(pool, pid).await.ok().flatten() {
+            Some(j) => {
+                tracing::info!(project = %pid, "long-form: reusing persisted outline (resume)");
+                j
+            }
+            None => {
+                emit(app, pid, 1, "running", 5.0, "Generando esquema de capítulos…");
+                let outline_resp: serde_json::Value = client
+                    .post(format!("{}/script/outline", PY_SIDECAR))
+                    .timeout(std::time::Duration::from_secs(15 * 60))
+                    .json(&serde_json::json!({
+                        "topic": req.topic,
+                        "target_minutes": req.target_minutes,
+                        "language": lang_tag,
+                        "model": llm_model,
+                        "context_facts": "",
+                    }))
+                    .send()
+                    .await
+                    .context("phase 1 long-form: /script/outline request failed")?
+                    .json::<serde_json::Value>()
+                    .await
+                    .context("phase 1 long-form: /script/outline JSON decode failed")?;
+                // Persist the raw `chapters` array as a JSON string so a
+                // resume run can skip this call entirely.
+                let j = serde_json::to_string(
+                    outline_resp.get("chapters").unwrap_or(&serde_json::json!([])),
+                )
+                .unwrap_or_else(|_| "[]".to_string());
+                if let Err(e) = db::chapters::save_outline(pool, pid, &j).await {
+                    tracing::warn!(error = %e, "long-form: could not persist outline (best-effort)");
+                }
+                j
+            }
+        };
+
+        // Parse chapters array. On failure fall back to the legacy single-call.
+        let chapters_arr: Vec<serde_json::Value> = serde_json::from_str::<serde_json::Value>(&outline_json)
+            .ok()
+            .and_then(|v| match v {
+                serde_json::Value::Array(a) => Some(a),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        if chapters_arr.is_empty() {
+            tracing::warn!(
+                project = %pid,
+                "long-form: outline empty or unparseable — falling back to legacy /script"
+            );
+            // ── Graceful degradation: single-call legacy path ───────────
+            client
+                .post(format!("{}/script", PY_SIDECAR))
+                .timeout(std::time::Duration::from_secs(30 * 60))
+                .json(&serde_json::json!({
+                    "topic": req.topic,
+                    "target_minutes": req.target_minutes,
+                    "languages": req.languages,
+                    "model": llm_model,
+                    "experimental": req.experimental_llm,
+                }))
+                .send()
+                .await
+                .context("phase 1 long-form fallback: /script request failed")?
+                .json::<serde_json::Value>()
+                .await
+                .context("phase 1 long-form fallback: /script JSON decode failed")?
+        } else {
+            // Step 2: per-chapter loop with resume
+            let total = chapters_arr.len();
+            let done_rows = db::chapters::list_chapters(pool, pid).await.unwrap_or_default();
+            let mut running_summary = String::new();
+            let mut chapter_texts: Vec<String> = Vec::with_capacity(total);
+
+            // ETA tracking — only counts freshly-generated chapters (not resumed ones).
+            let mut fresh_start: Option<std::time::Instant> = None;
+            let mut fresh_done: usize = 0;
+
+            for (idx_zero, chapter_val) in chapters_arr.iter().enumerate() {
+                let idx = (idx_zero + 1) as i64; // 1-based
+                let chapter_title = chapter_val
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Resume: if this chapter is already done and its file exists, reuse it.
+                let resume_row = done_rows
+                    .iter()
+                    .find(|r| r.chapter_index == idx && r.status == "done");
+                if let Some(row) = resume_row {
+                    if let Some(ref path) = row.narration_path {
+                        if std::path::Path::new(path).exists() {
+                            let text = std::fs::read_to_string(path).unwrap_or_default();
+                            if !text.is_empty() {
+                                tracing::info!(
+                                    project = %pid,
+                                    chapter = idx,
+                                    "long-form: resuming — reusing persisted chapter text"
+                                );
+                                if let Some(ref s) = row.summary_text {
+                                    running_summary = s.clone();
+                                }
+                                chapter_texts.push(text);
+                                emit(
+                                    app, pid, 1, "running",
+                                    (idx as f64 / total as f64) * 90.0,
+                                    &format!("Capítulo {idx}/{total} (resumido)"),
+                                );
+                                emit_chapter(
+                                    app, pid, idx, total as i64, &chapter_title, "done",
+                                    row.words.unwrap_or(0), None,
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                emit(
+                    app, pid, 1, "running",
+                    5.0 + (idx as f64 / total as f64) * 85.0,
+                    &format!("Escribiendo capítulo {idx}/{total}…"),
+                );
+                emit_chapter(app, pid, idx, total as i64, &chapter_title, "writing", 0, None);
+
+                // ETA: start the clock just before the first fresh HTTP call so
+                // elapsed after chapter-1 completes reflects real generation time
+                // (not ~0 as it would if set after the response arrives).
+                if fresh_start.is_none() {
+                    fresh_start = Some(std::time::Instant::now());
+                }
+
+                let is_final = idx_zero + 1 == total;
+                let chapter_resp: serde_json::Value = client
+                    .post(format!("{}/script/chapter", PY_SIDECAR))
+                    .timeout(std::time::Duration::from_secs(15 * 60))
+                    .json(&serde_json::json!({
+                        "topic": req.topic,
+                        "language": lang_tag,
+                        "outline": chapters_arr,
+                        "chapter_index": idx,
+                        "running_summary": running_summary,
+                        "is_final": is_final,
+                        "model": llm_model,
+                    }))
+                    .send()
+                    .await
+                    .with_context(|| format!("phase 1 long-form: /script/chapter {idx} request failed"))?
+                    .json::<serde_json::Value>()
+                    .await
+                    .with_context(|| format!("phase 1 long-form: /script/chapter {idx} JSON decode failed"))?;
+
+                let text = chapter_resp["text"].as_str().unwrap_or("").to_string();
+                let new_summary = chapter_resp["running_summary"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                let words = chapter_resp["words"].as_i64().unwrap_or(0);
+
+                // Write chapter text to disk next to the project.
+                let chapter_path = project_dir.join(format!("chapter-{:02}.txt", idx));
+                let _ = std::fs::write(&chapter_path, &text);
+
+                running_summary = new_summary.clone();
+
+                // Persist chapter state (best-effort; never fails the pipeline).
+                // Clone title before moving it into NewChapter so emit_chapter can use it.
+                let chapter_title_clone = chapter_title.clone();
+                if let Err(e) = db::chapters::upsert_chapter(
+                    pool,
+                    &db::chapters::NewChapter {
+                        project_id: pid.to_string(),
+                        chapter_index: idx,
+                        title: chapter_title,
+                        status: "done".to_string(),
+                        narration_path: Some(chapter_path.to_string_lossy().to_string()),
+                        summary_text: Some(new_summary),
+                        words: Some(words),
+                        error_message: None,
+                    },
+                )
+                .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        chapter = idx,
+                        "long-form: could not persist chapter state (best-effort)"
+                    );
+                }
+                // ETA: count completed fresh chapters for average calculation.
+                fresh_done += 1;
+                let eta_seconds: Option<i64> = if let Some(t0) = fresh_start {
+                    let remaining = total.saturating_sub(idx_zero + 1);
+                    if remaining > 0 {
+                        let elapsed_secs = t0.elapsed().as_secs_f64();
+                        let avg = elapsed_secs / fresh_done as f64;
+                        Some((avg * remaining as f64).round() as i64)
+                    } else {
+                        Some(0)
+                    }
+                } else {
+                    None
+                };
+                emit_chapter(app, pid, idx, total as i64, &chapter_title_clone, "done", words, eta_seconds);
+
+                chapter_texts.push(text);
+            }
+
+            // Assemble the full script from chapter parts.
+            let assembled_script = chapter_texts.join("\n\n");
+
+            // POST to /script/postprocess — runs the identical Python post-processing
+            // (setting_tag inference, image-prompt grounding, auto-marker injection,
+            // diversify) and returns the SAME ScriptResponse shape as /script.
+            // wake_llm was already called at the top of phase 1 (line ~600) and
+            // covers this call too — postprocess runs in the same LLM session.
+            client
+                .post(format!("{}/script/postprocess", PY_SIDECAR))
+                .timeout(std::time::Duration::from_secs(15 * 60))
+                .json(&serde_json::json!({
+                    "script": assembled_script,
+                    "topic": req.topic,
+                    "languages": req.languages,
+                    "target_minutes": req.target_minutes,
+                    "model": llm_model.clone(),
+                }))
+                .send()
+                .await
+                .context("phase 1 long-form: /script/postprocess request failed")?
+                .json::<serde_json::Value>()
+                .await
+                .context("phase 1 long-form: /script/postprocess JSON decode failed")?
+        }
+    } else {
+        // ── Legacy path (< 7 min): single /script call, byte-identical ──
+        client
+            .post(format!("{}/script", PY_SIDECAR))
+            .timeout(std::time::Duration::from_secs(30 * 60))
+            .json(&serde_json::json!({
+                "topic": req.topic,
+                "target_minutes": req.target_minutes,
+                "languages": req.languages,
+                "model": llm_model,
+                "experimental": req.experimental_llm,
+            }))
+            .send()
+            .await
+            .context("phase 1: script request failed")?
+            .json::<serde_json::Value>()
+            .await
+            .context("phase 1: script JSON decode failed")?
+    };
+
     let narration = script_resp["narration"].as_str().unwrap_or("").to_string();
     let _full_script = script_resp["script"].as_str().unwrap_or("").to_string();
     let markers = script_resp["markers"].clone();
@@ -674,46 +929,63 @@ async fn run(
     };
     emit(app, pid, 3, "running", 0.0,
         &format!("Sintetizando voz en {}…", audio_lang_name));
-    // v0.2.6.1 — best-effort VRAM reclaim before loading the ~7 GB
-    // Qwen3-TTS clone model. llama-server is already killed (above), but
-    // a ComfyUI baseline + desktop GPU apps (browser/Teams/Photos) can
-    // shave the headroom enough that the clone model spills into Windows
-    // Sysmem-fallback thrash (the 2026-05-15 run: TTS clone took 17 min
-    // vs ~2.5 min normal). We reclaim everything WE control; this never
-    // aborts (TTS is mandatory — there is no library fallback for the
-    // narration) — it just maximises the free card.
-    ensure_comfyui_vram(app, &client, 6.0).await;
-    let tts: serde_json::Value = client
-        .post(format!("{}/tts", PY_SIDECAR))
-        // v0.2.6.1 — was UNBOUNDED. A TTS clone that fell into Sysmem
-        // thrash with no timeout would hang the ENTIRE pipeline forever
-        // (the worst failure mode — no error, no recovery). 25 min
-        // covers a legitimately slow long-form clone with margin while
-        // bounding a true hang so the run fails cleanly instead of
-        // hanging indefinitely.
-        .timeout(std::time::Duration::from_secs(25 * 60))
-        .json(&serde_json::json!({
-            "text": narration,
-            "language": audio_lang_name,
-            "speaker": req.voice_speaker.clone().unwrap_or_else(|| "Vivian".to_string()),
-            "out_dir": out_dir,
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let narration_audio = tts["audio_path"].as_str().unwrap_or("").to_string();
-    // Real audio duration (seconds). The LLM produces image markers with
-    // timestamps based on a hard-coded 150 wpm assumption, but Qwen3-TTS
-    // narrates at its own pace — combined with the LLM's tendency to put
-    // markers in the second half of a script, the marker timestamps end
-    // up far off the actual audio. We use the TTS's reported duration to
-    // redistribute beats UNIFORMLY across the whole audio in Phase 4
-    // instead of trusting the marker timestamps. Result: no 17 s of black
-    // at the start, no 34 s of black at the end, no last image clipped.
-    let narration_duration = tts["duration_seconds"].as_f64().unwrap_or(0.0);
-    persist_step(pool, pid, 3, "done", &tts).await?;
-    emit(app, pid, 3, "done", 100.0, "Voz lista");
+
+    // ── Phase 3 resume guard ─────────────────────────────────────────
+    // If a prior run already completed TTS and the WAV is still on disk,
+    // skip the ~2-25 min Qwen3-TTS call and reuse the recorded artifact.
+    let (narration_audio, narration_duration) = if let Some(cached) =
+        phase_already_done(pool, pid, 3).await
+    {
+        let path = cached["audio_path"].as_str().unwrap_or("").to_string();
+        let dur  = cached["duration_seconds"].as_f64().unwrap_or(0.0);
+        tracing::info!(project = %pid, audio_path = %path, "phase 3: resuming — reusing persisted TTS audio");
+        emit(app, pid, 3, "done", 100.0, "Voz (reanudada — ya completada)");
+        (path, dur)
+    } else {
+        // v0.2.6.1 — best-effort VRAM reclaim before loading the ~7 GB
+        // Qwen3-TTS clone model. llama-server is already killed (above), but
+        // a ComfyUI baseline + desktop GPU apps (browser/Teams/Photos) can
+        // shave the headroom enough that the clone model spills into Windows
+        // Sysmem-fallback thrash (the 2026-05-15 run: TTS clone took 17 min
+        // vs ~2.5 min normal). We reclaim everything WE control; this never
+        // aborts (TTS is mandatory — there is no library fallback for the
+        // narration) — it just maximises the free card.
+        ensure_comfyui_vram(app, &client, 6.0).await;
+        let tts: serde_json::Value = client
+            .post(format!("{}/tts", PY_SIDECAR))
+            // v0.2.6.1 — was UNBOUNDED. A TTS clone that fell into Sysmem
+            // thrash with no timeout would hang the ENTIRE pipeline forever
+            // (the worst failure mode — no error, no recovery). 25 min
+            // covers a legitimately slow long-form clone with margin while
+            // bounding a true hang so the run fails cleanly instead of
+            // hanging indefinitely.
+            .timeout(std::time::Duration::from_secs(25 * 60))
+            .json(&serde_json::json!({
+                "text": narration,
+                "language": audio_lang_name,
+                "speaker": req.voice_speaker.clone().unwrap_or_else(|| "Vivian".to_string()),
+                "out_dir": out_dir,
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        let path = tts["audio_path"].as_str().unwrap_or("").to_string();
+        // Real audio duration (seconds). The LLM produces image markers with
+        // timestamps based on a hard-coded 150 wpm assumption, but Qwen3-TTS
+        // narrates at its own pace — combined with the LLM's tendency to put
+        // markers in the second half of a script, the marker timestamps end
+        // up far off the actual audio. We use the TTS's reported duration to
+        // redistribute beats UNIFORMLY across the whole audio in Phase 4
+        // instead of trusting the marker timestamps. Result: no 17 s of black
+        // at the start, no 34 s of black at the end, no last image clipped.
+        let dur = tts["duration_seconds"].as_f64().unwrap_or(0.0);
+        persist_step(pool, pid, 3, "done", &tts).await?;
+        emit(app, pid, 3, "done", 100.0, "Voz lista");
+        (path, dur)
+    };
+    // (variable names kept identical to the pre-resume shape so all downstream
+    // code — phases 4, 6, 8 — consumes them without any other changes)
     // Free Qwen3-TTS VRAM before Z-Image loads (~4-5 GB recovered).
     unload(&client, "tts").await;
 
@@ -723,7 +995,49 @@ async fn run(
     // and avoid the offload cost of going to 768x1344 / 1344x768.
     let (img_w, img_h) = if req.vertical { (720, 1280) } else { (1280, 720) };
     emit(app, pid, 4, "running", 0.0, &format!("Generando imágenes {}x{}…", img_w, img_h));
-    let mut beats: Vec<serde_json::Value> = Vec::new();
+
+    // ── Phase 4 resume guard ─────────────────────────────────────────
+    // Phase 4 stores {"beats": [...]} where each beat has a "path" key.
+    // phase_already_done() only checks scalar path keys, so we do a custom
+    // check: fetch the persisted row and verify EVERY beat path still exists.
+    let mut beats: Vec<serde_json::Value> = {
+        let cached_beats: Option<Vec<serde_json::Value>> = async {
+            let (status, oj): (String, Option<String>) = sqlx::query_as(
+                "SELECT status, output_json FROM pipeline_steps \
+                 WHERE project_id = ? AND phase = 4",
+            )
+            .bind(pid)
+            .fetch_optional(pool)
+            .await
+            .ok()??;
+            if status != "done" { return None; }
+            let v: serde_json::Value = serde_json::from_str(&oj?).ok()?;
+            let arr = v.get("beats")?.as_array()?.clone();
+            if arr.is_empty() { return None; }
+            // All still images (path key) must exist; clip_paths are optional.
+            for beat in &arr {
+                let p = beat.get("path").and_then(|p| p.as_str()).unwrap_or("");
+                if p.is_empty() || !std::path::Path::new(p).exists() {
+                    return None;
+                }
+            }
+            Some(arr)
+        }.await;
+
+        if let Some(arr) = cached_beats {
+            tracing::info!(
+                project = %pid, beats = arr.len(),
+                "phase 4: resuming — reusing {} persisted image beats", arr.len()
+            );
+            emit(app, pid, 4, "done", 100.0, "Imágenes (reanudadas — ya completadas)");
+            arr
+        } else {
+            Vec::new() // will be populated in the normal generation path below
+        }
+    };
+
+    let beats_already_done = !beats.is_empty();
+    if !beats_already_done {
     if let Some(arr) = markers.as_array() {
         let image_markers: Vec<&serde_json::Value> =
             arr.iter().filter(|m| m["kind"] == "image").collect();
@@ -775,7 +1089,8 @@ async fn run(
             let pct = ((i + 1) as f64 / total as f64) * 100.0;
             emit(app, pid, 4, "running", pct, &format!("Imagen {}/{}", i + 1, total));
         }
-    }
+    } // end if let Some(arr) = markers.as_array()
+    } // end if !beats_already_done (image generation block)
     // ─── Beat timeline normalisation (v0.2.1: text-proportional) ────
     //
     // Bug we're fixing: the previous version used `normalise_beat_timeline`
@@ -798,7 +1113,10 @@ async fn run(
     //
     // Each beat's duration = next beat's start − current start. The last
     // beat extends to the end of the audio so we never leave a black tail.
-    if !beats.is_empty() && narration_duration > 0.0 {
+    //
+    // Skip when resuming: the cached beats already carry correct start/
+    // duration/transition from the original run — no need to rewrite them.
+    if !beats_already_done && !beats.is_empty() && narration_duration > 0.0 {
         let n = beats.len();
         // Find the maximum text_seconds — that's the scale denominator.
         // If all beats reported 0 (legacy clients), fall back to uniform.
@@ -866,8 +1184,11 @@ async fn run(
         }
     }
 
-    persist_step(pool, pid, 4, "done", &serde_json::json!({"beats": beats})).await?;
-    emit(app, pid, 4, "done", 100.0, "Imágenes listas");
+    if !beats_already_done {
+        persist_step(pool, pid, 4, "done", &serde_json::json!({"beats": beats})).await?;
+        emit(app, pid, 4, "done", 100.0, "Imágenes listas");
+    }
+    // (when beats_already_done the emit + persist were already done in the resume guard above)
 
     // Sequential VRAM swap: free Z-Image (ComfyUI) before depth/render/whisper.
     unload(&client, "comfyui").await;
@@ -1000,6 +1321,21 @@ async fn run(
 
     // ─── Phase 5: Music selector ─────────────────────────────────────
     emit(app, pid, 5, "running", 0.0, "Seleccionando música…");
+
+    // ── Phase 5 resume guard ─────────────────────────────────────────
+    // If a prior run already selected/generated music and the audio file
+    // is still on disk, skip the ~7-12 min ACE-Step / MusicGen call.
+    // `music` is used downstream as the JSON value passed to /render/narrative
+    // (music_path key) and /render (music_path key from FFmpeg path) — both
+    // read music["audio_path"], so reusing the whole JSON is safe.
+    let music: serde_json::Value = if let Some(cached) = phase_already_done(pool, pid, 5).await {
+        tracing::info!(
+            project = %pid, audio_path = %cached["audio_path"].as_str().unwrap_or(""),
+            "phase 5: resuming — reusing persisted music track"
+        );
+        emit(app, pid, 5, "done", 100.0, "Música (reanudada — ya completada)");
+        cached
+    } else {
     // v0.2.3 — DO NOT wake llama-server before /music. MusicGen needs
     // ~4 GB VRAM and llama-server holds ~3 GB; with 8 GB total the
     // contention either spills MusicGen to CPU (50× slower) or stalls
@@ -1075,12 +1411,15 @@ async fn run(
                 .timeout(std::time::Duration::from_secs(120))
                 .json(&fb_body).send().await?.json().await?
         }
-    };
+    }; // end inner match (new music generation)
     persist_step(pool, pid, 5, "done", &music).await?;
     emit(app, pid, 5, "done", 100.0, "Música lista");
+    music // return value for the outer `else` arm
+    }; // end phase 5 resume else-branch
     // Release MusicGen PyTorch tensors (~3-4 GB) before render.
     // Phase 6 doesn't need GPU compute (HyperFrames uses Chromium + ffmpeg
     // NVENC) so this is the cheapest phase to leave VRAM clean for.
+    // When resuming, music was not loaded so the unload is a no-op.
     unload(&client, "music").await;
 
     // ─── Phase 6: Render ─────────────────────────────────────────────
@@ -1103,6 +1442,31 @@ async fn run(
     // We now use HyperFrames whenever the Node sidecar is up.
     let video_out = format!("{}/video.mp4", out_dir);
     let _ = all_layered; // depth presence informs the template, not the gating
+
+    // ── Phase 6 resume guard ─────────────────────────────────────────
+    // If a prior run already rendered the final MP4 and the file is still
+    // on disk, skip the 20-60 min HyperFrames / FFmpeg render. The
+    // `video_path` key was added to the persisted output in v0.5.0
+    // (additive — does not change existing output shape). For older rows
+    // that only have `out_path` or `video_path`, `phase_already_done`
+    // checks both via the PATH_KEYS list, so the guard works for any run
+    // that completed Phase 6 after this code ships.
+    emit(app, pid, 6, "running", 0.0, "Verificando render previo…");
+    let phase6_cached = phase_already_done(pool, pid, 6).await;
+    let mut produced_video: String;
+    if let Some(ref cached6) = phase6_cached {
+        produced_video = cached6
+            .get("video_path")
+            .or_else(|| cached6.get("out_path"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| video_out.clone());
+        tracing::info!(
+            project = %pid, video_path = %produced_video,
+            "phase 6: resuming — reusing persisted rendered video"
+        );
+        emit(app, pid, 6, "done", 100.0, "Render (reanudado — ya completado)");
+    } else {
 
     // We ALWAYS try HyperFrames first when the Node sidecar is up — it's
     // the project's primary auto-edit engine. Only when it fails (HTTP
@@ -1263,7 +1627,8 @@ async fn run(
     }
     let render = render.expect("render must be Some after HyperFrames or FFmpeg branch");
     // Resolve the produced video path (different keys for /render vs /render/narrative).
-    let mut produced_video = render
+    // `produced_video` was declared above (in the phase 6 resume guard block).
+    produced_video = render
         .get("video_path")
         .or_else(|| render.get("out_path"))
         .and_then(|v| v.as_str())
@@ -1298,10 +1663,19 @@ async fn run(
         }
     }
 
-    persist_step(pool, pid, 6, "done", &render).await?;
+    // Persist with a top-level "video_path" key so the phase-6 resume guard
+    // (and phase_already_done) can verify the artifact on disk in a future
+    // run. We merge it into a fresh object to avoid mutating `render`.
+    let mut render_persist = render.clone();
+    if let Some(obj) = render_persist.as_object_mut() {
+        obj.insert("video_path".to_string(), serde_json::json!(produced_video));
+    }
+    persist_step(pool, pid, 6, "done", &render_persist).await?;
     let mut tag = used_engine.to_string();
     if req.vertical { tag.push_str(" + reframe"); }
     emit(app, pid, 6, "done", 100.0, &format!("Vídeo renderizado ({})", tag));
+
+    } // end phase 6 resume else-branch (new render path)
 
     // ─── Phase 7: Thumbnail (dedicated Z-Image gen + Node text overlay) ──
     // Phase 7 is intentionally non-fatal. If Z-Image times out from VRAM
@@ -1838,6 +2212,46 @@ async fn run(
     Ok(())
 }
 
+/// Resume support: if `phase` already completed in a prior run AND every
+/// filesystem artifact it recorded still exists on disk, return its persisted
+/// output JSON so the caller can skip recomputation.
+///
+/// The helper checks the top-level string fields whose names are conventional
+/// artifact path keys. If any recorded path is missing the phase is NOT
+/// considered resumable — the caller must recompute and re-persist.
+///
+/// NOTE: phases that store compound artifacts (beats array, subs object) are
+/// NOT handled here; they use their own inline guard (see Phase 4).
+async fn phase_already_done(pool: &DbPool, pid: &str, phase: u8) -> Option<serde_json::Value> {
+    // `fetch_optional` returns `Result<Option<T>>` where T is the row type.
+    // We annotate the inner T (not wrapped in Option) and `.ok()?` unwraps
+    // the Result, then `?` propagates the Option.
+    let (status, oj): (String, Option<String>) = sqlx::query_as(
+        "SELECT status, output_json FROM pipeline_steps WHERE project_id = ? AND phase = ?",
+    )
+    .bind(pid)
+    .bind(phase as i64)
+    .fetch_optional(pool)
+    .await
+    .ok()??;
+    if status != "done" {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(&oj?).ok()?;
+
+    // For every path-like key present in the output, verify the file exists.
+    // If ANY recorded artifact is missing the phase must be re-run.
+    const PATH_KEYS: &[&str] = &["audio_path", "video_path", "wav_path", "out_path", "path"];
+    for key in PATH_KEYS {
+        if let Some(p) = v.get(key).and_then(|p| p.as_str()) {
+            if !p.is_empty() && !std::path::Path::new(p).exists() {
+                return None;
+            }
+        }
+    }
+    Some(v)
+}
+
 async fn persist_step(
     pool: &DbPool,
     pid: &str,
@@ -1874,6 +2288,50 @@ fn emit(app: &AppHandle, pid: &str, phase: u8, status: &str, progress: f64, msg:
             status: status.to_string(),
             progress,
             message: msg.to_string(),
+        },
+    );
+}
+
+/// Emitted by the long-form chapter loop so the UI can track individual
+/// chapter progress. Best-effort: failures are silently ignored (same
+/// policy as `emit`).
+///
+/// `eta_seconds`: wall-clock estimate of remaining chapter-writing time.
+/// Only present after ≥1 fresh chapter completes; None for resumed chapters
+/// and for the "writing" pre-emit. The UI stores this as `pipelineStore.eta`
+/// with basis "capítulos".
+#[derive(Debug, Serialize, Clone)]
+struct ChapterUpdate {
+    project_id: String,
+    index: i64,
+    total: i64,
+    title: String,
+    status: String,
+    words: i64,
+    /// None → UI keeps its current eta unchanged (e.g. resume or writing pre-emit).
+    eta_seconds: Option<i64>,
+}
+
+fn emit_chapter(
+    app: &AppHandle,
+    pid: &str,
+    index: i64,
+    total: i64,
+    title: &str,
+    status: &str,
+    words: i64,
+    eta_seconds: Option<i64>,
+) {
+    let _ = app.emit(
+        "pipeline:chapter",
+        ChapterUpdate {
+            project_id: pid.to_string(),
+            index,
+            total,
+            title: title.to_string(),
+            status: status.to_string(),
+            words,
+            eta_seconds,
         },
     );
 }
@@ -1995,5 +2453,105 @@ mod tests {
         // reasonable run so the rendered video doesn't feel monotonous.
         let unique_count = kinds.iter().collect::<std::collections::HashSet<_>>().len();
         assert!(unique_count >= 2, "transitions too repetitive: {:?}", kinds);
+    }
+
+    // ─── phase_already_done unit tests ──────────────────────────────────
+    // Verify the three contract cases using an in-memory SQLite pool:
+    //   1. status=done + artifact path exists on disk         → Some(value)
+    //   2. status=done + artifact path does NOT exist on disk → None
+    //   3. status=failed                                      → None
+
+    async fn setup_pool_with_project() -> crate::db::DbPool {
+        // Use a single-connection private in-memory DB so each test gets a
+        // fresh schema without the UNIQUE-migration-version conflict that the
+        // shared `file::memory:?cache=shared` pool triggers when multiple
+        // tests run in parallel.
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
+        sqlx::query(
+            "INSERT INTO projects (id,title,topic,status,languages,created_at,updated_at) \
+             VALUES ('p-resume','T','t','generating','en',0,0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed project");
+        pool
+    }
+
+    async fn insert_pipeline_step(
+        pool: &crate::db::DbPool,
+        phase: u8,
+        status: &str,
+        output_json: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO pipeline_steps \
+             (id, project_id, phase, name, status, started_at, finished_at, progress, output_json) \
+             VALUES (?, 'p-resume', ?, ?, ?, 0, 0, 100, ?) \
+             ON CONFLICT(project_id, phase) DO UPDATE \
+             SET status=excluded.status, output_json=excluded.output_json",
+        )
+        .bind(format!("step-{}", phase))
+        .bind(phase as i64)
+        .bind(format!("phase_{}", phase))
+        .bind(status)
+        .bind(output_json)
+        .execute(pool)
+        .await
+        .expect("insert pipeline_step");
+    }
+
+    #[tokio::test]
+    async fn phase_already_done_returns_some_when_artifact_exists() {
+        let pool = setup_pool_with_project().await;
+        // Create a real temporary file that we'll reference as the artifact.
+        let tmp = std::env::temp_dir().join("xianxia_test_tts_resume.wav");
+        std::fs::write(&tmp, b"fake wav").expect("write temp file");
+        let path = tmp.to_string_lossy().to_string();
+
+        // Use serde_json to ensure the path is properly escaped in the JSON
+        // (critical on Windows where backslashes must become \\).
+        let oj = serde_json::json!({"audio_path": path, "duration_seconds": 120.0}).to_string();
+        insert_pipeline_step(&pool, 3, "done", &oj).await;
+
+        let result = super::phase_already_done(&pool, "p-resume", 3).await;
+        assert!(result.is_some(), "expected Some when artifact exists on disk");
+        assert_eq!(
+            result.unwrap()["audio_path"].as_str(),
+            Some(path.as_str()),
+        );
+
+        // Cleanup.
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn phase_already_done_returns_none_when_artifact_missing() {
+        let pool = setup_pool_with_project().await;
+        // Path that definitely does not exist.
+        let missing = "/nonexistent/path/xianxia_test_missing.wav";
+
+        insert_pipeline_step(
+            &pool, 3, "done",
+            &format!(r#"{{"audio_path":"{}","duration_seconds":60.0}}"#, missing),
+        ).await;
+
+        let result = super::phase_already_done(&pool, "p-resume", 3).await;
+        assert!(result.is_none(), "expected None when artifact does not exist on disk");
+    }
+
+    #[tokio::test]
+    async fn phase_already_done_returns_none_when_status_not_done() {
+        let pool = setup_pool_with_project().await;
+        // Even if output_json has no path keys, a non-done status must return None.
+        insert_pipeline_step(&pool, 3, "failed", r#"{"error":"oops"}"#).await;
+
+        let result = super::phase_already_done(&pool, "p-resume", 3).await;
+        assert!(result.is_none(), "expected None when status is failed (not done)");
     }
 }

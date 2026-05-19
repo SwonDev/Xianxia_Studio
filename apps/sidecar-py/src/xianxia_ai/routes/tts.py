@@ -571,18 +571,114 @@ async def synthesize(req: TTSRequest) -> TTSResponse:
                 duration_ms=int((_t.time() - t_chunk) * 1000),
             )
     log_event("info", "tts_synthesis_done", total_ms=int((_t.time() - t_total) * 1000), chunks=len(chunks))
-    full = np.concatenate(audio_segments) if audio_segments else np.zeros(1)
-    # v0.1.34: loudness-normalize to -14 LUFS (YouTube standard).
-    # Voice clones (Qwen3-TTS-Base) come out 6-10 LUFS quieter than the
-    # built-in CustomVoice speakers, which made cloned narration sound
-    # muffled in the final video. EBU R128 normalization equalizes both
-    # paths so the user hears consistent loudness regardless of speaker.
-    full = _loudnorm_audio(full.astype("float32"), sr, target_lufs=-14.0, peak_db=-1.0)
+
     out_dir = Path(req.out_dir or os.environ.get("XIANXIA_OUT_DIR", "./out"))
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"tts-{uuid.uuid4().hex[:10]}.wav"
-    sf.write(str(out_path), full, sr)
-    duration = float(len(full)) / float(sr) if sr else 0.0
+
+    if not audio_segments:
+        full = np.zeros(1, dtype="float32")
+        sf.write(str(out_path), full, sr or 24000)
+        return TTSResponse(audio_path=str(out_path), duration_seconds=0.0, chunks=0)
+
+    # v0.1.34: loudness-normalize each chunk BEFORE crossfade so the gain
+    # stages going into acrossfade are consistent (-14 LUFS target).
+    audio_segments = [
+        _loudnorm_audio(seg.astype("float32"), sr, target_lufs=-14.0, peak_db=-1.0)
+        for seg in audio_segments
+    ]
+
+    # ── Crossfade concat (intra-request) ─────────────────────────────
+    # For N > 1 chunks, chain them with an 80 ms acrossfade (tri curves)
+    # to eliminate the hard click at each concatenation point.
+    # For N == 1, skip ffmpeg entirely — no joins, nothing to crossfade.
+    # Graceful fallback: if ffmpeg acrossfade fails, raw-concat the chunks
+    # (same as the pre-crossfade behaviour) so /tts never breaks.
+    #
+    # CRITICAL anti-desync: duration_seconds is derived from the MEASURED
+    # length of the final WAV (probe via array len/sr or sf.info), NOT from
+    # summing chunk durations. This guarantees the pipeline beat-timeline
+    # (which reads duration_seconds from this response) stays in sync with
+    # the actual audio after crossfade compression.
+    crossfade_ok = False
+    if len(audio_segments) > 1:
+        import subprocess as _sp
+        import tempfile as _tf
+
+        _XFADE_D = 0.08  # 80 ms — removes click cleanly with tri curve
+
+        # Write each chunk to a temp WAV so ffmpeg can read them.
+        tmp_dir = Path(_tf.mkdtemp(prefix="tts_xfade_"))
+        chunk_paths: list[Path] = []
+        try:
+            for i, seg in enumerate(audio_segments):
+                cp = tmp_dir / f"chunk_{i:04d}.wav"
+                sf.write(str(cp), seg, sr)
+                chunk_paths.append(cp)
+
+            # Build ffmpeg pairwise acrossfade chain for N inputs.
+            # acrossfade is a STRICTLY 2-input filter — it has no n= option.
+            # For N chunks we build a sequential chain:
+            #   N==2: [0][1]acrossfade=d=0.08:c1=tri:c2=tri[out]
+            #   N>2:  [0][1]acrossfade=...[a1];[a1][2]acrossfade=...[a2];...
+            #         ...[a{N-2}][{N-1}]acrossfade=...[out]
+            n_inputs = len(chunk_paths)
+            xfade_opts = f"acrossfade=d={_XFADE_D}:c1=tri:c2=tri"
+            if n_inputs == 2:
+                fc = f"[0][1]{xfade_opts}[out]"
+            else:
+                parts = []
+                # First join: [0][1] → [a1]
+                parts.append(f"[0][1]{xfade_opts}[a1]")
+                # Middle joins: [a{k}][k+1] → [a{k+1}]
+                for k in range(1, n_inputs - 2):
+                    parts.append(f"[a{k}][{k + 1}]{xfade_opts}[a{k + 1}]")
+                # Last join: [a{N-2}][N-1] → [out]
+                parts.append(f"[a{n_inputs - 2}][{n_inputs - 1}]{xfade_opts}[out]")
+                fc = ";".join(parts)
+            cmd = ["ffmpeg", "-hide_banner", "-nostats", "-loglevel", "error", "-y"]
+            for cp in chunk_paths:
+                cmd += ["-i", str(cp)]
+            cmd += [
+                "-filter_complex", fc,
+                "-map", "[out]",
+                str(out_path),
+            ]
+            result = _sp.run(cmd, capture_output=True)
+            if result.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
+                crossfade_ok = True
+                log.debug("tts: acrossfade OK, %d chunks → %s", n_inputs, out_path.name)
+            else:
+                err_msg = result.stderr.decode(errors="replace")[:300]
+                log.warning("tts: acrossfade failed (rc=%d): %s — falling back to raw concat",
+                            result.returncode, err_msg)
+        except Exception as exc:
+            log.warning("tts: acrossfade exception (%s) — falling back to raw concat", exc)
+        finally:
+            # Clean up temp chunk files regardless of success/failure.
+            import shutil as _sh
+            _sh.rmtree(tmp_dir, ignore_errors=True)
+
+    if not crossfade_ok:
+        # Raw concat fallback (original behaviour) or single-chunk path.
+        full = np.concatenate(audio_segments) if len(audio_segments) > 1 else audio_segments[0]
+        sf.write(str(out_path), full, sr)
+
+    # Measure duration from the FINAL produced WAV (post-crossfade length
+    # differs from sum-of-chunks by xfade_d*(N-1) — reading the file is the
+    # only reliable source of truth for the beat-timeline in Rust pipeline).
+    try:
+        info = sf.info(str(out_path))
+        duration = float(info.frames) / float(info.samplerate)
+    except Exception:
+        # sf.info unavailable or file corrupt — fall back to array math.
+        try:
+            # crossfade_ok path: load the written file to get measured len.
+            data, _sr2 = sf.read(str(out_path))
+            duration = float(len(data)) / float(_sr2) if _sr2 else 0.0
+        except Exception:
+            duration = 0.0
+
     return TTSResponse(audio_path=str(out_path), duration_seconds=duration, chunks=len(chunks))
 
 

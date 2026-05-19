@@ -5,6 +5,7 @@ use sqlx::{Pool, Sqlite};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+pub mod chapters;
 pub mod projects;
 pub mod scheduled;
 pub mod settings;

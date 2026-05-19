@@ -6,6 +6,69 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-19
+
+### Capítulos largos robustos — del multi-pass ciego a outline + por-capítulo
+
+Cierra el gap del plan v0.2.0 de vídeos largos con capítulos. El camino
+corto (`target_minutes < 7`) y todos los contratos aguas abajo
+(marcadores `[CHAPTER:]/[IMAGE:]/[MUSIC:]` → tarjetas en `render.ts` →
+capítulos YouTube en `seo.py`) quedan **intactos y verificados**.
+
+- **Planner + outline** — nuevo `POST /script/outline`: el LLM local
+  diseña un esquema estructurado de 3-6 capítulos (título, sinopsis,
+  beats, target de palabras) que escenifica el tema como un misterio,
+  antes de redactar. 2 intentos; si no parsea, degrada al multi-pass
+  v0.1.38 (sin romper la generación).
+- **Generación por capítulo con memoria** — nuevo `POST /script/chapter`:
+  cada capítulo se redacta con un *running summary* estructurado
+  (qué se contó, hilos abiertos, hechos usados, último párrafo) en vez
+  de los 1200 chars crudos de antes → coherencia real en vídeos de
+  15-25 min, sin deriva ni repetición (Jaccard anti-repeat).
+- **Post-procesado idéntico** — se extrajo `_finalize_script` (refactor
+  puro, camino corto byte-idéntico) y se expuso `POST /script/postprocess`
+  para que el camino long-form reutilice EXACTAMENTE el setting_tag,
+  el grounding de imágenes en la narración, la inyección de marcadores y
+  la diversificación de sujetos. Sin esto se reintroducían los bugs
+  recurrentes de deriva xianxia y desincronía imagen/narración —
+  detectado y cerrado en revisión.
+- **Schema 0003 + resume granular** — `script_outline` + `chapter_state`
+  (migración nueva, 0001/0002 intactas). El guion reanuda desde el
+  capítulo `pending/failed` sin regenerar los `done`; el pipeline reanuda
+  saltando fases caras ya completas (TTS, imágenes, música, render) cuyo
+  artefacto sigue en disco (`phase_already_done`). Comando
+  `reset_project_progress` para regenerar desde cero.
+- **Crossfade TTS** — uniones de chunk con `acrossfade` 80 ms (cadena
+  pairwise `-filter_complex`, verificada contra el ffmpeg real;
+  fallback a concat crudo si falla). `duration_seconds` se mide del WAV
+  final → la timeline de beats (que ya usaba duración medida) sigue en
+  sync sin tocar Rust.
+- **UI ChapterPreview + ETA** — lista de capítulos con estado en vivo
+  (evento `pipeline:chapter`) y ETA dinámico calculado de la duración
+  real de los capítulos generados. Liquid Glass, sin partículas, **cero
+  datos demo** (se oculta si no hay capítulos; ETA solo con ≥1 muestra
+  real, jamás fabricado).
+
+Validación estática: `cargo test` 15/15, `pytest` 12/12, `tsc`+`vite`
+verde, `cargo check` 0 errores, `parity-check` (todas las invariantes,
+incluido el guard de regresión del `acrossfade`). Ejecución por
+subagentes con doble revisión (spec + calidad) por tarea.
+
+> **Pendiente de validación E2E en stack real:** el smoke real
+> `tests/manual/test_longform_chapters.py` está escrito y commiteado pero
+> NO se ejecutó (el LLM local no estaba arrancado en la sesión de
+> implementación). Debe correrse contra un sidecar+LLM vivo, o validarse
+> generando un vídeo largo desde la app, antes de considerar la feature
+> probada de extremo a extremo. No se fabricó ningún resultado.
+>
+> **Fast-follow conocido:** `/script/postprocess` invoca `_finalize_script`
+> con `context_brief=""`, así que en long-form el `setting_tag` se genera
+> sin el brief RAG de Wikipedia (el camino corto sí lo pasa). El tag aún
+> se infiere del topic vía el fallback puro, pero para vídeos de 20 min la
+> deriva de ambientación es medible. Cerrarlo requiere que el lado Rust
+> recopile y envíe un `context_brief` al postprocess (mejora aditiva, no
+> bloqueante; el resto de la feature es correcto).
+
 ## [0.4.0] — 2026-05-19
 
 ### Cero datos mock: el Planificador ahora es real (E1)

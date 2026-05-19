@@ -18,7 +18,14 @@ from pydantic import BaseModel
 
 from ..llm import generate as llm_generate
 from ..logging_utils import log_event
-from ..prompts import SCRIPT_PROMPT_TEMPLATE, METADATA_PROMPT_TEMPLATE
+from ..chapters import chapter_count_for, parse_outline
+from ..prompts import (
+    SCRIPT_PROMPT_TEMPLATE,
+    METADATA_PROMPT_TEMPLATE,
+    OUTLINE_PROMPT_TEMPLATE,
+    CHAPTER_PROMPT_TEMPLATE,
+    SUMMARY_PROMPT_TEMPLATE,
+)
 
 router = APIRouter()
 
@@ -54,6 +61,179 @@ class ScriptResponse(BaseModel):
     # v0.1.38: expose the LLM-generated setting tag so the supervisor
     # can pass it down to /music as a style_hint (era + culture + palette).
     setting_tag: str | None = None
+
+
+class OutlineRequest(BaseModel):
+    topic: str
+    target_minutes: int
+    language: str = "es"
+    model: str = "xianxia-llm"
+    context_facts: str = ""
+
+
+class OutlineResponse(BaseModel):
+    chapters: list[dict]
+
+
+@router.post("/outline", response_model=OutlineResponse)
+async def generate_outline(req: OutlineRequest) -> OutlineResponse:
+    language_name = _LANG_TO_NAME.get(req.language, "English")
+    n = chapter_count_for(req.target_minutes)
+    prompt = OUTLINE_PROMPT_TEMPLATE.format(
+        topic=req.topic,
+        minutes=req.target_minutes,
+        language_name=language_name,
+        n_chapters=n,
+        context_facts=req.context_facts or "(write from general knowledge, stay faithful to the topic)",
+    )
+    system_prompt = (
+        f"YOU MUST WRITE THE ENTIRE OUTLINE IN {language_name.upper()}. "
+        f"No exceptions."
+    )
+    log_event("info", "outline_start", topic=req.topic[:60], chapters=n)
+    async with httpx.AsyncClient(timeout=900.0) as client:
+        for attempt in (1, 2):
+            try:
+                result = await llm_generate(
+                    model=req.model,
+                    system=system_prompt,
+                    prompt=prompt,
+                    options={
+                        "temperature": 0.4,
+                        "top_p": 0.9,
+                        "num_ctx": 8192,
+                        "num_predict": 1800,
+                    },
+                    think=False,
+                    max_continuations=0,
+                    client=client,
+                    timeout=900.0,
+                )
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
+            raw = result.get("response") or ""
+            try:
+                chapters = parse_outline(raw)
+                log_event("info", "outline_ok", chapters=len(chapters), attempt=attempt)
+                return OutlineResponse(chapters=chapters)
+            except ValueError as e:
+                log_event("warn", "outline_parse_failed", attempt=attempt, error=str(e)[:160])
+    raise HTTPException(status_code=422, detail="outline could not be parsed after 2 attempts")
+
+
+# ── /chapter ────────────────────────────────────────────────────────────────
+
+class ChapterRequest(BaseModel):
+    topic: str
+    language: str = "es"
+    outline: list[dict]
+    chapter_index: int          # 1-based
+    running_summary: str = ""
+    is_final: bool = False
+    model: str = "xianxia-llm"
+
+
+class ChapterResponse(BaseModel):
+    text: str
+    running_summary: str
+    words: int
+
+
+def _outline_block(outline: list[dict]) -> str:
+    return "\n".join(
+        f'{c.get("index")}. {c.get("title", "")} — {c.get("synopsis", "")}' for c in outline
+    )
+
+
+@router.post("/chapter", response_model=ChapterResponse)
+async def generate_chapter(req: ChapterRequest) -> ChapterResponse:
+    language_name = _LANG_TO_NAME.get(req.language, "English")
+    ch = next((c for c in req.outline if c.get("index") == req.chapter_index), None)
+    if ch is None:
+        raise HTTPException(status_code=422, detail="chapter_index not in outline")
+    final_clause = (
+        "This IS the final chapter: after the beats, deliver a narrative "
+        f"resolution that echoes the opening, then a short {language_name} "
+        "audience CTA (like, share, subscribe, thanks)."
+        if req.is_final else
+        "This is NOT the final chapter: keep building, do not close."
+    )
+    prompt = CHAPTER_PROMPT_TEMPLATE.format(
+        topic=req.topic,
+        language_name=language_name,
+        outline_block=_outline_block(req.outline),
+        running_summary=req.running_summary or "(this is the first chapter)",
+        chapter_index=req.chapter_index,
+        chapter_title=ch.get("title", ""),
+        chapter_synopsis=ch.get("synopsis", ""),
+        chapter_beats="; ".join(ch.get("beats", [])) or "(use your judgement)",
+        target_words=ch.get("target_words", 0) or 350,
+        final_clause=final_clause,
+    )
+    system_prompt = (
+        f"YOU MUST WRITE THE ENTIRE NARRATION IN {language_name.upper()}. "
+        f"Marker bodies (IMAGE, MUSIC, CHAPTER) stay in English; narration "
+        f"prose is in {language_name}. No exceptions."
+    )
+    log_event(
+        "info", "chapter_start",
+        topic=req.topic[:60], chapter=req.chapter_index, is_final=req.is_final,
+    )
+    async with httpx.AsyncClient(timeout=900.0) as client:
+        try:
+            result = await llm_generate(
+                model=req.model,
+                system=system_prompt,
+                prompt=prompt,
+                options={
+                    "temperature": 0.85,
+                    "top_p": 0.92,
+                    "num_ctx": 16384,
+                    "num_predict": 4096,
+                },
+                think=False,
+                max_continuations=0,
+                client=client,
+                timeout=900.0,
+            )
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
+        chapter_text = (result.get("response") or "").strip()
+        if "[CHAPTER:" not in chapter_text:
+            chapter_text = f'[CHAPTER: {ch.get("title", "")}]\n' + chapter_text
+
+        summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(
+            chapter_index=req.chapter_index,
+            running_summary=req.running_summary or "(nothing yet)",
+            new_chapter=chapter_text[-4000:],
+        )
+        try:
+            s = await llm_generate(
+                model=req.model,
+                system=None,
+                prompt=summary_prompt,
+                options={
+                    "temperature": 0.3,
+                    "num_ctx": 8192,
+                    "num_predict": 700,
+                },
+                think=False,
+                max_continuations=0,
+                client=client,
+                timeout=900.0,
+            )
+            new_summary = (s.get("response") or "").strip()
+        except httpx.HTTPError:
+            new_summary = req.running_summary  # graceful: keep previous
+    log_event(
+        "info", "chapter_done",
+        chapter=req.chapter_index, words=len(chapter_text.split()), has_summary=bool(new_summary),
+    )
+    return ChapterResponse(
+        text=chapter_text,
+        running_summary=new_summary or req.running_summary,
+        words=len(chapter_text.split()),
+    )
 
 
 _LANG_TO_NAME = {
@@ -276,6 +456,28 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
             if is_final:
                 break
 
+    return await _finalize_script(
+        script, req.topic, language_name, req.target_minutes, model,
+        raw_brief or distilled_facts,
+    )
+
+
+async def _finalize_script(
+    script: str,
+    topic: str,
+    language_name: str,
+    target_minutes: int,
+    model: str,
+    context_brief: str = "",
+) -> ScriptResponse:
+    """Shared post-processing block for both /script and /script/postprocess.
+
+    Accepts the raw assembled script text plus the minimal context needed to
+    run every post-processing step (setting_tag, image-prompt grounding,
+    auto-marker injection, subject diversification) and returns the fully
+    processed ScriptResponse.  The short path (/script) is byte-identical to
+    its previous behaviour — this is a pure extract-method refactor.
+    """
     narration, markers = parse_markers(script)
     word_count = len(narration.split())
     # ~150 words per minute narration in English
@@ -288,7 +490,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
     # actual TTS duration. Higher counts let the storytelling stay coherent
     # with the script — fewer images means the visuals drift away from
     # what's being narrated.
-    expected_min = max(5, req.target_minutes * 5)
+    expected_min = max(5, target_minutes * 5)
     log_event(
         "info",
         "script_generate_done",
@@ -297,7 +499,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
         markers_total=len(markers),
         markers_image=len(image_markers),
         markers_image_expected_min=expected_min,
-        truncated=word_count < req.target_minutes * 100,
+        truncated=word_count < target_minutes * 100,
     )
     # Safety net: if Gemma produced far fewer image markers than the script
     # length warrants, weave in evenly-spaced auto-markers whose prompt is
@@ -309,7 +511,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
     # Renaissance — the setting tag matches THAT world. No hardcoded
     # culture list, no examples of other topics that could bleed in.
     setting_tag = await _generate_setting_tag(
-        req.topic, model=model, context_brief=raw_brief or distilled_facts,
+        topic, model=model, context_brief=context_brief,
     )
 
     if len(image_markers) < expected_min:
@@ -317,7 +519,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
             narration=narration,
             existing=markers,
             target_count=expected_min,
-            topic=req.topic,
+            topic=topic,
             setting_tag=setting_tag,
         )
         image_markers = [m for m in markers if m.kind == "image"]
@@ -350,7 +552,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
     #      default to jade-green.
     markers = await _rewrite_image_prompts_from_narration(
         narration, markers,
-        topic=req.topic,
+        topic=topic,
         setting_tag=setting_tag,
         language_name=language_name,
         model=model,
@@ -364,7 +566,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
     if adaptation_hits:
         log_event(
             "warning", "narration_adaptation_leak_detected",
-            topic=req.topic,
+            topic=topic,
             hits=len(adaptation_hits),
             samples=list({h.lower() for h in adaptation_hits})[:6],
         )
@@ -388,6 +590,23 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
         word_count=word_count,
         estimated_seconds=estimated_seconds,
         setting_tag=setting_tag or None,
+    )
+
+
+class PostprocessRequest(BaseModel):
+    script: str
+    topic: str
+    languages: list[str] = ["es"]
+    target_minutes: int
+    model: str = "xianxia-llm"
+
+
+@router.post("/postprocess", response_model=ScriptResponse)
+async def postprocess_script(req: PostprocessRequest) -> ScriptResponse:
+    language_name = _LANG_TO_NAME.get((req.languages or ["en"])[0], "English")
+    return await _finalize_script(
+        req.script, req.topic, language_name, req.target_minutes,
+        req.model, "",
     )
 
 

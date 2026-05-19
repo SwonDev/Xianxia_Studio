@@ -390,6 +390,20 @@ export interface PhaseUpdate {
   message: string;
 }
 
+/** Emitted by the long-form chapter loop for each chapter written or resumed. */
+export interface ChapterUpdate {
+  project_id: string;
+  index: number;
+  total: number;
+  title: string;
+  status: string;
+  words: number;
+  /** Wall-clock ETA in seconds for remaining chapters. Present only after
+   *  ≥1 fresh chapter completes; undefined/null when writing pre-emit or
+   *  resumed chapters. */
+  eta_seconds?: number | null;
+}
+
 export interface ImageReadyEvent {
   project_id: string;
   index: number;
@@ -490,6 +504,8 @@ export const tauri = {
   listProjects: () => invoke<Project[]>('list_projects'),
   listScheduled: () => invoke<ScheduledUpload[]>('list_scheduled'),
   cancelScheduled: (id: string) => invoke<void>('cancel_scheduled', { id }),
+  resetProjectProgress: (projectId: string) =>
+    invoke<void>('reset_project_progress', { projectId }),
   createProject: (args: { title: string; topic: string; languages: string[] }) =>
     invoke<Project>('create_project', { args }),
   startGeneration: (args: GenerateRequest) =>
@@ -634,6 +650,8 @@ export const events = {
     listen<{ project_id: string; error: string }>('pipeline:error', (e) => cb(e.payload)),
   onImageReady: (cb: (p: ImageReadyEvent) => void): Promise<UnlistenFn> =>
     listen<ImageReadyEvent>('pipeline:image_ready', (e) => cb(e.payload)),
+  onChapterProgress: (cb: (p: ChapterUpdate) => void): Promise<UnlistenFn> =>
+    listen<ChapterUpdate>('pipeline:chapter', (e) => cb(e.payload)),
   onYoutubeConnected: (cb: () => void): Promise<UnlistenFn> =>
     listen<unknown>('youtube:connected', () => cb()),
   onYoutubeError: (cb: (msg: string) => void): Promise<UnlistenFn> =>
