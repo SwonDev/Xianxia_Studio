@@ -11,6 +11,7 @@ import { useState } from 'react';
 import { Link, useRouterState } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { motion, useReducedMotion } from 'motion/react';
+import { MacTitlebar } from '@/components/mac-titlebar';
 import {
   House,
   Sparkle,
@@ -126,13 +127,23 @@ export function Sidebar() {
         overflow: 'hidden',
       }}
     >
-      {/* Drag region — keeps the window draggable here and the nav
-          vertically aligned with the native title bar. No fake macOS
-          traffic-light dots: the real OS window controls are used. */}
+      {/* macOS-style title bar. The window is frameless
+          (`decorations:false`), so the traffic lights here ARE the
+          window controls (functional, not decoration). The whole strip
+          is the drag region; the buttons opt out by not carrying the
+          attribute. Height matches the Topbar so the chrome aligns. */}
       <div
         data-tauri-drag-region
-        style={{ height: 'var(--toolbar-h)', flexShrink: 0 }}
-      />
+        style={{
+          height: 'var(--toolbar-h)',
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          paddingLeft: collapsed ? 8 : 14,
+        }}
+      >
+        <MacTitlebar collapsed={collapsed} />
+      </div>
 
       <nav style={{ flex: 1, padding: collapsed ? '4px 8px' : '4px 10px', overflowY: 'auto', overflowX: 'hidden' }}>
         {NAV_GROUPS.map((g) => (

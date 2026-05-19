@@ -6,6 +6,39 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-05-19
+
+### Ventana estilo macOS 2026 (frameless + vibrancy + semáforos funcionales)
+
+La ventana del programa deja de usar el marco nativo de Windows y pasa a
+ser una ventana **estilo macOS 2026**: sin decoración del SO, esquinas
+redondeadas, material translúcido y semáforos **funcionales** (no el
+adorno falso de v0.6.0).
+
+- **Frameless + vibrancy** — `tauri.conf.json`: `decorations:false` +
+  `transparent:true` + `windowEffects:{ effects:["acrylic"],
+  color:[20,20,27,205] }`. En Windows 11 una ventana sin decoración con
+  `shadow:true` obtiene **esquinas redondeadas nativas** del DWM (sin
+  hacks CSS). Configuración verificada contra la doc vigente de Tauri 2.
+- **Material translúcido real** — el fondo del lienzo
+  (`globals.css`) pasa de opaco a un velo graphite semitransparente
+  (alpha 0.72), de modo que el acrylic nativo difumina lo que hay
+  detrás de la ventana (vibrancy) sin sacrificar legibilidad. El resto
+  del sistema "Liquid Glass" queda intacto.
+- **Semáforos funcionales** — nuevo `MacTitlebar`: rojo = cerrar,
+  amarillo = minimizar, verde = maximizar/restaurar, vía
+  `getCurrentWindow()` de `@tauri-apps/api`. Los glyphs (✕ ─ +) aparecen
+  al pasar el cursor por el grupo, igual que macOS. Viven en el strip
+  superior izquierdo (que sigue siendo `data-tauri-drag-region`, así que
+  la ventana se arrastra desde ahí). No-op seguro en modo navegador.
+- **Arranque maximizado** conservado (v0.6.1).
+
+> Nota: el efecto vibrancy/acrylic sólo es observable ejecutando la app
+> en Windows 11; la validación estática (tsc + build + parity +
+> `cargo check` que valida el schema de Tauri) confirma que compila y la
+> configuración es válida, pero el acabado visual final se verifica al
+> abrir el instalador.
+
 ## [0.6.1] — 2026-05-19
 
 ### Pulido de UI — ventana nativa, arranque maximizado, biblioteca por formato
