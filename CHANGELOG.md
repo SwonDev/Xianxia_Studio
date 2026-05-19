@@ -60,6 +60,14 @@ subagentes con doble revisión (spec + calidad) por tarea.
 > implementación). Debe correrse contra un sidecar+LLM vivo, o validarse
 > generando un vídeo largo desde la app, antes de considerar la feature
 > probada de extremo a extremo. No se fabricó ningún resultado.
+>
+> **Fast-follow conocido:** `/script/postprocess` invoca `_finalize_script`
+> con `context_brief=""`, así que en long-form el `setting_tag` se genera
+> sin el brief RAG de Wikipedia (el camino corto sí lo pasa). El tag aún
+> se infiere del topic vía el fallback puro, pero para vídeos de 20 min la
+> deriva de ambientación es medible. Cerrarlo requiere que el lado Rust
+> recopile y envíe un `context_brief` al postprocess (mejora aditiva, no
+> bloqueante; el resto de la feature es correcto).
 
 ## [0.4.0] — 2026-05-19
 

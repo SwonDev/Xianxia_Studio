@@ -1,4 +1,4 @@
-﻿//! Pipeline orchestration — coordinates the 10-phase production via the Python +
+//! Pipeline orchestration — coordinates the 10-phase production via the Python +
 //! Node sidecars and persists state to SQLite.
 
 use anyhow::{Context, Result};
@@ -834,7 +834,7 @@ async fn run(
                     "topic": req.topic,
                     "languages": req.languages,
                     "target_minutes": req.target_minutes,
-                    "model": req.llm_model.clone().unwrap_or_else(|| "xianxia-llm".into()),
+                    "model": llm_model.clone(),
                 }))
                 .send()
                 .await
