@@ -1312,6 +1312,149 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.6.0 LTX-2.3 opt-in) ────────────────────────────────────────
+
+// ── (v0.6.0 #1) hardware.rs LtxCapability enum + thresholds ─────────
+//   8 GB → None (dev box never runs LTX). Regresses instantly if someone
+//   lowers the thresholds and accidentally enables LTX on 8 GB cards.
+{
+  const hw = join(ROOT, 'apps/desktop/src-tauri/src/hardware.rs');
+  check(
+    'hardware.rs defines enum LtxCapability {None,Gguf,Full} + ltx_capability_for_vram with >= 32.0 and >= 24.0 thresholds',
+    contains(hw, 'enum LtxCapability')
+      && contains(hw, 'None,')
+      && contains(hw, 'Gguf,')
+      && contains(hw, 'Full,')
+      && contains(hw, 'fn ltx_capability_for_vram')
+      && contains(hw, '>= 32.0')
+      && contains(hw, '>= 24.0'),
+    'conservative thresholds: 32 GB → Full, 24 GB → Gguf, everything else (incl. 8 GB dev box) → None — lowering them enables LTX where it cannot fit VRAM',
+  );
+}
+
+// ── (v0.6.0 #2) DEFAULT BYTE-IDENTICAL invariant ────────────────────
+//   Triple-gate ensures LTX only runs when all three conditions are true.
+//   The legacy HyperFrames path must remain untouched (default preserved).
+{
+  const pipe = join(ROOT, 'apps/desktop/src-tauri/src/pipeline/mod.rs');
+  check(
+    'pipeline/mod.rs has triple-gate (ltx_video_capability + ltx_models_installed + use_ltx_video), video_engine=="ltx" guard, and legacy try_hyperframes_render / /render/narrative path',
+    contains(pipe, 'ltx_video_capability')
+      && contains(pipe, 'ltx_models_installed')
+      && contains(pipe, 'use_ltx_video')
+      && contains(pipe, 'video_engine == "ltx"')
+      && contains(pipe, 'try_hyperframes_render')
+      && contains(pipe, '/render/narrative'),
+    'all three gate conditions must be present; the "ltx" guard isolates LTX work; try_hyperframes_render + /render/narrative must not be removed (default path byte-identical)',
+  );
+}
+
+// ── (v0.6.0 #3) Gguf branch requires all 4 canonical model files ─────
+//   The 4th file (embeddings_connectors) was the gate-honesty fix.
+//   Dropping it from the check would let a stale branch falsely claim Gguf-ready.
+{
+  const pipe = join(ROOT, 'apps/desktop/src-tauri/src/pipeline/mod.rs');
+  check(
+    'pipeline/mod.rs ltx_models_installed Gguf branch checks all 4 canonical files including ltx-2.3-22b-dev_embeddings_connectors.safetensors',
+    contains(pipe, 'ltx-2.3-22b-dev-Q4_K_M.gguf')
+      && contains(pipe, 'ltx-2.3-22b-dev_video_vae.safetensors')
+      && contains(pipe, 'comfy_gemma_3_12B_it.safetensors')
+      && contains(pipe, 'ltx-2.3-22b-dev_embeddings_connectors.safetensors'),
+    '4th file (embeddings_connectors) was the gate-honesty fix — dropping it lets the installer falsely claim Gguf-ready with only 3 of 4 files present',
+  );
+}
+
+// ── (v0.6.0 #4) Per-beat fallback present in LTX branch ─────────────
+//   Failed beats must keep their HyperFrames still rather than aborting.
+{
+  const pipe = join(ROOT, 'apps/desktop/src-tauri/src/pipeline/mod.rs');
+  check(
+    'pipeline/mod.rs LTX branch has per-beat fallback: ltx_clip_path key + warn "fallback HyperFrames"',
+    contains(pipe, 'ltx_clip_path')
+      && contains(pipe, 'fallback HyperFrames'),
+    'a failed LTX beat must keep its still image via the HyperFrames path — missing fallback makes one bad beat abort the entire video',
+  );
+}
+
+// ── (v0.6.0 #5) installer manifest + runner: ltx23-video component ───
+//   required:false + real install_ltx23_video function (no "not yet implemented" stub).
+{
+  const manifest = join(ROOT, 'apps/desktop/src-tauri/src/installer/manifest.rs');
+  const runner  = join(ROOT, 'apps/desktop/src-tauri/src/installer/runner.rs');
+  check(
+    'manifest.rs declares Component id "ltx23-video" with required:false; runner.rs has install_ltx23_video and no "not yet implemented" stub',
+    contains(manifest, '"ltx23-video"')
+      && contains(manifest, 'required: false')
+      && contains(runner, 'install_ltx23_video')
+      && !contains(runner, 'ltx23-video runner not yet implemented'),
+    'ltx23-video must be an optional component with a real (non-stub) installer — a stub would silently succeed and leave the user without the models',
+  );
+}
+
+// ── (v0.6.0 #6) ltx_video.py /clip route + server.py mounts router ───
+//   Workflow files for both Full and Gguf variants must also be present.
+{
+  const ltxRoute = join(ROOT, 'apps/sidecar-py/src/xianxia_ai/routes/ltx_video.py');
+  const serverPy = join(ROOT, 'apps/sidecar-py/server.py');
+  const wfGguf   = join(ROOT, 'apps/sidecar-py/src/xianxia_ai/workflows/ltx23_video_gguf.json');
+  const wfFull   = join(ROOT, 'apps/sidecar-py/src/xianxia_ai/workflows/ltx23_video.json');
+  check(
+    'ltx_video.py defines /clip route; server.py registers ltx_video router; both workflow JSONs exist',
+    contains(ltxRoute, '/clip')
+      && contains(serverPy, 'ltx_video')
+      && existsSync(wfGguf)
+      && existsSync(wfFull),
+    'the /clip endpoint is what the Rust pipeline calls per beat; the server must mount it and both workflow files must exist',
+  );
+}
+
+// ── (v0.6.0 #7) workflow↔installer coherence guard ──────────────────
+//   gguf JSON must reference the Q4_K_M file (not the fp8 full variant).
+//   full JSON must reference the fp8 file (not the wrong .safetensors base).
+//   Regression guard for the coherence fix — wrong filenames = ComfyUI error.
+{
+  const wfGguf = join(ROOT, 'apps/sidecar-py/src/xianxia_ai/workflows/ltx23_video_gguf.json');
+  const wfFull = join(ROOT, 'apps/sidecar-py/src/xianxia_ai/workflows/ltx23_video.json');
+  check(
+    'ltx23_video_gguf.json references ltx-2.3-22b-dev-Q4_K_M.gguf (not the wrong base .gguf)',
+    contains(wfGguf, 'ltx-2.3-22b-dev-Q4_K_M.gguf')
+      && !contains(wfGguf, '"ltx-2.3-22b-dev.gguf"'),
+    'wrong filename in the GGUF workflow would cause ComfyUI to 404 on model load at generation time',
+  );
+  check(
+    'ltx23_video.json references ltx-2.3-22b-dev-fp8.safetensors (not the wrong base .safetensors)',
+    contains(wfFull, 'ltx-2.3-22b-dev-fp8.safetensors')
+      && !contains(wfFull, '"ltx-2.3-22b-dev.safetensors"'),
+    'wrong filename in the Full workflow would cause ComfyUI to 404 on model load at generation time',
+  );
+}
+
+// ── (v0.6.0 #8) UI gated/no-mock: generator.tsx uses ltxCapability ───
+//   Gate must be !== 'none'. Neither file may contain Math.random( or <canvas.
+{
+  const genTsx  = join(ROOT, 'apps/desktop/src/routes/generator.tsx');
+  const setTsx  = join(ROOT, 'apps/desktop/src/routes/settings.tsx');
+  check(
+    'generator.tsx uses ltxCapability with !== "none" gate; no Math.random( or <canvas in generator or settings',
+    contains(genTsx, 'ltxCapability')
+      && contains(genTsx, "!== 'none'")
+      && !contains(genTsx, 'Math.random(')
+      && !contains(genTsx, '<canvas')
+      && !contains(setTsx, 'Math.random(')
+      && !contains(setTsx, '<canvas'),
+    'LTX panel must be gated behind the capability check; Math.random/canvas are banned per DESIGN.md (sin partículas rule)',
+  );
+}
+
+// ── (v0.6.0 #9) verify-upstream artifact present ────────────────────
+{
+  check(
+    'docs/superpowers/ltx23-pinned-facts.md exists (verify-upstream artifact)',
+    existsSync(join(ROOT, 'docs/superpowers/ltx23-pinned-facts.md')),
+    'the verify-upstream doc must be committed so future sessions can check pinned model filenames without re-querying the HF API',
+  );
+}
+
 // ── Result ─────────────────────────────────────────────────────────
 console.log();
 if (failures.length === 0) {
