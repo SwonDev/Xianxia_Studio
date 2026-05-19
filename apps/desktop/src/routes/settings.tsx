@@ -5,12 +5,13 @@ import {
   Warning, Cpu, YoutubeLogo, Database, Robot, DownloadSimple, LinkSimple,
   LinkBreak, Key, ShieldCheck, ArrowsClockwise, CheckCircle, XCircle,
   MusicNotes, FolderOpen, Trash, Plus, Sparkle, CaretRight, ShareNetwork,
+  FilmSlate,
   type Icon as PhosphorIcon,
 } from '@phosphor-icons/react';
 import { UpdaterPanel } from '@/components/updater-panel';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { tauri, events, type CheckItem, type MusicLibrary, type SidecarState } from '@/lib/tauri';
+import { tauri, events, type CheckItem, type MusicLibrary, type SidecarState, type LtxCapability } from '@/lib/tauri';
 import { formatBytes } from '@/lib/utils';
 import { PageHeader } from '@/components/ui-glass';
 
@@ -91,6 +92,10 @@ function SettingsRoute() {
 
       <Section title="Componentes opcionales (autoinstalables)" icon={DownloadSimple} defaultOpen>
         <OptionalComponentsPanel />
+      </Section>
+
+      <Section title="Vídeo real (LTX-2.3)" icon={FilmSlate}>
+        <LtxVideoPanel />
       </Section>
 
       <Section title="Biblioteca de música" icon={MusicNotes}>
@@ -951,6 +956,115 @@ function FeatureCard({
           {busy ? <ArrowsClockwise size={13} className="pulse" /> : <DownloadSimple size={13} />}
           {busy ? 'Instalando…' : 'Instalar'}
         </button>
+      )}
+    </div>
+  );
+}
+
+// ── v0.6.0 — LTX-2.3 informative + install panel ────────────────────────────
+
+function LtxVideoPanel() {
+  const qc = useQueryClient();
+  const { data: cap } = useQuery<LtxCapability>({
+    queryKey: ['ltx-capability'],
+    queryFn: tauri.ltxCapability,
+    staleTime: 10 * 60_000,
+  });
+  const { data: installed, refetch: refetchInstalled } = useQuery<boolean>({
+    queryKey: ['ltx-models-installed'],
+    queryFn: tauri.ltxModelsInstalled,
+    staleTime: 30_000,
+    refetchInterval: (q) => {
+      if (!cap || cap === 'none') return false;
+      if (q.state.data === true) return false;
+      return 10_000;
+    },
+  });
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const capLabel =
+    !cap || cap === 'none'
+      ? 'No disponible (requiere ≥ 24 GB VRAM · tu GPU no cumple el mínimo)'
+      : cap === 'gguf'
+      ? 'GGUF cuantizado (≥ 24 GB VRAM) · detectado'
+      : 'Completo fp8 (≥ 32 GB VRAM) · detectado';
+
+  const handleInstall = async () => {
+    setBusy(true); setError(null); setProgress('Iniciando…');
+    try {
+      await tauri.installOptionalComponent('ltx23-video');
+      setProgress('Instalado. Verificando modelos…');
+      await refetchInstalled();
+      qc.invalidateQueries({ queryKey: ['ltx-models-installed'] });
+      setProgress('');
+    } catch (e) {
+      setError(String(e));
+      setProgress('');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <p className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
+        LTX-2.3 es el motor de vídeo neuronal de Lightricks. Requiere mínimo{' '}
+        <strong style={{ color: 'var(--text-primary)' }}>24 GB VRAM</strong> (GGUF Q4) o{' '}
+        <strong style={{ color: 'var(--text-primary)' }}>32 GB VRAM</strong> (fp8 completo).
+        En equipos no compatibles el pipeline siempre usa <strong style={{ color: 'var(--text-primary)' }}>
+        Imágenes + HyperFrames</strong> (motor por defecto, sin cambios).
+      </p>
+      <Row label="Capacidad detectada" value={capLabel} highlight={cap !== undefined && cap !== 'none'} />
+      {cap && cap !== 'none' && (
+        <>
+          <Row
+            label="Modelos instalados"
+            value={installed === undefined ? '…' : installed ? '✓ Sí' : '✗ No — pendiente de descarga'}
+            highlight={installed === true}
+          />
+          <div
+            data-testid="ltx-settings-feature"
+            style={{
+              borderRadius: 10,
+              padding: 12,
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 12,
+              background: 'rgba(255,255,255,0.04)',
+              boxShadow: installed ? '0 0 0 0.5px rgba(127, 168, 216,0.35)' : 'inset 0 0.5px 0 rgba(255,255,255,0.06)',
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <h4 style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>LTX-2.3 ({cap === 'gguf' ? 'GGUF Q4_K_M' : 'fp8'})</h4>
+                <span className="caption" style={{ fontSize: 10 }}>· {cap === 'gguf' ? '≈60 GB' : '≈70 GB'}</span>
+                {installed && (
+                  <span style={{ fontSize: 10, textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em', color: 'var(--accent-soft)', background: 'rgba(212, 184, 90,0.15)', padding: '1px 6px', borderRadius: 4 }}>
+                    ✓ Instalado
+                  </span>
+                )}
+              </div>
+              <p className="caption" style={{ marginTop: 4, lineHeight: 1.5 }}>
+                Motor de vídeo neuronal real. Actívalo por vídeo desde el Generador una vez instalado.
+                El motor por defecto (Imágenes + HyperFrames) no se modifica.
+              </p>
+              {progress && (
+                <div className="mono" style={{ fontSize: 11, color: 'var(--gold-soft)', marginTop: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {progress}
+                </div>
+              )}
+              {error && <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 8 }}>{error}</div>}
+            </div>
+            {!installed && (
+              <button className="btn-primary" onClick={handleInstall} disabled={busy} data-testid="ltx-install-settings-btn">
+                {busy ? <ArrowsClockwise size={13} className="pulse" /> : <DownloadSimple size={13} />}
+                {busy ? 'Instalando…' : 'Instalar'}
+              </button>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

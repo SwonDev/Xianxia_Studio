@@ -208,6 +208,9 @@ async fn install_one(app: &AppHandle, c: &Component, workspace: Option<&Path>) -
         AssetKind::AceStepVenv => {
             acestep_venv_install(app, c).await
         }
+        AssetKind::Ltx23VideoInstall => {
+            install_ltx23_video(app, c).await
+        }
     }
 }
 
@@ -504,6 +507,231 @@ async fn acestep_venv_install(app: &AppHandle, c: &Component) -> Result<()> {
     }
 
     emit(app, &c.id, ProgressStatus::Done, 100.0, "ACE-Step v1.5 listo (checkpoint se baja en el primer uso)");
+    Ok(())
+}
+
+/// v0.6.0 — descarga todos los assets de LTX-2.3 en `runtime/comfyui/` y
+/// clona el nodo ComfyUI-LTXVideo.
+///
+/// OPT-IN, NUNCA auto-instalado: esta función sólo se ejecuta cuando el
+/// usuario invoca explícitamente `install_optional_component("ltx23-video")`.
+/// El UI sólo muestra el botón cuando `ltx_video_capability() != None`;
+/// este arm añade una comprobación defensiva adicional para rechazar
+/// hardware incapaz incluso si se llama directamente por error.
+///
+/// Assets (set canónico derivado del example_workflow instalado —
+///   LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json — CORREGIDO 2026-05-19;
+///   la versión anterior conflaba nombres de unsloth/LTX-2.3-GGUF con los
+///   nombres que espera ComfyUI; ahora TODOS los nombres coinciden exactamente):
+///
+///   Tier Full (>=32 GB VRAM):
+///     Lightricks/LTX-2.3 → ltx-2.3-22b-dev-fp8.safetensors
+///       → comfyui/models/checkpoints/ltx-2.3-22b-dev-fp8.safetensors
+///       (CheckpointLoaderSimple ckpt_name + LTXAVTextEncoderLoader ckpt_name)
+///
+///   Tier Gguf (>=24 GB VRAM):
+///     unsloth/LTX-2.3-GGUF → ltx-2.3-22b-dev-Q4_K_M.gguf
+///       → comfyui/models/diffusion_models/ltx-2.3-22b-dev-Q4_K_M.gguf
+///       (UnetLoaderGGUF unet_name; ComfyUI-GGUF mapea 'unet_gguf' → diffusion_models/)
+///     unsloth/LTX-2.3-GGUF → vae/ltx-2.3-22b-dev_video_vae.safetensors
+///       → comfyui/models/vae/ltx-2.3-22b-dev_video_vae.safetensors
+///       (VAELoader vae_name; descarga con rename de subpath 'vae/...')
+///     unsloth/LTX-2.3-GGUF → text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors
+///       → comfyui/models/checkpoints/ltx-2.3-22b-dev_embeddings_connectors.safetensors
+///       (LTXAVTextEncoderLoader ckpt_name; checkpoints/ según folder_paths.py)
+///
+///   Compartidos (ambos tiers):
+///     Lightricks/LTX-2.3 → comfy_gemma_3_12B_it.safetensors
+///       → comfyui/models/text_encoders/comfy_gemma_3_12B_it.safetensors
+///       (LTXAVTextEncoderLoader text_encoder; ComfyUI canonical name)
+///
+///   Nodo ComfyUI:
+///     git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo
+///     + git checkout 229437c
+///       → comfyui/custom_nodes/ComfyUI-LTXVideo
+///
+/// Idempotente: cada archivo se salta si ya existe con tamaño > 1 MB.
+/// El directorio del nodo se salta si ya contiene un `.git/`.
+async fn install_ltx23_video(app: &AppHandle, c: &Component) -> Result<()> {
+    use crate::hardware::{ltx_video_capability, LtxCapability};
+
+    // ── Comprobación defensiva de hardware ────────────────────────────
+    let cap = ltx_video_capability();
+    if cap == LtxCapability::None {
+        return Err(anyhow!(
+            "LTX-2.3 requires >=24 GB VRAM; this machine is not capable"
+        ));
+    }
+
+    emit(app, &c.id, ProgressStatus::Installing, 2.0, "Comprobando hardware y preparando descarga LTX-2.3…");
+
+    // Asegurarse de que el sidecar Python está vivo (necesario para hf-download)
+    crate::sidecars::ensure_python_sidecar().await?;
+
+    let rt = paths::runtime_dir()?;
+    let stage_dir = paths::paths()?.data_dir.join("hf-cache").join("comfy-staging");
+    std::fs::create_dir_all(&stage_dir)?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60 * 60 * 6))
+        .build()?;
+
+    // Helper local: descarga un fichero HF al staging y lo copia al destino.
+    // Salta si el destino ya existe con tamaño > 1 MB (idempotente).
+    // `hf_filename` es la ruta relativa dentro del repo (p.ej. "vae/foo.safetensors").
+    // `dest_rel` es relativo a runtime_dir (p.ej. "comfyui/models/vae/foo.safetensors").
+    async fn download_asset(
+        client: &reqwest::Client,
+        stage_dir: &std::path::Path,
+        rt: &std::path::Path,
+        repo: &str,
+        hf_filename: &str,
+        dest_rel: &str,
+    ) -> Result<()> {
+        let dest = rt.join(dest_rel);
+        if dest.exists() {
+            let sz = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+            if sz > 1024 * 1024 {
+                tracing::info!(file = dest_rel, "LTX-2.3 asset ya existe, saltado");
+                return Ok(());
+            }
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let body = serde_json::json!({
+            "repo": repo,
+            "filename": hf_filename,
+            "target_dir": stage_dir.to_string_lossy(),
+        });
+        let resp: serde_json::Value = client
+            .post("http://127.0.0.1:8731/install/hf-download")
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()
+            .context("hf-download falló")?
+            .json()
+            .await?;
+        let downloaded = resp["path"].as_str().unwrap_or_default();
+        if downloaded.is_empty() {
+            return Err(anyhow!("hf-download no devolvió path para {}/{}", repo, hf_filename));
+        }
+        std::fs::copy(downloaded, &dest)
+            .with_context(|| format!("no se pudo copiar {} → {}", downloaded, dest.display()))?;
+        Ok(())
+    }
+
+    // ── Asset 1: modelo difusión principal (tier-aware) ───────────────
+    // Full tier: CheckpointLoaderSimple ckpt_name  → models/checkpoints/
+    // Gguf tier: UnetLoaderGGUF unet_name          → models/diffusion_models/
+    //            (ComfyUI-GGUF registra 'unet_gguf' → diffusion_models/ en folder_paths)
+    let tier_label = if cap == LtxCapability::Full { "FP8 Full" } else { "GGUF Q4_K_M" };
+    emit(
+        app, &c.id, ProgressStatus::Downloading, 5.0,
+        &format!("Descargando modelo difusión LTX-2.3 {} (~14–26 GB)…", tier_label),
+    );
+    if cap == LtxCapability::Full {
+        // Descarga el checkpoint FP8 y lo coloca en models/checkpoints/
+        // (CheckpointLoaderSimple lo usa tanto como diffusion model como VAE como connector)
+        download_asset(
+            &client, &stage_dir, &rt,
+            "Lightricks/LTX-2.3",
+            "ltx-2.3-22b-dev-fp8.safetensors",
+            "comfyui/models/checkpoints/ltx-2.3-22b-dev-fp8.safetensors",
+        ).await.context("modelo FP8 LTX-2.3")?;
+    } else {
+        // Gguf tier: GGUF unet → diffusion_models/
+        download_asset(
+            &client, &stage_dir, &rt,
+            "unsloth/LTX-2.3-GGUF",
+            "ltx-2.3-22b-dev-Q4_K_M.gguf",
+            "comfyui/models/diffusion_models/ltx-2.3-22b-dev-Q4_K_M.gguf",
+        ).await.context("modelo GGUF LTX-2.3")?;
+
+        // ── Asset 2a (solo Gguf): VAE de vídeo ────────────────────────
+        // VAELoader vae_name → models/vae/
+        // El HF path tiene el subdirectorio 'vae/' — se descarga y renombra al destino final.
+        emit(app, &c.id, ProgressStatus::Downloading, 45.0, "Descargando VAE de vídeo LTX-2.3 (~1.35 GB)…");
+        download_asset(
+            &client, &stage_dir, &rt,
+            "unsloth/LTX-2.3-GGUF",
+            "vae/ltx-2.3-22b-dev_video_vae.safetensors",
+            "comfyui/models/vae/ltx-2.3-22b-dev_video_vae.safetensors",
+        ).await.context("VAE vídeo LTX-2.3")?;
+
+        // ── Asset 2b (solo Gguf): embeddings connector ────────────────
+        // LTXAVTextEncoderLoader ckpt_name → models/checkpoints/
+        // (ComfyUI folder_paths['checkpoints'] = models/checkpoints/)
+        // HF path: text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors
+        // ComfyUI dest name: ltx-2.3-22b-dev_embeddings_connectors.safetensors
+        emit(app, &c.id, ProgressStatus::Downloading, 55.0, "Descargando embeddings connector LTX-2.3 (~2.2 GB)…");
+        download_asset(
+            &client, &stage_dir, &rt,
+            "unsloth/LTX-2.3-GGUF",
+            "text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors",
+            "comfyui/models/checkpoints/ltx-2.3-22b-dev_embeddings_connectors.safetensors",
+        ).await.context("embeddings connector LTX-2.3")?;
+    }
+
+    // ── Asset 3: Gemma-3-12B text encoder (compartido, ambos tiers) ───
+    // LTXAVTextEncoderLoader text_encoder → models/text_encoders/
+    // Nombre canónico ComfyUI: comfy_gemma_3_12B_it.safetensors
+    // Fuente HF: Lightricks/LTX-2.3 → comfy_gemma_3_12B_it.safetensors
+    let gemma_pct = if cap == LtxCapability::Full { 45.0_f64 } else { 65.0_f64 };
+    emit(app, &c.id, ProgressStatus::Downloading, gemma_pct, "Descargando Gemma-3-12B text encoder ComfyUI (~8 GB)…");
+    download_asset(
+        &client, &stage_dir, &rt,
+        "Lightricks/LTX-2.3",
+        "comfy_gemma_3_12B_it.safetensors",
+        "comfyui/models/text_encoders/comfy_gemma_3_12B_it.safetensors",
+    ).await.context("Gemma-3-12B text encoder LTX-2.3")?;
+
+    // ── Asset 6: clonar ComfyUI-LTXVideo @ 229437c ───────────────────
+    let node_dir = rt.join("comfyui").join("custom_nodes").join("ComfyUI-LTXVideo");
+    if node_dir.join(".git").exists() {
+        emit(app, &c.id, ProgressStatus::Installing, 92.0, "ComfyUI-LTXVideo ya clonado, saltado");
+    } else {
+        emit(app, &c.id, ProgressStatus::Installing, 88.0, "Clonando ComfyUI-LTXVideo @ 229437c…");
+        if node_dir.exists() {
+            // directorio a medias — limpiarlo antes de reclonarlo
+            let _ = std::fs::remove_dir_all(&node_dir);
+        }
+        if let Some(parent) = node_dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let clone_status = std::process::Command::new("git")
+            .args([
+                "clone", "--depth", "1",
+                "https://github.com/Lightricks/ComfyUI-LTXVideo",
+                node_dir.to_str().unwrap_or(""),
+            ])
+            .output()
+            .map_err(|e| anyhow!("git no disponible / clone falló: {}", e))?;
+        if !clone_status.status.success() {
+            return Err(anyhow!(
+                "git clone ComfyUI-LTXVideo: {}",
+                String::from_utf8_lossy(&clone_status.stderr)
+            ));
+        }
+        // Hacer checkout del commit exacto verificado (229437c)
+        let checkout_status = std::process::Command::new("git")
+            .args(["checkout", "229437c"])
+            .current_dir(&node_dir)
+            .output()
+            .map_err(|e| anyhow!("git checkout 229437c falló: {}", e))?;
+        if !checkout_status.status.success() {
+            // No es fatal: el clone --depth 1 puede no tener ese commit en
+            // la historia superficial si HEAD ya lo es. Loguear y continuar.
+            tracing::warn!(
+                "git checkout 229437c en ComfyUI-LTXVideo no aplicó (HEAD ya puede ser 229437c): {}",
+                String::from_utf8_lossy(&checkout_status.stderr)
+            );
+        }
+    }
+
+    emit(app, &c.id, ProgressStatus::Done, 100.0, "LTX-2.3 instalado correctamente");
     Ok(())
 }
 

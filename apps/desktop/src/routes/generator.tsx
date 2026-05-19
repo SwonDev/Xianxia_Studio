@@ -3,9 +3,10 @@ import { useEffect, useRef, useState, type ReactNode, type CSSProperties } from 
 import {
   Sparkle, TextT, SpeakerHigh, Image as ImageIcon, MusicNotes,
   FilmSlate, Layout, ClosedCaptioning, UploadSimple, CalendarBlank,
-  Warning, CheckCircle, CircleNotch, Plus, CaretDown,
+  Warning, CheckCircle, CircleNotch, Plus, CaretDown, DownloadSimple,
   type Icon as PhosphorIcon,
 } from '@phosphor-icons/react';
+import { type LtxCapability } from '@/lib/tauri';
 import { useQuery } from '@tanstack/react-query';
 import { tauri, type GenerateRequest } from '@/lib/tauri';
 import { usePipelineStore } from '@/lib/pipelineStore';
@@ -252,6 +253,29 @@ function GeneratorWizard() {
     retry: 1,
   });
 
+  // v0.6.0 — LTX-2.3 opt-in gate queries (cached, low priority)
+  const { data: ltxCapability } = useQuery<LtxCapability>({
+    queryKey: ['ltx-capability'],
+    queryFn: tauri.ltxCapability,
+    staleTime: 10 * 60_000,
+    retry: 1,
+  });
+  const { data: ltxInstalled, refetch: refetchLtxInstalled } = useQuery<boolean>({
+    queryKey: ['ltx-models-installed'],
+    queryFn: tauri.ltxModelsInstalled,
+    staleTime: 30_000,
+    retry: 1,
+    // Only poll while capability is known and models not yet installed
+    refetchInterval: (q) => {
+      if (ltxCapability === 'none' || ltxCapability === undefined) return false;
+      if (q.state.data === true) return false;
+      return 10_000;
+    },
+  });
+  const [useLtxVideo, setUseLtxVideo] = useState(false);
+  const [installingLtx, setInstallingLtx] = useState(false);
+  const [ltxInstallProgress, setLtxInstallProgress] = useState<string>('');
+
   useEffect(() => {
     if (!voices || voices.length === 0) return;
     const ok = voices.some((v) => v.id === voice);
@@ -268,9 +292,32 @@ function GeneratorWizard() {
     });
   }, [topic, minutes, languages, audioLanguage, subtitleLanguages, voice, vertical, animationPreset, captionStyle]);
 
+  const handleInstallLtx = async () => {
+    if (installingLtx) return;
+    setInstallingLtx(true);
+    setLtxInstallProgress('Iniciando descarga…');
+    try {
+      await tauri.installOptionalComponent('ltx23-video');
+      setLtxInstallProgress('Instalado. Verificando modelos…');
+      await refetchLtxInstalled();
+      setLtxInstallProgress('');
+    } catch (e) {
+      setLtxInstallProgress('');
+      toast.error('No se pudieron instalar los modelos LTX-2.3', String(e));
+    } finally {
+      setInstallingLtx(false);
+    }
+  };
+
   const handleStart = async () => {
     if (!topic.trim()) return;
     pipeSeedStarting();
+    // v0.6.0: only send use_ltx_video=true when all three gates pass on the
+    // client side too (defensive — the pipeline Rust layer has the same gate).
+    const ltxOptIn =
+      useLtxVideo &&
+      ltxCapability !== undefined && ltxCapability !== 'none' &&
+      ltxInstalled === true;
     const req: GenerateRequest = {
       topic: topic.trim(),
       languages,
@@ -287,6 +334,7 @@ function GeneratorWizard() {
       caption_style: captionStyle,
       analyze_engagement: analyzeEngagement,
       auto_optimize_engagement: autoOptimizeEngagement,
+      use_ltx_video: ltxOptIn,
     };
     try {
       const id = await tauri.startGeneration(req);
@@ -587,6 +635,65 @@ function GeneratorWizard() {
               </button>
             </div>
           </Field>
+
+          {/* v0.6.0 — Motor de vídeo: solo visible cuando capability !== 'none' */}
+          {ltxCapability !== undefined && ltxCapability !== 'none' && (
+            <Field label="Motor de vídeo">
+              {!ltxInstalled ? (
+                /* Capability ok pero modelos no instalados → ofrecer instalación */
+                <div
+                  data-testid="ltx-install-row"
+                  style={{
+                    borderRadius: 10,
+                    padding: 12,
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 12,
+                    background: 'rgba(255,255,255,0.04)',
+                    boxShadow: 'inset 0 0.5px 0 rgba(255,255,255,0.06)',
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 2 }}>
+                      Vídeo real LTX-2.3
+                      <span className="caption" style={{ marginLeft: 8, fontSize: 10 }}>
+                        · {ltxCapability === 'gguf' ? '≈60 GB (GGUF Q4)' : '≈70 GB (fp8)'}
+                      </span>
+                    </div>
+                    <div className="caption" style={{ lineHeight: 1.5 }}>
+                      Requiere instalar los modelos LTX-2.3 ({ltxCapability === 'gguf' ? 'GGUF cuantizado' : 'fp8 completo'}).
+                      El control se activará cuando la descarga termine.
+                    </div>
+                    {ltxInstallProgress && (
+                      <div className="mono" style={{ fontSize: 11, color: 'var(--gold-soft)', marginTop: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {ltxInstallProgress}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    className="btn-primary"
+                    disabled={installingLtx}
+                    data-testid="ltx-install-btn"
+                    onClick={handleInstallLtx}
+                    style={{ flexShrink: 0 }}
+                  >
+                    {installingLtx
+                      ? <CircleNotch size={13} className="pulse" />
+                      : <DownloadSimple size={13} />}
+                    {installingLtx ? 'Instalando…' : 'Instalar'}
+                  </button>
+                </div>
+              ) : (
+                /* Modelos instalados → toggle habilitado */
+                <Toggle
+                  label="LTX-2.3 vídeo real"
+                  description={`Motor de vídeo neuronal (${ltxCapability === 'gguf' ? 'GGUF cuantizado, ≥24 GB VRAM' : 'fp8 completo, ≥32 GB VRAM'}). Por defecto: Imágenes + HyperFrames.`}
+                  checked={useLtxVideo}
+                  onChange={setUseLtxVideo}
+                />
+              )}
+            </Field>
+          )}
 
           <details data-testid="advanced-options" style={{ marginTop: 8 }}>
             <summary

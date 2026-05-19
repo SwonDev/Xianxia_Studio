@@ -6,6 +6,62 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-19
+
+### LTX-2.3 vídeo real — opción opt-in, tier-gated (enfoque C "capa de movimiento")
+
+Generación de vídeo real con LTX-2.3 (22B) como **opción** para hardware
+capaz. **El método por defecto/principal sigue siendo SIEMPRE
+Z-Image+HyperFrames, byte-idéntico** — LTX es estrictamente aditivo y
+**triple-gateado**: `ltx_video_capability() != None` (auto-detección de
+VRAM) **AND** modelos LTX instalados **AND** opt-in explícito del usuario.
+En máquinas no capaces (p. ej. la RTX 4060 8 GB de desarrollo) no se
+ofrece nada y el programa no cambia en absoluto.
+
+- **Autodetect** — `hardware.rs::ltx_video_capability()` → `None|Gguf|Full`
+  por VRAM (Full ≥ 32 GB, Gguf ≥ 24 GB, None < 24 GB; umbrales conservadores
+  GPU-only, sin CPU offload). 8 GB → None (probado empíricamente: LTX-2.3
+  crashea pre-denoise en 8 GB).
+- **Autoinstall** — `Component` opcional `ltx23-video` (patrón aislado
+  acestep/depthflow) que descarga la variante correcta por tier
+  (FP8 ≥32 GB / GGUF Q4_K_M ≥24 GB) + VAE + connector + text-encoder
+  Gemma-3 + nodos ComfyUI-LTXVideo. Idempotente, sólo opt-in. Nombres de
+  asset verificados upstream (`docs/superpowers/ltx23-pinned-facts.md`).
+- **Autoconfig** — workflows ComfyUI `ltx23_video.json` / `_gguf.json`
+  (espejo de `z_image_turbo*.json`, clases de nodo reales del nodo
+  instalado) + ruta `routes/ltx_video.py /clip` img2video reusando el
+  cliente ComfyUI existente.
+- **Pipeline engine-aware** — fase visual: si `video_engine=="ltx"` cada
+  keyframe ya *grounded* (Z-Image + setting_tag + rewrite-from-narration de
+  v0.5.0, intacto) se anima con LTX-2.3 img2video y se pasa por la MISMA
+  clave `clip_path` que ya consumía `/render/narrative` (precedente
+  DepthFlow → cero cambios en el Node). Fallback automático a HyperFrames
+  por beat ante cualquier fallo. Resume v0.5.0 reutilizado, artefactos
+  LTX engine-namespaced (`ltx_clip_path`, sin mezclar con DepthFlow).
+- **UI** — control "Motor de vídeo" en Generador + sección en Ajustes,
+  **visible/activable sólo** si capability ≠ None y modelos instalados;
+  default Imágenes; Liquid Glass, sin partículas, cero datos demo.
+
+Validación estática: `cargo test` 17/17, `pytest` 16/16, `cargo check`
+0 err, `pnpm build` verde, `parity-check` (todas las invariantes,
+incluido el guard "default byte-idéntico"). Revisión de **máximo rigor**
+en el cambio del pipeline: confirmado que el camino por defecto es
+byte-idéntico (276 inserciones, 0 borrados, todo bajo el guard
+`video_engine=="ltx"`). Ejecución por subagentes con doble review
+(spec+calidad) + fix-loops por tarea (se cazaron y cerraron en review:
+una incoherencia instalador↔workflow↔pinned-facts y un gate de modelos
+incompleto).
+
+> **Pendiente de validación E2E en hardware capaz (≥24-32 GB VRAM):** la
+> generación real con LTX-2.3 NO se pudo ejecutar/validar en la RTX 4060
+> 8 GB de desarrollo (probado imposible — crashea pre-denoise). Toda la
+> integración está validada estáticamente y por revisión exhaustiva, pero
+> el render LTX real, los nombres de input de `LTXAVTextEncoderLoader`, el
+> patrón de frames de SaveImage y la descarga de `comfy_gemma_3_12B_it.safetensors`
+> deben validarse en una máquina con la VRAM requerida antes de
+> considerarse probados de extremo a extremo. **No se fabricó ningún
+> resultado.** El camino por defecto sí está validado E2E como siempre.
+
 ## [0.5.0] — 2026-05-19
 
 ### Capítulos largos robustos — del multi-pass ciego a outline + por-capítulo

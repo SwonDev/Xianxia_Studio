@@ -82,6 +82,38 @@ pub enum AssetKind {
     /// SFT checkpoint (~4 GB) downloads on first /music use into the
     /// app hf-cache and runs GPU-only (no CPU offload) on 8 GB.
     AceStepVenv,
+    /// v0.6.0 — download all assets required for LTX-2.3 video generation
+    /// and clone the required ComfyUI custom nodes into the ComfyUI install.
+    ///
+    /// Files downloaded (all pinned from ltx23-pinned-facts.md):
+    ///   GGUF tier (>=24 GB VRAM):
+    ///     unsloth/LTX-2.3-GGUF -> ltx-2.3-22b-dev-Q4_K_M.gguf (14.2 GB)
+    ///       -> comfyui/models/diffusion_models/
+    ///   Full tier (>=32 GB VRAM):
+    ///     Lightricks/LTX-2.3  -> ltx-2.3-22b-dev-fp8.safetensors
+    ///       -> comfyui/models/diffusion_models/
+    ///   Shared (both tiers):
+    ///     unsloth/LTX-2.3-GGUF -> vae/ltx-2.3-22b-dev_video_vae.safetensors (1.35 GB)
+    ///       -> comfyui/models/vae/
+    ///     unsloth/LTX-2.3-GGUF -> text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors (2.2 GB)
+    ///       -> comfyui/models/text_encoders/
+    ///     Lightricks/LTX-2.3  -> comfy_gemma_3_12B_it.safetensors (Gemma-3 ComfyUI text encoder)
+    ///       -> comfyui/models/text_encoders/
+    ///   ComfyUI nodes:
+    ///     Lightricks/ComfyUI-LTXVideo @ commit 229437c
+    ///       -> comfyui/custom_nodes/ComfyUI-LTXVideo
+    ///     ComfyUI-GGUF v2.0.0 (declared as comfyui-gguf-node; runner skips if present)
+    ///
+    /// OPT-IN, NEVER auto-installed:
+    ///   Only installed when LtxCapability != None AND the user explicitly
+    ///   opts in via Settings. Tier-gating (Gguf vs Full file selection) and
+    ///   the user opt-in check are enforced in later pipeline/UI tasks --
+    ///   the manifest only DECLARES this component.
+    ///
+    /// size_bytes covers Gguf-tier worst case:
+    ///   14.2 GB model + 1.35 GB VAE + 2.2 GB connector +
+    ///   ~8 GB comfy_gemma_3_12B_it.safetensors + ~30 MB node clone ~ 26 GB
+    Ltx23VideoInstall,
 }
 
 /// The full install plan, in dependency order. A consumer (the runner) walks
@@ -599,6 +631,34 @@ pub fn full_manifest() -> Vec<Component> {
         },
         // The LLM (Gemma 4 GGUF) is added dynamically per hardware tier
         // via `with_llm_for_tier(...)` below.
+
+        // ─── LTX-2.3 video generation (opt-in, tier-gated) ──────────
+        // v0.6.0: declared here so the installer knows the component exists.
+        // Downloads: GGUF Q4_K_M diffusion model (14.2 GB), Video VAE (1.35 GB),
+        // embeddings connector (2.2 GB), comfy_gemma_3_12B_it.safetensors (Gemma-3
+        // ComfyUI encoder, from Lightricks/LTX-2.3), and clones ComfyUI-LTXVideo @ 229437c.
+        // NEVER auto-installed: gating on LtxCapability and user opt-in
+        // is enforced in later pipeline/UI tasks (Task 4+).
+        // Requires comfyui-clone + comfyui-gguf-node (GGUF loader).
+        Component {
+            id: "ltx23-video".to_string(),
+            label: "LTX-2.3 Video AI (opt-in, 24+ GB VRAM)".to_string(),
+            category: Category::Model,
+            // Gguf-tier worst case: 14.2 GB model + 1.35 GB VAE + 2.2 GB connector
+            // + ~8 GB Gemma-3 Q4 + ~0.5 GB mmproj + ~30 MB node clone ~= 27 GB
+            size_bytes: 27 * 1024 * 1024 * 1024,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::Ltx23VideoInstall,
+            required: false,
+            depends_on: vec![
+                "comfyui-clone".to_string(),
+                "comfyui-gguf-node".to_string(),
+                "python-deps-core".to_string(),
+            ],
+        },
 
         // ─── Final orchestration ─────────────────────────────────────
         Component {

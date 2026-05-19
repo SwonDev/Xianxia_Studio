@@ -1,0 +1,146 @@
+{
+  "_comment": "LTX-2.3 img2video — FULL FP8 path. CheckpointLoaderSimple loads ltx-2.3-22b-dev-fp8.safetensors from models/checkpoints/ (both diffusion model and embeddings connector come from this single checkpoint). LTXAVTextEncoderLoader loads comfy_gemma_3_12B_it.safetensors (text_encoders/) + ltx-2.3-22b-dev-fp8.safetensors (checkpoints/). VAE is embedded in the checkpoint (output slot 2). Distilled one-stage sampler (ManualSigmas 8-step). Node class names verified from ComfyUI core nodes_lt_audio.py + example_workflows/2.3/LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json. CORRECTED 2026-05-19: filenames now match installer exactly (ltx-2.3-22b-dev-fp8.safetensors, comfy_gemma_3_12B_it.safetensors).",
+  "_placeholders": "%INIT_IMAGE% %PROMPT% %WIDTH% %HEIGHT% %FRAMES% %FPS% %SEED%",
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "LTX-2.3 22B FP8 (model + VAE + connector)"},
+    "inputs": {
+      "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "LTXAVTextEncoderLoader",
+    "_meta": {"title": "Gemma-3 12B CLIP encoder + embeddings connector (mandatory for LTX-2.3)"},
+    "inputs": {
+      "text_encoder": "comfy_gemma_3_12B_it.safetensors",
+      "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Positive prompt"},
+    "inputs": {
+      "text": "%PROMPT%",
+      "clip": ["2", 0]
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negative prompt"},
+    "inputs": {
+      "text": "low quality, blurry, distorted, worst quality, deformed",
+      "clip": ["2", 0]
+    }
+  },
+  "5": {
+    "class_type": "LTXVConditioning",
+    "_meta": {"title": "LTX conditioning with frame rate"},
+    "inputs": {
+      "positive": ["3", 0],
+      "negative": ["4", 0],
+      "frame_rate": "%FPS%"
+    }
+  },
+  "6": {
+    "class_type": "EmptyLTXVLatentVideo",
+    "_meta": {"title": "Empty latent video (W x H x frames)"},
+    "inputs": {
+      "width": "%WIDTH%",
+      "height": "%HEIGHT%",
+      "length": "%FRAMES%",
+      "batch_size": 1
+    }
+  },
+  "7": {
+    "class_type": "LoadImage",
+    "_meta": {"title": "Init image (keyframe)"},
+    "inputs": {
+      "image": "%INIT_IMAGE%",
+      "upload": "image"
+    }
+  },
+  "8": {
+    "class_type": "LTXVPreprocess",
+    "_meta": {"title": "Preprocess init image (normalize to LTX range)"},
+    "inputs": {
+      "image": ["7", 0],
+      "max_pixels": 18
+    }
+  },
+  "9": {
+    "class_type": "LTXVImgToVideoConditionOnly",
+    "_meta": {"title": "Inject keyframe into latent for I2V conditioning"},
+    "inputs": {
+      "vae": ["1", 2],
+      "image": ["8", 0],
+      "latent": ["6", 0],
+      "strength": 0.7,
+      "bypass": false
+    }
+  },
+  "10": {
+    "class_type": "RandomNoise",
+    "_meta": {"title": "Noise source"},
+    "inputs": {
+      "noise_seed": "%SEED%"
+    }
+  },
+  "11": {
+    "class_type": "KSamplerSelect",
+    "_meta": {"title": "Sampler for distilled path"},
+    "inputs": {
+      "sampler_name": "euler_ancestral_cfg_pp"
+    }
+  },
+  "12": {
+    "class_type": "ManualSigmas",
+    "_meta": {"title": "Distilled 8-step sigmas (from official LTX-2.3 distilled workflow)"},
+    "inputs": {
+      "sigmas": "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+    }
+  },
+  "13": {
+    "class_type": "CFGGuider",
+    "_meta": {"title": "CFG guider (cfg=1 for distilled)"},
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["5", 0],
+      "negative": ["5", 1],
+      "cfg": 1.0
+    }
+  },
+  "14": {
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {"title": "Main diffusion sampler"},
+    "inputs": {
+      "noise": ["10", 0],
+      "guider": ["13", 0],
+      "sampler": ["11", 0],
+      "sigmas": ["12", 0],
+      "latent_image": ["9", 0]
+    }
+  },
+  "15": {
+    "class_type": "LTXVTiledVAEDecode",
+    "_meta": {"title": "Tiled VAE decode (video latent to frames)"},
+    "inputs": {
+      "vae": ["1", 2],
+      "latents": ["14", 0],
+      "tile_size_t": 2,
+      "tile_size_h": 2,
+      "tile_size_w": 6,
+      "overlap": false,
+      "auto_tile_size_h": "auto",
+      "auto_tile_size_w": "auto"
+    }
+  },
+  "16": {
+    "class_type": "SaveImage",
+    "_meta": {"title": "Save output frames"},
+    "inputs": {
+      "filename_prefix": "ltx_video",
+      "images": ["15", 0]
+    }
+  }
+}

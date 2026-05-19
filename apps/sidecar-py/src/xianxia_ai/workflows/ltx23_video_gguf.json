@@ -1,0 +1,153 @@
+{
+  "_comment": "LTX-2.3 img2video — GGUF Q4_K_M path. UnetLoaderGGUF loads ltx-2.3-22b-dev-Q4_K_M.gguf from models/diffusion_models/ (ComfyUI-GGUF maps 'unet_gguf' key to diffusion_models/). Separate VAELoader loads ltx-2.3-22b-dev_video_vae.safetensors from models/vae/. LTXAVTextEncoderLoader loads comfy_gemma_3_12B_it.safetensors (text_encoders/) + ltx-2.3-22b-dev_embeddings_connectors.safetensors (checkpoints/). Distilled one-stage sampler (ManualSigmas 8-step). Node class names verified from ComfyUI core nodes_lt_audio.py + ComfyUI-GGUF nodes.py + example_workflows/2.3/LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json. CORRECTED 2026-05-19: all 4 filenames now match installer exactly (Q4_K_M.gguf, comfy_gemma_3_12B_it.safetensors, ltx-2.3-22b-dev_embeddings_connectors.safetensors, ltx-2.3-22b-dev_video_vae.safetensors).",
+  "_placeholders": "%INIT_IMAGE% %PROMPT% %WIDTH% %HEIGHT% %FRAMES% %FPS% %SEED%",
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "_meta": {"title": "LTX-2.3 22B GGUF Q4_K_M diffusion model (ComfyUI-GGUF)"},
+    "inputs": {
+      "unet_name": "ltx-2.3-22b-dev-Q4_K_M.gguf"
+    }
+  },
+  "2": {
+    "class_type": "VAELoader",
+    "_meta": {"title": "LTX-2.3 video VAE"},
+    "inputs": {
+      "vae_name": "ltx-2.3-22b-dev_video_vae.safetensors"
+    }
+  },
+  "3": {
+    "class_type": "LTXAVTextEncoderLoader",
+    "_meta": {"title": "Gemma-3 12B CLIP encoder + embeddings connector (mandatory for LTX-2.3)"},
+    "inputs": {
+      "text_encoder": "comfy_gemma_3_12B_it.safetensors",
+      "ckpt_name": "ltx-2.3-22b-dev_embeddings_connectors.safetensors",
+      "device": "default"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Positive prompt"},
+    "inputs": {
+      "text": "%PROMPT%",
+      "clip": ["3", 0]
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negative prompt"},
+    "inputs": {
+      "text": "low quality, blurry, distorted, worst quality, deformed",
+      "clip": ["3", 0]
+    }
+  },
+  "6": {
+    "class_type": "LTXVConditioning",
+    "_meta": {"title": "LTX conditioning with frame rate"},
+    "inputs": {
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "frame_rate": "%FPS%"
+    }
+  },
+  "7": {
+    "class_type": "EmptyLTXVLatentVideo",
+    "_meta": {"title": "Empty latent video (W x H x frames)"},
+    "inputs": {
+      "width": "%WIDTH%",
+      "height": "%HEIGHT%",
+      "length": "%FRAMES%",
+      "batch_size": 1
+    }
+  },
+  "8": {
+    "class_type": "LoadImage",
+    "_meta": {"title": "Init image (keyframe)"},
+    "inputs": {
+      "image": "%INIT_IMAGE%",
+      "upload": "image"
+    }
+  },
+  "9": {
+    "class_type": "LTXVPreprocess",
+    "_meta": {"title": "Preprocess init image (normalize to LTX range)"},
+    "inputs": {
+      "image": ["8", 0],
+      "max_pixels": 18
+    }
+  },
+  "10": {
+    "class_type": "LTXVImgToVideoConditionOnly",
+    "_meta": {"title": "Inject keyframe into latent for I2V conditioning"},
+    "inputs": {
+      "vae": ["2", 0],
+      "image": ["9", 0],
+      "latent": ["7", 0],
+      "strength": 0.7,
+      "bypass": false
+    }
+  },
+  "11": {
+    "class_type": "RandomNoise",
+    "_meta": {"title": "Noise source"},
+    "inputs": {
+      "noise_seed": "%SEED%"
+    }
+  },
+  "12": {
+    "class_type": "KSamplerSelect",
+    "_meta": {"title": "Sampler for distilled path"},
+    "inputs": {
+      "sampler_name": "euler_ancestral_cfg_pp"
+    }
+  },
+  "13": {
+    "class_type": "ManualSigmas",
+    "_meta": {"title": "Distilled 8-step sigmas (from official LTX-2.3 distilled workflow)"},
+    "inputs": {
+      "sigmas": "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+    }
+  },
+  "14": {
+    "class_type": "CFGGuider",
+    "_meta": {"title": "CFG guider (cfg=1 for distilled)"},
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["6", 0],
+      "negative": ["6", 1],
+      "cfg": 1.0
+    }
+  },
+  "15": {
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {"title": "Main diffusion sampler"},
+    "inputs": {
+      "noise": ["11", 0],
+      "guider": ["14", 0],
+      "sampler": ["12", 0],
+      "sigmas": ["13", 0],
+      "latent_image": ["10", 0]
+    }
+  },
+  "16": {
+    "class_type": "LTXVTiledVAEDecode",
+    "_meta": {"title": "Tiled VAE decode (video latent to frames)"},
+    "inputs": {
+      "vae": ["2", 0],
+      "latents": ["15", 0],
+      "tile_size_t": 2,
+      "tile_size_h": 2,
+      "tile_size_w": 6,
+      "overlap": false,
+      "auto_tile_size_h": "auto",
+      "auto_tile_size_w": "auto"
+    }
+  },
+  "17": {
+    "class_type": "SaveImage",
+    "_meta": {"title": "Save output frames"},
+    "inputs": {
+      "filename_prefix": "ltx_video",
+      "images": ["16", 0]
+    }
+  }
+}

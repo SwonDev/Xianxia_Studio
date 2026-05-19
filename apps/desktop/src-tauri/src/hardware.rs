@@ -313,3 +313,50 @@ pub fn safe_llm_alternative(tier: String) -> ModelRecommendation {
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
+
+// ── v0.6.0 — LTX-2.3 video capability ───────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LtxCapability {
+    None,
+    Gguf,
+    Full,
+}
+
+/// Pure threshold fn (testable). Thresholds from docs/superpowers/ltx23-pinned-facts.md.
+/// Conservative & GPU-only (no CPU offload): the LTX phase must fit
+/// GPU-resident after freeing other phases. NEVER viable at 8 GB.
+pub fn ltx_capability_for_vram(vram_gb: f64) -> LtxCapability {
+    if vram_gb >= 32.0 {
+        LtxCapability::Full
+    } else if vram_gb >= 24.0 {
+        LtxCapability::Gguf
+    } else {
+        LtxCapability::None
+    }
+}
+
+/// Capability of the current machine (None if no GPU/VRAM detected).
+pub fn ltx_video_capability() -> LtxCapability {
+    // Mirror the exact idiom from recommend_models(): detect GPU, read vram_gb, fallback 0.0.
+    let gpu = detect_gpu();
+    let vram = gpu.as_ref().and_then(|g| g.vram_gb).unwrap_or(0.0);
+    ltx_capability_for_vram(vram)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ltx_capability_for_vram, LtxCapability};
+
+    #[test]
+    fn ltx_capability_thresholds() {
+        assert_eq!(ltx_capability_for_vram(0.0), LtxCapability::None);
+        assert_eq!(ltx_capability_for_vram(8.0), LtxCapability::None); // RTX 4060 8GB: NO
+        assert_eq!(ltx_capability_for_vram(16.0), LtxCapability::None); // aún insuficiente
+        assert_eq!(ltx_capability_for_vram(24.0), LtxCapability::Gguf);
+        assert_eq!(ltx_capability_for_vram(31.9), LtxCapability::Gguf);
+        assert_eq!(ltx_capability_for_vram(32.0), LtxCapability::Full);
+        assert_eq!(ltx_capability_for_vram(48.0), LtxCapability::Full);
+    }
+}
