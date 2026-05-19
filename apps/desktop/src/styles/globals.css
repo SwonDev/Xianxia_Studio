@@ -249,18 +249,18 @@ body {
   line-height: 1.4;
   color: var(--text-primary);
   /* Lienzo graphite azulado con washes oro tenues — sin verde.
-     Ventana macOS 2026: frameless + transparent + windowEffects
-     acrylic (tauri.conf.json). El último stop es SEMITRANSPARENTE
-     (alpha 0.72) a propósito: deja que el material acrylic nativo
-     difumine lo que hay detrás de la ventana (vibrancy real) mientras
-     el velo graphite mantiene la UI legible. NO volver a opaco. */
+     Ventana macOS 2026 frameless (decorations:false) PERO opaca:
+     transparent:true + acrylic rompía la composición de WebView2
+     (animaciones de progreso y botones lavados — clase de bug
+     documentada). El último stop DEBE ser opaco; no reintroducir
+     translucidez de ventana sin una técnica segura para WebView2. */
   background:
     radial-gradient(at 8% 0%, rgba(212, 184, 90, 0.10), transparent 42%),
     radial-gradient(at 92% 96%, rgba(168, 138, 60, 0.10), transparent 46%),
     radial-gradient(at 0% 100%, rgba(40, 42, 58, 0.40), transparent 52%),
     radial-gradient(at 95% 10%, rgba(232, 201, 109, 0.07), transparent 42%),
     radial-gradient(at 45% 50%, rgba(50, 52, 70, 0.22), transparent 60%),
-    rgba(18, 18, 24, 0.72);
+    #15151c;
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
