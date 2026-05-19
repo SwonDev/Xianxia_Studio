@@ -1201,6 +1201,117 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.5.0 T15-1) Migration 0003 is the ONE place for chapter_state ─
+//   "Never edit applied migrations" rule: chapter_state and script_outline
+//   must appear in 0003 and NOWHERE in 0001/0002.
+{
+  const m0003 = join(ROOT, 'apps/desktop/src-tauri/migrations/0003_chapters_resume.sql');
+  const m0001 = join(ROOT, 'apps/desktop/src-tauri/migrations/0001_init.sql');
+  const m0002 = join(ROOT, 'apps/desktop/src-tauri/migrations/0002_voices_expanded.sql');
+  check(
+    '0003_chapters_resume.sql defines script_outline + chapter_state; 0001/0002 do NOT',
+    existsSync(m0003)
+      && contains(m0003, 'script_outline')
+      && contains(m0003, 'chapter_state')
+      && !contains(m0001, 'chapter_state')
+      && !contains(m0002, 'chapter_state'),
+    '0003 is the only migration that may define chapter tables — editing 0001/0002 for chapters would break applied-migration integrity',
+  );
+}
+
+// ── (v0.5.0 T15-2) script.py chapter routes + shared post-processor ──
+//   /outline, /chapter, /postprocess must all exist; generate_script ends
+//   by delegating to _finalize_script (shared helper, not duplicated logic).
+{
+  const scriptPy = join(ROOT, 'apps/sidecar-py/src/xianxia_ai/routes/script.py');
+  const txt = existsSync(scriptPy) ? readFileSync(scriptPy, 'utf8') : '';
+  check(
+    'script.py defines /outline, /chapter, /postprocess routes + _finalize_script helper',
+    txt.includes('@router.post("/outline"')
+      && txt.includes('@router.post("/chapter"')
+      && txt.includes('@router.post("/postprocess"')
+      && txt.includes('async def _finalize_script('),
+    'all three chapter routes must exist; _finalize_script is the shared post-processing helper — duplicating it would desync /script and /postprocess behaviour',
+  );
+  // generate_script (the legacy /script handler) must delegate to _finalize_script —
+  // locate the function body and confirm return await _finalize_script( appears after it.
+  const fnIdx = txt.indexOf('async def generate_script(');
+  const nextFnIdx = txt.indexOf('\nasync def ', fnIdx + 1);
+  const bodySlice = fnIdx >= 0
+    ? txt.slice(fnIdx, nextFnIdx > fnIdx ? nextFnIdx : fnIdx + 2000)
+    : '';
+  check(
+    'generate_script ends by delegating to _finalize_script (no duplicated post-processing)',
+    fnIdx >= 0 && bodySlice.includes('return await _finalize_script('),
+    'generate_script must close with `return await _finalize_script(…)` — if it diverges, the /script and /postprocess paths produce different outputs',
+  );
+}
+
+// ── (v0.5.0 T15-3) Pipeline long-form/short split preserved ─────────
+//   The >= 7 long-form branch must exist AND the legacy /script call for
+//   the < 7 short path must not have been removed.
+{
+  const pipeRs = join(ROOT, 'apps/desktop/src-tauri/src/pipeline/mod.rs');
+  const txt = existsSync(pipeRs) ? readFileSync(pipeRs, 'utf8') : '';
+  check(
+    'pipeline/mod.rs has >= 7 long-form branch AND legacy /script short-path (< 7)',
+    txt.includes('req.target_minutes >= 7')
+      && /Legacy path[^]{0,200}\/script/.test(txt),
+    'the short-path (/script single-call) must not be removed — videos < 7 min still use it; the >= 7 guard gates the outline+chapter loop',
+  );
+}
+
+// ── (v0.5.0 T15-4) chapters.py exports the four required helpers ─────
+{
+  const chapPy = join(ROOT, 'apps/sidecar-py/src/xianxia_ai/chapters.py');
+  check(
+    'chapters.py defines parse_outline, assemble_script, chapter_count_for, expected_crossfade_duration',
+    contains(chapPy, 'def parse_outline')
+      && contains(chapPy, 'def assemble_script')
+      && contains(chapPy, 'def chapter_count_for')
+      && contains(chapPy, 'def expected_crossfade_duration'),
+    'all four helpers are consumed by pipeline (Rust) and sidecar callers; any rename silently breaks callers',
+  );
+}
+
+// ── (v0.5.0 T15-5) tts.py uses acrossfade with graceful fallback ────
+//   acrossfade is a 2-input-only filter. The bug guard ensures the invalid
+//   `acrossfade=n=` multi-input form never recurs; the fallback ensures TTS
+//   never hard-fails on long-form audio.
+{
+  const ttsPy = join(ROOT, 'apps/sidecar-py/src/xianxia_ai/routes/tts.py');
+  const txt = existsSync(ttsPy) ? readFileSync(ttsPy, 'utf8') : '';
+  check(
+    'tts.py uses acrossfade + np.concatenate fallback + warning log; NOT acrossfade=n=',
+    txt.includes('acrossfade')
+      && txt.includes('np.concatenate')
+      && txt.includes('crossfade_ok')
+      && !txt.includes('acrossfade=n='),
+    'acrossfade=n= is invalid (2-input-only filter); the fallback to np.concatenate must be present so long-form TTS never hard-fails on audio assembly',
+  );
+}
+
+// ── (v0.5.0 T15-6) chapter-preview.tsx: null on empty, no particles ──
+//   Returns null when chapters map is empty (no demo data leak).
+//   Must contain NO executable particle/canvas code — the rule-comment is
+//   allowed but actual Math.random( / <canvas / createParticle identifiers
+//   are banned per DESIGN.md "sin partículas" rule.
+{
+  const cpTsx = join(ROOT, 'apps/desktop/src/components/chapter-preview.tsx');
+  const txt = existsSync(cpTsx) ? readFileSync(cpTsx, 'utf8') : '';
+  check(
+    'chapter-preview.tsx returns null on empty chapters and has no executable particle/canvas code',
+    existsSync(cpTsx)
+      && txt.includes('length === 0')
+      && txt.includes('return null')
+      && !txt.includes('Math.random(')
+      && !txt.includes('<canvas')
+      && !txt.includes('createParticle')
+      && !/\bparticles\b/.test(txt),
+    'component must guard empty state (no demo data); DESIGN.md forbids particle/canvas decorations (sin partículas rule)',
+  );
+}
+
 // ── Result ─────────────────────────────────────────────────────────
 console.log();
 if (failures.length === 0) {
