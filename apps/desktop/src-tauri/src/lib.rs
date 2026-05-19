@@ -41,6 +41,7 @@ pub fn run() {
             commands::list_projects,
             commands::list_scheduled,
             commands::cancel_scheduled,
+            commands::reset_project_progress,
             commands::create_project,
             commands::start_generation,
             pipeline::abort_generation,

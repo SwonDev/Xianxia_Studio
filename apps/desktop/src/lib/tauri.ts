@@ -490,6 +490,8 @@ export const tauri = {
   listProjects: () => invoke<Project[]>('list_projects'),
   listScheduled: () => invoke<ScheduledUpload[]>('list_scheduled'),
   cancelScheduled: (id: string) => invoke<void>('cancel_scheduled', { id }),
+  resetProjectProgress: (projectId: string) =>
+    invoke<void>('reset_project_progress', { projectId }),
   createProject: (args: { title: string; topic: string; languages: string[] }) =>
     invoke<Project>('create_project', { args }),
   startGeneration: (args: GenerateRequest) =>

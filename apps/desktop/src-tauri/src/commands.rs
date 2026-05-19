@@ -53,6 +53,23 @@ pub async fn cancel_scheduled(
     scheduled::cancel(&pool, &id).await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn reset_project_progress(
+    pool: tauri::State<'_, Arc<DbPool>>,
+    project_id: String,
+) -> Result<(), String> {
+    let p = pool.inner().clone();
+    crate::db::chapters::reset_project(&p, &project_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM pipeline_steps WHERE project_id = ?")
+        .bind(&project_id)
+        .execute(&*p)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub struct CreateProjectArgs {
     pub title: String,
