@@ -554,6 +554,7 @@ async def _finalize_script(
         narration, markers,
         topic=topic,
         setting_tag=setting_tag,
+        context_brief=context_brief,
         language_name=language_name,
         model=model,
     )
@@ -1558,6 +1559,140 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return inter / union if union else 0.0
 
 
+# v0.6.5 — deterministic SUBJECT diversification.
+#
+# Root cause of the chronic "muchas imágenes iguales" complaint: the
+# per-beat pipeline rotates camera/palette/time-of-day by index but the
+# distilled SUBJECT stays whatever the narration sentence says. For a
+# single-subject / abstract topic (black holes, relativity, a person…)
+# every sentence repeats the headline noun, so every image is the same
+# subject re-coloured. `_diversify_subjects` only LOGGED this; it never
+# acted. These two helpers ACT on it, deterministically (no reliance on
+# Gemma following soft rules — the documented history shows that always
+# regresses; deterministic index rotation is what worked in v0.2.1).
+
+# Words that are never useful as a distinct visual facet.
+_FACET_STOP = {
+    "the", "a", "an", "of", "and", "or", "to", "in", "on", "at", "by",
+    "is", "was", "are", "were", "be", "been", "as", "it", "its", "this",
+    "that", "these", "those", "with", "for", "from", "into", "than",
+    "then", "also", "however", "which", "who", "whom", "whose", "what",
+    "when", "where", "while", "his", "her", "their", "there", "here",
+    "they", "them", "one", "two", "first", "known", "called", "named",
+    "century", "year", "years", "such", "other", "some", "many", "most",
+}
+
+
+def _facet_pool(context_brief: str, setting_tag: str, topic: str) -> list[str]:
+    """Build an ordered, de-duplicated pool of CONCRETE distinct facets
+    of the topic, mined deterministically (no LLM) from the Wikipedia
+    brief we already fetched plus the iconography parenthetical of the
+    setting tag.
+
+    A "facet" is a proper-noun phrase ("Albert Einstein", "Cygnus X-1",
+    "Event Horizon Telescope", "General Relativity") or a concrete
+    iconography noun the setting tag lists. These are the alternative
+    subjects we rotate in when the narration would otherwise force the
+    same headline subject onto every beat.
+
+    Returns first-seen order so the rotation tracks the brief's own
+    narrative arc. Excludes the topic's own head words (those are the
+    over-used subject we are trying to get AWAY from) and stopwords.
+    """
+    topic_head = {
+        w for w in re.findall(r"[a-zA-Z]{3,}", (topic or "").lower())
+    }
+    seen: set[str] = set()
+    pool: list[str] = []
+
+    def _add(phrase: str) -> None:
+        p = phrase.strip().strip("\"'`.,;:()[]").strip()
+        if len(p) < 4 or len(p) > 48:
+            return
+        low = p.lower()
+        words = [w for w in re.findall(r"[a-zA-Z]{3,}", low)]
+        if not words:
+            return
+        # Skip if every content word is a stopword or part of the topic
+        # head (that's the repetitive subject we are escaping).
+        if all(w in _FACET_STOP or w in topic_head for w in words):
+            return
+        if low in seen:
+            return
+        seen.add(low)
+        pool.append(p)
+
+    # 1) Iconography list inside the setting tag parenthetical, e.g.
+    #    "Ancient Greek setting (marble temples, thunderbolts, …)".
+    if setting_tag:
+        m = re.search(r"\(([^)]+)\)", setting_tag)
+        if m:
+            for chunk in m.group(1).split(","):
+                _add(chunk)
+
+    # 2) Proper-noun phrases from the brief (1-4 capitalised words).
+    brief = (context_brief or "").strip()
+    if brief:
+        for m in re.finditer(
+            r"\b([A-Z][\w-]+(?:\s+(?:of\s+|the\s+)?[A-Z][\w-]+){0,3})\b",
+            brief,
+        ):
+            _add(m.group(1))
+
+    return pool[:24]
+
+
+def _enforce_subject_diversity(
+    distilled: list[str],
+    facet_pool: list[str],
+    *,
+    window: int = 4,
+    thresh: float = 0.55,
+) -> list[str]:
+    """For each distilled phrase whose subject nouns overlap too much
+    with the previous `window` (already-emitted) phrases, prepend the
+    next unused facet as the LEADING subject (CLIP weights leading
+    tokens, so the rendered image diverges). Deterministic index
+    rotation through `facet_pool` — never calls the LLM.
+
+    Same length out as in. If the pool is empty it returns the input
+    unchanged (graceful: degrades to prior behaviour, no regression).
+    """
+    if not distilled or not facet_pool:
+        return list(distilled)
+    out: list[str] = []
+    history: list[set[str]] = []
+    facet_ptr = 0
+    rewritten = 0
+    for phrase in distilled:
+        subj = _extract_subject_keywords(phrase)
+        max_j = 0.0
+        for prev in history[-window:]:
+            j = _jaccard(subj, prev)
+            if j > max_j:
+                max_j = j
+        if max_j >= thresh and subj:
+            facet = facet_pool[facet_ptr % len(facet_pool)]
+            facet_ptr += 1
+            new_phrase = f"{facet}: {phrase}"
+            rewritten += 1
+            out.append(new_phrase)
+            history.append(_extract_subject_keywords(new_phrase))
+        else:
+            out.append(phrase)
+            history.append(subj)
+    if rewritten:
+        log_event(
+            "info",
+            "image_subject_diversity_enforced",
+            rewritten=rewritten,
+            total=len(distilled),
+            pool_size=len(facet_pool),
+            note="repeated subjects pivoted to distinct topic facets (deterministic).",
+        )
+    return out
+
+
 async def _distill_visual_phrases(
     sentences: list[str],
     topic: str,
@@ -1933,6 +2068,7 @@ async def _rewrite_image_prompts_from_narration(
     markers: list[Marker],
     topic: str = "",
     setting_tag: str = "",
+    context_brief: str = "",
     language_name: str = "English",
     model: str = "xianxia-llm",
 ) -> list[Marker]:
@@ -1997,6 +2133,15 @@ async def _rewrite_image_prompts_from_narration(
     # somehow it diverges, drop back to raw literals.
     if len(distilled) != len(raw_literals):
         distilled = list(raw_literals)
+    # v0.6.5 — deterministic SUBJECT diversification. The distiller is
+    # faithful to each narration sentence; for a single-subject/abstract
+    # topic that means the SAME headline subject every beat (the chronic
+    # "muchas imágenes iguales" complaint). Pivot over-repeated beats to
+    # distinct concrete facets mined from the Wikipedia brief + setting
+    # tag — no LLM, deterministic index rotation.
+    distilled = _enforce_subject_diversity(
+        distilled, _facet_pool(context_brief, setting_tag, topic),
+    )
     literal_by_marker_idx: dict[int, str] = {
         m_idx: distilled[i]
         for i, m_idx in enumerate(image_marker_indices)

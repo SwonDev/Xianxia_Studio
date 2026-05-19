@@ -6,6 +6,38 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.6.5] — 2026-05-19
+
+### Diversidad de imágenes — anti-repetición de sujeto determinista
+
+Arregla la queja crónica "muchas imágenes iguales o casi iguales". Causa
+raíz: el pipeline rotaba cámara/paleta/hora-del-día por índice pero
+**nunca el SUJETO**; para un tema concreto-único (agujeros negros, una
+persona…) cada frase narrada repite el sujeto principal → cada imagen es
+el mismo sujeto recoloreado. El único guardián, `_diversify_subjects`,
+**solo escribía un warning y no actuaba**.
+
+- **`_facet_pool`** (nuevo, `script.py`): mina deterministamente — SIN
+  LLM — un pool de facetas concretas distintas del tema (nombres propios
+  del brief de Wikipedia ya descargado + iconografía del setting tag),
+  excluyendo las palabras-cabeza del propio tema.
+- **`_enforce_subject_diversity`** (nuevo): anti-repeat por **ventana
+  deslizante** con Jaccard de sujetos; el beat que se solapa demasiado
+  con la ventana reciente recibe la siguiente faceta no usada como
+  **sujeto principal** (CLIP pondera los tokens iniciales → la imagen
+  diverge de verdad). Rotación por índice, determinista. Pool vacío →
+  sin cambios (degradación elegante, cero regresión).
+- Se cablea en `_rewrite_image_prompts_from_narration` tras la
+  destilación; `_finalize_script` le pasa el brief. Filosofía idéntica a
+  la rotación determinista de v0.2.1 (las reglas blandas a Gemma siempre
+  regresaron — el historial lo demuestra).
+- Tests unitarios (`tests/test_subject_diversity.py`, 4 casos) +
+  invariante de parity que impide volver a "solo log". 20/20 tests del
+  sidecar verdes.
+
+> Aplica a las **próximas** generaciones; un vídeo ya renderizado no se
+> reescribe. La prueba visual definitiva requiere una generación real.
+
 ## [0.6.4] — 2026-05-19
 
 ### HOTFIX — UI/animaciones rotas por la transparencia (vibrancy revertida)
