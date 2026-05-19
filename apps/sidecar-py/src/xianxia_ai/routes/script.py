@@ -18,7 +18,8 @@ from pydantic import BaseModel
 
 from ..llm import generate as llm_generate
 from ..logging_utils import log_event
-from ..prompts import SCRIPT_PROMPT_TEMPLATE, METADATA_PROMPT_TEMPLATE
+from ..chapters import chapter_count_for, parse_outline
+from ..prompts import SCRIPT_PROMPT_TEMPLATE, METADATA_PROMPT_TEMPLATE, OUTLINE_PROMPT_TEMPLATE
 
 router = APIRouter()
 
@@ -54,6 +55,64 @@ class ScriptResponse(BaseModel):
     # v0.1.38: expose the LLM-generated setting tag so the supervisor
     # can pass it down to /music as a style_hint (era + culture + palette).
     setting_tag: str | None = None
+
+
+class OutlineRequest(BaseModel):
+    topic: str
+    target_minutes: int
+    language: str = "es"
+    model: str = "xianxia-llm"
+    context_facts: str = ""
+
+
+class OutlineResponse(BaseModel):
+    chapters: list[dict]
+
+
+@router.post("/outline", response_model=OutlineResponse)
+async def generate_outline(req: OutlineRequest) -> OutlineResponse:
+    language_name = _LANG_TO_NAME.get(req.language, "English")
+    n = chapter_count_for(req.target_minutes)
+    prompt = OUTLINE_PROMPT_TEMPLATE.format(
+        topic=req.topic,
+        minutes=req.target_minutes,
+        language_name=language_name,
+        n_chapters=n,
+        context_facts=req.context_facts or "(write from general knowledge, stay faithful to the topic)",
+    )
+    system_prompt = (
+        f"YOU MUST WRITE THE ENTIRE OUTLINE IN {language_name.upper()}. "
+        f"No exceptions."
+    )
+    log_event("info", "outline_start", topic=req.topic[:60], chapters=n)
+    async with httpx.AsyncClient(timeout=900.0) as client:
+        for attempt in (1, 2):
+            try:
+                result = await llm_generate(
+                    model=req.model,
+                    system=system_prompt,
+                    prompt=prompt,
+                    options={
+                        "temperature": 0.4,
+                        "top_p": 0.9,
+                        "num_ctx": 8192,
+                        "num_predict": 1800,
+                    },
+                    think=False,
+                    max_continuations=0,
+                    client=client,
+                    timeout=900.0,
+                )
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
+            raw = result.get("response") or ""
+            try:
+                chapters = parse_outline(raw)
+                log_event("info", "outline_ok", chapters=len(chapters), attempt=attempt)
+                return OutlineResponse(chapters=chapters)
+            except ValueError as e:
+                log_event("warn", "outline_parse_failed", attempt=attempt, error=str(e)[:160])
+    raise HTTPException(status_code=422, detail="outline could not be parsed after 2 attempts")
 
 
 _LANG_TO_NAME = {
