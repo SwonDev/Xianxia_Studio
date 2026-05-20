@@ -388,6 +388,11 @@ export interface GenerateRequest {
    *  hardware capability !== 'none' AND models installed; otherwise the
    *  pipeline falls back to HyperFrames silently. Default false (absent). */
   use_ltx_video?: boolean;
+  /** v0.7.0 — Tipo de vídeo / preset narrativo. Define la voz, música,
+   *  estilo de imagen y directiva LLM. Omitir = narrative_epic
+   *  (byte-idéntico a v0.6.x). Valores: narrative_epic | documentary |
+   *  explainer | listicle | comparative | deep_dive. */
+  preset_id?: string;
 }
 
 export interface PhaseUpdate {

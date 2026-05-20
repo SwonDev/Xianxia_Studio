@@ -92,6 +92,26 @@ const PHASES: { phase: number; label: string; icon: PhosphorIcon; hint: string }
   { phase: 10, label: 'Programación', icon: CalendarBlank, hint: 'Cron + Shorts' },
 ];
 
+// v0.7.0 — Tipos de vídeo. narrative_epic === comportamiento v0.6.x byte
+// por byte (defecto). El resto cambian la directiva LLM, el estilo de
+// imagen, y (en v0.7.1) voz y música.
+type PresetId =
+  | 'narrative_epic'
+  | 'documentary'
+  | 'explainer'
+  | 'listicle'
+  | 'comparative'
+  | 'deep_dive';
+
+const PRESET_OPTIONS: ReadonlyArray<{ id: PresetId; label: string; desc: string }> = [
+  { id: 'narrative_epic', label: 'Narrativa épica', desc: 'Historia dramatizada con beats virales' },
+  { id: 'documentary',    label: 'Documental',      desc: 'Tono BBC/Nat Geo, contexto factual' },
+  { id: 'explainer',      label: 'Divulgativo',     desc: 'Explica como un profesor, sin drama' },
+  { id: 'listicle',       label: 'Listicle (Top N)', desc: 'Estructura de lista numerada' },
+  { id: 'comparative',    label: 'Comparativa',     desc: 'A vs B, paralelismos y contrastes' },
+  { id: 'deep_dive',      label: 'Deep dive',       desc: 'Largo por capítulos, análisis exhaustivo' },
+] as const;
+
 const STORAGE_KEY = 'xianxia.generator.draft';
 function loadDraft(): {
   topic: string; minutes: number; languages: string[];
@@ -100,6 +120,7 @@ function loadDraft(): {
   voice: string; vertical: boolean;
   animation: 'cinematic' | 'dynamic' | 'minimal' | 'dramatic';
   caption: 'xianxia' | 'hormozi' | 'mrbeast' | 'minimal' | 'neon';
+  preset?: PresetId;
 } | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -148,6 +169,8 @@ function GeneratorWizard() {
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [animationPreset, setAnimationPreset] = useState<'cinematic' | 'dynamic' | 'minimal' | 'dramatic'>(draft?.animation ?? 'cinematic');
   const [captionStyle, setCaptionStyle] = useState<'xianxia' | 'hormozi' | 'mrbeast' | 'minimal' | 'neon'>(draft?.caption ?? 'xianxia');
+  // v0.7.0 — Tipo de vídeo. Por defecto narrative_epic (== legacy v0.6.x).
+  const [videoPreset, setVideoPreset] = useState<PresetId>(draft?.preset ?? 'narrative_epic');
   const [voice, setVoice] = useState(draft?.voice ?? 'vivian');
   const [vertical, setVertical] = useState(draft?.vertical ?? false);
   const [suggesting, setSuggesting] = useState(false);
@@ -292,8 +315,9 @@ function GeneratorWizard() {
       subtitle_languages: subtitleLanguages,
       voice, vertical,
       animation: animationPreset, caption: captionStyle,
+      preset: videoPreset,
     });
-  }, [topic, minutes, languages, audioLanguage, subtitleLanguages, voice, vertical, animationPreset, captionStyle]);
+  }, [topic, minutes, languages, audioLanguage, subtitleLanguages, voice, vertical, animationPreset, captionStyle, videoPreset]);
 
   const handleInstallLtx = async () => {
     if (installingLtx) return;
@@ -338,6 +362,7 @@ function GeneratorWizard() {
       analyze_engagement: analyzeEngagement,
       auto_optimize_engagement: autoOptimizeEngagement,
       use_ltx_video: ltxOptIn,
+      preset_id: videoPreset,
     };
     try {
       const id = await tauri.startGeneration(req);
@@ -618,6 +643,41 @@ function GeneratorWizard() {
               <Plus size={12} weight="bold" />
               Crear voz nueva (grabar / archivo / URL)
             </button>
+          </Field>
+
+          {/* v0.7.0 — Tipo de vídeo / preset narrativo. Cambia la directiva
+             *  LLM y el estilo de imagen. narrative_epic === byte-idéntico
+             *  al comportamiento de v0.6.x. */}
+          <Field label="Tipo de vídeo">
+            <div
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 6 }}
+              data-testid="video-preset-grid"
+            >
+              {PRESET_OPTIONS.map((p) => (
+                <button
+                  key={p.id}
+                  data-testid={`preset-${p.id}`}
+                  onClick={() => setVideoPreset(p.id)}
+                  aria-pressed={videoPreset === p.id}
+                  style={{
+                    padding: '8px 10px',
+                    textAlign: 'left',
+                    borderRadius: 10,
+                    background: videoPreset === p.id ? 'var(--accent-bg)' : 'rgba(255,255,255,0.04)',
+                    boxShadow: videoPreset === p.id
+                      ? 'inset 0 0.5px 0 rgba(255,255,255,0.15), 0 0 0 0.5px rgba(232, 201, 109,0.40)'
+                      : 'inset 0 0.5px 0 rgba(255,255,255,0.06)',
+                  }}
+                >
+                  <div style={{ fontSize: 12.5, fontWeight: 500 }}>{p.label}</div>
+                  <div className="caption" style={{ fontSize: 10 }}>{p.desc}</div>
+                </button>
+              ))}
+            </div>
+            <p className="caption" style={{ marginTop: 6 }}>
+              Cambia el tono de la narración y la estética de las imágenes.
+              Narrativa épica es el comportamiento por defecto.
+            </p>
           </Field>
 
           <Field label="Formato">

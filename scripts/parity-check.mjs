@@ -1479,6 +1479,55 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.7.0) Video presets registry — central source of truth ──────
+//   presets.py must define all 6 expected ids, deep_dive must force
+//   chapters, narrative_epic must carry the verbatim v0.6.x STORY
+//   BEATS + STORY ARC anchors (byte-identical retro-compat), and the
+//   default IMAGE_STYLE_BIAS["cinematic"] must equal the v0.6.x
+//   hardcoded _STYLE_SUFFIX. If any of these drifts, a user who
+//   doesn't touch the new selector gets a different video — that's
+//   the zero-regression contract we promised in the spec.
+{
+  const presetsPy = join(ROOT, 'apps/sidecar-py/src/xianxia_ai/presets.py');
+  const txt = existsSync(presetsPy) ? readFileSync(presetsPy, 'utf8') : '';
+  const expectedIds = [
+    'narrative_epic', 'documentary', 'explainer',
+    'listicle', 'comparative', 'deep_dive',
+  ];
+  const allIdsPresent = expectedIds.every(
+    (id) => txt.includes(`"${id}": VideoPreset(`),
+  );
+  check(
+    'presets.py defines all 6 video presets (narrative_epic, documentary, explainer, listicle, comparative, deep_dive)',
+    allIdsPresent,
+    'the spec promises exactly these 6 ids; adding/removing requires updating the spec, plan, parity-check, UI and tests together',
+  );
+  check(
+    'presets.py: deep_dive forces use_chapters=True (long-form gate)',
+    /id="deep_dive"[\s\S]{0,2000}use_chapters=True/.test(txt),
+    'deep_dive is the only preset that MUST always use long-form chapters; this is the contract that hooks it into v0.5.0 chapter pipeline',
+  );
+  check(
+    'presets.py: narrative_epic carries the verbatim v0.6.x STORY BEATS + STORY ARC anchors (byte-identical retro-compat)',
+    txt.includes('═══ STORY BEATS — DOCUMENTARY YOUTUBE VIRAL FORMULA (NON-NEGOTIABLE) ═══')
+      && txt.includes('BEAT 1 — HOOK (first 30-45 seconds, ≈ first 90-110 words).')
+      && txt.includes('═══ STORY ARC + ROUNDED CLOSING (NON-NEGOTIABLE) ═══')
+      && txt.includes('[MUSIC: mood=reveal]'),
+    'these anchors come from the v0.6.x prompts.py SCRIPT_PROMPT_TEMPLATE; losing them means narrative_epic stops behaving like the legacy script generator and existing users get regressions',
+  );
+  check(
+    'presets.py: IMAGE_STYLE_BIAS["cinematic"] equals the v0.6.x _STYLE_SUFFIX (byte-identical)',
+    txt.includes('"cinematic":') && txt.includes('"cinematic, photorealistic, ultra detailed, dramatic lighting"'),
+    'the cinematic bias IS the v0.6.x _STYLE_SUFFIX string; if it diverges, narrative_epic-generated images get a different style suffix and the byte-identical contract breaks',
+  );
+  check(
+    'presets.py: get_preset() falls back to narrative_epic for unknown ids',
+    /def get_preset\([^)]*\)[\s\S]{0,800}DEFAULT_PRESET_ID/.test(txt)
+      && /DEFAULT_PRESET_ID\s*=\s*"narrative_epic"/.test(txt),
+    'unknown/garbage preset_id must NOT crash; the fallback to narrative_epic preserves v0.6.x behaviour for stale clients',
+  );
+}
+
 // ── Result ─────────────────────────────────────────────────────────
 console.log();
 if (failures.length === 0) {

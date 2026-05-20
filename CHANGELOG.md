@@ -6,6 +6,100 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-05-20
+
+### 6 tipos de vídeo — el guion ya no es solo "historia épica"
+
+Hasta v0.6.x el LLM tenía un único modo: historia dramatizada con
+beats virales (BEAT 1 hook, BEAT 7 CTA, STORY ARC). Servía para
+xianxia y para temas con "lore", pero **convertía cualquier petición
+en relato épico aunque el usuario pidiera un documental fidedigno**.
+Bug real recurrente: pedir "cultura nórdica explicada" devolvía un
+mito con personajes inventados.
+
+v0.7.0 introduce un selector "Tipo de vídeo" con 6 presets
+canónicos. El que se elige cambia la directiva de sistema del LLM,
+la voz, el mood musical y el bias de estilo de imagen. El usuario
+elige; el motor no decide por él.
+
+- **`narrative_epic`** — comportamiento de v0.6.x byte por byte
+  (default si no se toca el selector → cero regresión para
+  proyectos antiguos). STORY BEATS + STORY ARC + cinematic anchor.
+- **`documentary`** — tono BBC / National Geographic. Prohíbe
+  diálogo inventado, exige FACTUAL CONTEXT, ancla en hechos del
+  Wikipedia RAG. Voz reposada (descriptor de narrador).
+- **`explainer`** — divulgativo, profesor pedagógico. Prohíbe
+  dramatización; prohíbe "epic", "destiny", "legendary". Imágenes
+  con bias "clean illustrative" en vez de cinematic.
+- **`listicle`** — estructura de top-N numerado. Cada ítem es una
+  unidad autónoma con su propio gancho.
+- **`comparative`** — A vs B paralelos, contrastes y zonas
+  compartidas. Estructura simétrica obligatoria.
+- **`deep_dive`** — análisis exhaustivo y largo. **Único preset
+  que fuerza `use_chapters=True`** independientemente de los
+  minutos (el resto sigue la heurística de longitud de v0.5.0).
+
+#### Contrato byte-idéntico (zero regression)
+
+- Si `preset_id` se omite en la request, el sidecar resuelve
+  `narrative_epic`. El template usado es `SCRIPT_PROMPT_TEMPLATE` de
+  v0.6.x **literal**, no la nueva plantilla parametrizada. Por eso
+  los proyectos en curso y los tests existentes pasan sin tocar
+  nada.
+- `IMAGE_STYLE_BIAS["cinematic"]` es exactamente el `_STYLE_SUFFIX`
+  legacy de v0.6.x. Garantizado por test (`test_presets.py`) y
+  parity-check.
+- `narrative_epic.markers_per_minute = 5.0` para coincidir con
+  `expected_min = target_minutes * 5` del audit existente.
+
+#### Cableado interno
+
+- **`apps/sidecar-py/src/xianxia_ai/presets.py` (nuevo)** —
+  `VideoPreset` dataclass + dict `PRESETS` con las 6 entradas +
+  3 tablas de mapeo abstracto (`VOICE_TONE_TO_DESCRIPTOR`,
+  `MUSIC_MOOD_TO_PROMPT`, `IMAGE_STYLE_BIAS`). 9 tests verde en
+  `tests/test_presets.py`.
+- **`apps/sidecar-py/src/xianxia_ai/prompts.py`** — nueva función
+  `build_script_prompt(preset_id, …)`. `narrative_epic` pasa por el
+  template legacy intacto; el resto pasa por
+  `PRESET_SCRIPT_PROMPT_TEMPLATE` que reemplaza el bloque "STORY
+  BEATS + STORY ARC" por la directiva del preset, manteniendo el
+  header y el FINAL REMINDER de v0.6.x. Two-pass format
+  (`.replace()` → `.format()`) para que los `{language_name}` de
+  dentro de la directiva se expandan en la pasada externa.
+- **`apps/sidecar-py/src/xianxia_ai/routes/script.py`** —
+  `ScriptRequest`, `OutlineRequest` y `PostprocessRequest` aceptan
+  `preset_id` (default narrative_epic). `_finalize_script` resuelve
+  `IMAGE_STYLE_BIAS[preset.image_style]` y lo propaga a
+  `_inject_auto_image_markers` y `_rewrite_image_prompts_from_narration`
+  como `style_suffix` opcional. `None` ⇒ legacy.
+- **`apps/desktop/src-tauri/src/pipeline/mod.rs`** —
+  `GenerateRequest.preset_id: String` con
+  `#[serde(default = "default_preset_id")]`. Las 4 llamadas HTTP al
+  sidecar (`/script/outline`, `/script` long-form,
+  `/script/postprocess`, `/script` legacy < 7 min) propagan
+  `preset_id`. `cargo check` verde.
+- **`apps/desktop/src/routes/generator.tsx`** — selector "Tipo de
+  vídeo" en grid 2x3 con 6 chips, ubicado justo antes de "Formato"
+  (decisión narrativa de primer nivel, **visible**, no enterrada en
+  "Opciones avanzadas"). Estado persistido en `localStorage` draft.
+  TypeScript verde.
+
+#### Scope honesto
+
+- **Cableado mínimo viable shippeado en 0.7.0**: prompt LLM +
+  bias de estilo de imagen + paso a Rust + UI + persistencia.
+- **Deferred a v0.7.1**: aplicación efectiva de
+  `MUSIC_MOOD_TO_PROMPT[preset.music_mood]` en `routes/music.py` y
+  de `VOICE_TONE_TO_DESCRIPTOR[preset.voice_tone]` en
+  `routes/tts.py`. Las tablas existen y los tests las guardan; la
+  inyección a la query de los sidecars es one-liner pero requiere
+  validar que no rompa los presets de voz actuales del usuario.
+- **Parity-check** ampliado con 5 invariantes nuevos sobre presets
+  (los 6 ids existen, deep_dive fuerza chapters, narrative_epic
+  byte-idéntico, IMAGE_STYLE_BIAS cinematic byte-idéntico,
+  get_preset() fallback).
+
 ## [0.6.8] — 2026-05-20
 
 ### Iconography bleed en `_style_anchor` — RESUELTO (causa real del "imágenes iguales")

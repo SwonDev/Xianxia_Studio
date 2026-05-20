@@ -340,3 +340,84 @@ NEW CHAPTER JUST WRITTEN:
 
 Return ONLY a JSON object, no prose:
 {{"told":"<=120 words, the storyline covered so far>","open_threads":["<unresolved hook/question>"],"used_facts":["<specific fact/name/date already used>"],"last_paragraph":"<verbatim last paragraph of the new chapter, for voice continuity>"}}"""
+
+
+# ─── v0.7.0 — Video preset support ────────────────────────────────────
+#
+# `PRESET_SCRIPT_PROMPT_TEMPLATE` is the system prompt template used by
+# every preset OTHER than `narrative_epic`. It's derived dynamically
+# from `SCRIPT_PROMPT_TEMPLATE` so there's a single source of truth for
+# the common sections (language, factual context, image markers,
+# visual diversity rules…). The STORY BEATS + STORY ARC section of
+# the original template is replaced by a `{style_directive}` slot that
+# the preset fills with its own structure / tone / hook / CTA rules.
+#
+# `narrative_epic` uses `SCRIPT_PROMPT_TEMPLATE` UNCHANGED — byte-for-
+# byte the same string the v0.6.x pipeline used — guaranteeing zero
+# regression for any caller that doesn't pass a preset_id.
+
+_STORY_BEATS_MARKER = "═══ STORY BEATS — DOCUMENTARY YOUTUBE VIRAL FORMULA (NON-NEGOTIABLE) ═══"
+_FINAL_REMINDER_MARKER = "═══ FINAL REMINDER ═══"
+
+_HEADER, _, _AFTER_HEADER = SCRIPT_PROMPT_TEMPLATE.partition(_STORY_BEATS_MARKER)
+_, _, _FOOTER_WITH_FINAL = _AFTER_HEADER.partition(_FINAL_REMINDER_MARKER)
+_FOOTER = _FINAL_REMINDER_MARKER + _FOOTER_WITH_FINAL
+
+# If the markers were ever removed from SCRIPT_PROMPT_TEMPLATE this
+# assembly would silently lose the footer or header. Guard with a hard
+# assertion at import time so the deploy fails loud instead of producing
+# broken prompts at runtime.
+assert _AFTER_HEADER, (
+    "prompts.py: STORY BEATS marker missing from SCRIPT_PROMPT_TEMPLATE — "
+    "PRESET_SCRIPT_PROMPT_TEMPLATE cannot be derived"
+)
+assert _FOOTER_WITH_FINAL, (
+    "prompts.py: FINAL REMINDER marker missing — preset assembly broken"
+)
+
+PRESET_SCRIPT_PROMPT_TEMPLATE = _HEADER + "{style_directive}\n\n" + _FOOTER
+
+
+def build_script_prompt(
+    preset_id: str | None,
+    *,
+    topic: str,
+    minutes: int,
+    language_name: str,
+    context_facts: str,
+) -> str:
+    """Return the system prompt string to send to Gemma for /script.
+
+    Branches by preset:
+    - `narrative_epic` (or unknown / None): the v0.6.x verbatim
+      `SCRIPT_PROMPT_TEMPLATE` filled with the same placeholders →
+      byte-identical to the legacy behaviour (zero regression).
+    - Any other preset: the dynamically-derived `PRESET_SCRIPT_PROMPT_TEMPLATE`
+      with the preset's `llm_style_directive` substituted into the
+      STORY BEATS slot.
+
+    The helper lives in prompts.py (not presets.py) so prompts.py stays
+    the single owner of all prompt template strings.
+    """
+    # Import lazily to avoid a circular dependency at module load.
+    from .presets import get_preset
+
+    preset = get_preset(preset_id)
+    if preset.id == "narrative_epic":
+        template = SCRIPT_PROMPT_TEMPLATE
+    else:
+        # Splice the directive's literal text into the {style_directive}
+        # slot BEFORE calling .format(...), so any placeholders the
+        # directive carries (e.g. `{language_name}` in CTA lines) are
+        # expanded in the single final format pass. Otherwise .format
+        # would treat them as literal text and the directive would
+        # ship with un-expanded curly-brace tokens to the LLM.
+        template = PRESET_SCRIPT_PROMPT_TEMPLATE.replace(
+            "{style_directive}", preset.llm_style_directive
+        )
+    return template.format(
+        topic=topic,
+        minutes=minutes,
+        language_name=language_name,
+        context_facts=context_facts,
+    )
