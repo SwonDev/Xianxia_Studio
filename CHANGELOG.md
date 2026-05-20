@@ -6,6 +6,33 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.10] — 2026-05-20
+
+### Fix deprecation `asyncio.get_event_loop()` (Python 3.12+)
+
+Auditoría detectó **5 ocurrencias** de `asyncio.get_event_loop()`
+dentro de contextos `async def`. Desde Python 3.12 esto está
+deprecated: hay que usar `asyncio.get_running_loop()` cuando ya
+estamos dentro de una coroutine. En 3.16+ se eliminará y romperá
+el código.
+
+Archivos arreglados:
+- `apps/sidecar-py/src/xianxia_ai/llm_backend.py` — 2 ocurrencias
+  (deadline tracking en wait_for_health y unload_check).
+- `apps/sidecar-py/src/xianxia_ai/routes/tts.py` — 1 ocurrencia
+  (cloning install background executor).
+- `apps/sidecar-py/src/xianxia_ai/routes/voice_acquisition.py`
+  — 2 ocurrencias (URL ingest + file upload pipelines).
+
+Resultado: **0 DeprecationWarning ruidosos en stderr** durante
+runs largos. El sidecar Python ya tira a Python 3.14 en runtime
+y se evita el riesgo de regresión cuando se actualice a 3.16+.
+
+### Sin compilación
+
+Cambios puramente Python (sidecar). Sin NSIS por petición del
+usuario hasta que avise.
+
 ## [0.7.9] — 2026-05-20
 
 ### +8 ángulos de cámara + 8 moods de luz (12→20 cada uno)

@@ -485,7 +485,8 @@ async def cloning_install():
         return {"status": "already_installed", "state": _INSTALL_STATE}
     # Run in a thread so the FastAPI event loop keeps serving /health,
     # /tts/cloning/install/progress, etc.
-    loop = asyncio.get_event_loop()
+    # v0.7.10 — get_running_loop() (we're in an async route handler).
+    loop = asyncio.get_running_loop()
     loop.run_in_executor(None, _do_install_base_blocking)
     return {"status": "started", "state": _INSTALL_STATE}
 

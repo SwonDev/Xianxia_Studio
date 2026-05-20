@@ -505,7 +505,8 @@ async def voice_from_url(req: VoiceFromUrlRequest) -> VoiceAcquisitionResponse:
     auto-register it as a clone. Heavy stages run in a thread executor."""
     work = _work_dir() / f"ingest_{uuid.uuid4().hex[:8]}"
     work.mkdir(parents=True, exist_ok=True)
-    loop = asyncio.get_event_loop()
+    # v0.7.10 — get_running_loop() (we're inside an async route).
+    loop = asyncio.get_running_loop()
     audio = await loop.run_in_executor(None, _ingest_url, req.url, work)
     return await loop.run_in_executor(
         None, _run_pipeline,
@@ -531,7 +532,8 @@ async def voice_from_file(
     suffix = Path(audio.filename or "input.bin").suffix or ".bin"
     raw_path = work / f"upload{suffix}"
     raw_path.write_bytes(await audio.read())
-    loop = asyncio.get_event_loop()
+    # v0.7.10 — get_running_loop() (we're inside an async route).
+    loop = asyncio.get_running_loop()
     ingested = await loop.run_in_executor(
         None, _ingest_local_file, raw_path, work,
     )
