@@ -1150,15 +1150,31 @@ async def _wiki_full_extract(title: str, lang: str, max_chars: int = 2500) -> st
 # videogame, comic-book issue). When the user's topic is a real-world
 # subject we want the encyclopaedic article, not the fictional namesake
 # whose title happens to match.
+# v0.7.11 — purged the dangerously-generic "es el " / "es la " patterns
+# that were firing on ANY encyclopaedic definition starting with a
+# copula ("El Emperador de Jade ES LA deidad…", "Tutankamón ES EL
+# faraón…"). The other entries (with specific nouns like "episodio",
+# "novela") are precise enough; relying on the bare copula was casting
+# too wide a net and would silently discard real-world subjects whose
+# definitional sentence happened to match. Also added Spanish-specific
+# fictional categories the original list missed: temporada (season),
+# canción (song), álbum (album), saga.
 _FICTIONAL_LEAD_PATTERNS = (
-    "es el ", "es la ",
+    # Spanish — explicit fictional/pop-culture nouns
     "es un episodio", "es una pelicula", "es una película", "es una novela",
     "es un videojuego", "es un cómic", "es un comic", "es una serie",
+    "es una temporada", "es una canción", "es un álbum", "es un album",
+    "es una saga literaria", "es una obra de teatro", "es un cortometraje",
+    "es un libro de", "es una historieta", "es un manga", "es un anime",
+    # English — explicit fictional/pop-culture nouns
     "is an episode", "is a film", "is a movie", "is a novel",
     "is a video game", "is a comic", "is a tv series",
+    "is a song", "is an album", "is a fictional", "is a manga", "is an anime",
+    # English — ordinal episode patterns ("is the Nth episode…")
     "is the ninth episode", "is the eighth episode", "is the seventh episode",
     "is the sixth episode", "is the fifth episode", "is the fourth episode",
     "is the third episode", "is the second episode", "is the first episode",
+    "is the pilot episode",
 )
 _LEADING_ARTICLES = ("la ", "el ", "las ", "los ", "the ", "a ", "an ", "le ", "les ")
 
