@@ -636,18 +636,26 @@ impl Supervisor {
 
     pub async fn run_health_loop(self: Arc<Self>) {
         loop {
-            // Probe FIRST so the very first iteration (within ~1s of app boot)
-            // already updates the dots to green if services are up. Then sleep.
-            let py_ok = probe_python().await;
-            let node_ok = probe_node().await;
-            // v0.2.2 — Ollama probe is opt-in. See `probe_snapshot` for rationale.
-            let ollama_ok = if crate::app_settings::load().ollama_enabled {
-                crate::installer::ollama::is_running().await
-            } else {
-                false
-            };
-            let comfy_ok = probe_comfyui().await;
-            let llama_ok = probe_llamacpp().await;
+            // v0.7.15 — probes en paralelo (antes secuencial). El probe de
+            // ComfyUI puede tardar 1-2 s en healtcheck si está bajo carga;
+            // sumado a python/node/llama secuenciales daba ~3-4 s por
+            // tick. Con `tokio::join!` el ciclo dura ~max(per-probe),
+            // mejora la latencia de los dots del topbar sin coste extra
+            // (las probes son I/O, no compiten por CPU).
+            let ollama_enabled = crate::app_settings::load().ollama_enabled;
+            let (py_ok, node_ok, comfy_ok, llama_ok, ollama_ok) = tokio::join!(
+                probe_python(),
+                probe_node(),
+                probe_comfyui(),
+                probe_llamacpp(),
+                async move {
+                    if ollama_enabled {
+                        crate::installer::ollama::is_running().await
+                    } else {
+                        false
+                    }
+                },
+            );
 
             // Reap dead children to avoid Zombies. If process exited, drop
             // the handle so the next spawn can start fresh.

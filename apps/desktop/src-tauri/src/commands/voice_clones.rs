@@ -6,10 +6,28 @@
 //! form data to a localhost URL with arbitrary local paths.
 
 use anyhow::{anyhow, Result};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration;
 
 const PY_SIDECAR: &str = "http://127.0.0.1:8731";
+
+/// v0.7.15 — cliente reutilizable con timeout global de seguridad y
+/// pool de conexiones. Antes cada comando construía un
+/// `reqwest::Client::new()` por invocación: TCP fresca, sin pool, y
+/// un futuro refactor que olvidase el `.timeout(...)` per-request
+/// dejaría la UI colgada indefinidamente. Con un cliente compartido
+/// el timeout global actúa como red de seguridad y se reaprovechan
+/// las conexiones al sidecar local.
+static SIDECAR_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .connect_timeout(Duration::from_secs(5))
+        .pool_idle_timeout(Duration::from_secs(60))
+        .build()
+        .expect("reqwest::Client::builder must build with valid defaults")
+});
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VoiceClone {
@@ -24,7 +42,7 @@ pub struct VoiceClone {
 
 #[tauri::command]
 pub async fn list_voice_clones() -> Result<Vec<VoiceClone>, String> {
-    reqwest::Client::new()
+    SIDECAR_CLIENT
         .get(format!("{}/tts/clones", PY_SIDECAR))
         .timeout(std::time::Duration::from_secs(5))
         .send()
@@ -71,7 +89,7 @@ pub async fn register_voice_clone(
         .text("ref_text", ref_text.unwrap_or_default())
         .part("audio", part);
 
-    reqwest::Client::new()
+    SIDECAR_CLIENT
         .post(format!("{}/tts/clones", PY_SIDECAR))
         .multipart(form)
         .timeout(std::time::Duration::from_secs(60))

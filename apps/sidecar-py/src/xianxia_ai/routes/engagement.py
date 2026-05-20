@@ -523,7 +523,11 @@ async def optimize(req: OptimizeRequest) -> OptimizeResponse:
             "-movflags", "+faststart",
             str(out_path),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        # v0.7.15 — timeout 15 min, ver reframe.py.
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(500, f"engagement cut timeout (>15 min): {exc}") from exc
         if proc.returncode != 0:
             raise HTTPException(500, f"engagement cut failed: {proc.stderr[-500:]}")
     else:
@@ -540,7 +544,11 @@ async def optimize(req: OptimizeRequest) -> OptimizeResponse:
             "-c:a", "aac", "-b:a", "192k",
             str(out_path),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        # v0.7.15 — timeout 10 min (sólo audio = más rápido que vídeo full).
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(500, f"engagement audio swell timeout (>10 min): {exc}") from exc
         if proc.returncode != 0:
             raise HTTPException(500, f"engagement audio swell failed: {proc.stderr[-500:]}")
 
@@ -553,11 +561,15 @@ async def optimize(req: OptimizeRequest) -> OptimizeResponse:
 
 
 def _probe_duration(path: str) -> float:
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=nw=1:nk=1", path],
-        capture_output=True, text=True,
-    )
+    # v0.7.15 — timeout 30 s. ffprobe sobre un MP4 corrupto puede colgar.
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", path],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return 0.0
     try:
         return float(out.stdout.strip())
     except Exception:
