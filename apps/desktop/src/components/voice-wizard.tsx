@@ -63,8 +63,39 @@ export function VoiceWizard({ open, onClose, onCreated, defaultPrimary = 'es' }:
       setUrl('');
       setStartSeconds(undefined);
       setDurationSeconds(undefined);
+      // v0.7.14 — al cerrar el wizard mientras se está grabando: parar
+      // el interval del contador y abortar el MediaRecorder. Sin esto el
+      // contador sigue incrementando en background (warning "update on
+      // unmounted component") y el micrófono queda activo hasta que el
+      // usuario reabra y pulse stop. Bug real reproducible cerrando el
+      // wizard durante una grabación de prueba.
+      if (recordTimerRef.current) {
+        clearInterval(recordTimerRef.current);
+        recordTimerRef.current = null;
+      }
+      const mr = mediaRecorderRef.current;
+      if (mr && mr.state !== 'inactive') {
+        try { mr.stop(); } catch { /* best-effort */ }
+      }
     }
   }, [open, defaultPrimary]);
+
+  // v0.7.14 — cleanup de unmount: cubre el caso en que el componente sea
+  // desmontado (navegación a otra ruta) durante una grabación. Sin esto
+  // el setInterval del timer queda huérfano y el MediaRecorder retiene
+  // el micrófono hasta que el navegador haga GC del stream.
+  useEffect(() => {
+    return () => {
+      if (recordTimerRef.current) {
+        clearInterval(recordTimerRef.current);
+        recordTimerRef.current = null;
+      }
+      const mr = mediaRecorderRef.current;
+      if (mr && mr.state !== 'inactive') {
+        try { mr.stop(); } catch { /* best-effort */ }
+      }
+    };
+  }, []);
 
   if (!open) return null;
 

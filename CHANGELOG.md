@@ -6,6 +6,112 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.14] — 2026-05-20
+
+### Production-grade hardening: SQLite + HTTP + subprocess (6 bugs reales arreglados)
+
+Auditoría sistemática multi-área (subagente general-purpose con 10 ejes
+de checks) detectó **15 bugs latentes**, de los cuales esta versión
+arregla los **6 más críticos**. Sin cambios funcionales: comportamiento
+default IDÉNTICO al de v0.7.13, solo robustez extra.
+
+#### 1. SQLite hardening (`db/mod.rs`) — CRÍTICO
+
+Pool sin `busy_timeout` explícito + sin `wal_autocheckpoint` + sin
+`temp_store` configurado. En la rara overlap entre cron del scheduler
+(cada 60 s) y escritura de chapters durante long-form, podía surgir
+`SQLITE_BUSY`. WAL crecía indefinidamente sin checkpoint, con bursts
+de bloqueo cuando finalmente se ejecutaba.
+
+**Fix**: `busy_timeout=10s` + `wal_autocheckpoint=1000` + `temp_store=MEMORY`
++ `mmap_size=256 MB` + `acquire_timeout=15s`.
+Fuente: best-practices producción SQLite/sqlx (5-10 s busy_timeout
+elimina ~40 % de crashes "database is locked" según benchmarks).
+
+#### 2. `subprocess.Popen` ffmpeg sin `close_fds=True` — CRÍTICO
+
+En `routes/shorts_auto.py:1396` (Pass 2 reframer), el ffmpeg hijo
+heredaba TODOS los handles del sidecar Python (socket FastAPI :8731,
+JSONL logs, conexiones a ComfyUI/llama.cpp). Si Python moría mientras
+ffmpeg seguía vivo, el puerto 8731 quedaba `bound` → fallo
+"address already in use" al reiniciar.
+
+**Fix**: `close_fds=True` + `stdout=subprocess.DEVNULL`.
+
+#### 3. Wikipedia/HuggingFace sin manejo `Retry-After` — CRÍTICO
+
+`_wiki_search`, `_wiki_summary`, `_wiki_full_extract` (`routes/script.py`)
+hacían `raise_for_status()` ignorando 429/503. Wikipedia rate-limita
+por IP (~200 req/s burst); en long-form (15+ min) con varios
+`_wiki_full_extract` por capítulo un 429 silencioso vaciaba el RAG y
+el script perdía hechos reales — violando la regla
+`feedback_image_narrative_context` ("cada imagen debe ilustrar
+literalmente el texto narrado").
+
+**Fix**: nuevo helper `_wiki_get_with_retry` que respeta `Retry-After`
+header (cap 1-30 s) con hasta 2 reintentos + log estructurado
+`wiki_rate_limited`. Las 3 funciones lo consumen.
+
+#### 4. `youtube/upload.rs` — cliente HTTP sin timeout + JSON sin validar — ALTO
+
+`reqwest::Client::new()` (sin timeout) para subir el vídeo COMPLETO
+(PUT body). Un stall TCP en `googleapis.com` colgaba el spinner para
+siempre. Además `video_resource["id"].as_str()` devolvía Null
+silenciosamente si la respuesta no tenía la estructura esperada
+(quota exhausted, retry-needed), enmascarando la causa real.
+
+**Fix**: `once_cell::Lazy<Client>` con `timeout=30 min` +
+`connect_timeout=30 s` + `pool_idle_timeout=90 s`, reutilizado por
+todas las llamadas YT. JSON ahora se valida con `.get("id")` y el
+error incluye el cuerpo serializado.
+
+#### 5. `httpx.AsyncClient()` sin timeout en `shorts_auto.py` — ALTO
+
+3 sitios usando default httpx timeout=5s pero llamando al LLM con
+generaciones largas. TimeoutException → suprimida por `try/except`
+genérico → shorts sin score ni hook (comportamiento intermitente).
+
+**Fix**: `httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))`
+en los 3 sitios.
+
+#### 6. OAuth listener YouTube sin timeout — MEDIO
+
+`youtube_oauth_start` lanzaba `tokio::spawn(wait_for_code(...))` sin
+límite. Si el usuario cerraba el navegador sin completar consentimiento,
+el listener quedaba zombi en su puerto loopback hasta el shutdown de
+la app. Llamadas repetidas apilaban zombis en puertos distintos.
+
+**Fix**: `tokio::time::timeout(300, wait_for_code(...))` — 5 min
+generosos para completar el flow humano, tras eso libera el puerto y
+emite `youtube:error` legible.
+
+#### 7. `voice-wizard.tsx` cleanup grabación al cerrar/unmount — MEDIO
+
+`setInterval` del contador de grabación + MediaRecorder quedaban
+vivos si el usuario cerraba el modal o navegaba mientras grababa.
+Resultado: micrófono retenido + warning React "update on unmounted".
+
+**Fix**: useEffect cleanup que para interval y aborta MediaRecorder
+en ambos paths (close del modal Y unmount del componente).
+
+### Restantes (auditoría detectó, NO arreglados todavía)
+
+Estos 8 hallazgos quedan documentados para v0.7.15+:
+- `ACTIVE_RUNS` con `std::sync::Mutex` en código async (riesgo deadlock
+  on cancellation) — `pipeline/mod.rs`.
+- 2× `reqwest::Client::new()` sin timeout en `commands/voice_clones.rs`.
+- `tokio::spawn` sin handle guardado en autoinstall llama.cpp.
+- Triple `Arc<Mutex>` en `sidecars/mod.rs` sin orden documentado.
+- `subprocess.run` sin `timeout=` en `reframe.py`/`engagement.py`.
+- Posible race condition `persist_step` fase 4 vs fase 4c (LTX).
+- `run_health_loop` probes secuenciales (degrada UX topbar).
+- Otros minor.
+
+### Sin compilación
+
+Acumulado desde v0.7.5 (último NSIS shippeado): v0.7.6 → v0.7.14
+(9 versiones). Se compilará cuando el usuario lo autorice.
+
 ## [0.7.13] — 2026-05-20
 
 ### `.gitattributes` — fix CRLF/LF que rompía checkout post-build

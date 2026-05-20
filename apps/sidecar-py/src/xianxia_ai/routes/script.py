@@ -1083,16 +1083,57 @@ _WIKI_HEADERS = {
 }
 
 
+async def _wiki_get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict | None = None,
+    *,
+    max_retries: int = 2,
+) -> httpx.Response | None:
+    """v0.7.14 — GET con respeto de Retry-After ante 429/503.
+
+    Wikipedia rate-limita por IP (~200 req/s burst). En runs long-form
+    (15+ min) que disparen varios `_wiki_full_extract` por capítulo, un
+    429 silencioso vaciaba el grounding RAG → el script perdía hechos
+    reales (violando la regla `feedback_image_narrative_context`). Esta
+    helper centraliza el manejo de backoff y devuelve la respuesta
+    final o None tras agotar reintentos.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            r = await client.get(url, params=params)
+        except httpx.HTTPError:
+            if attempt >= max_retries:
+                raise
+            await asyncio.sleep(2 ** attempt)
+            continue
+        if r.status_code in (429, 503) and attempt < max_retries:
+            ra_raw = r.headers.get("Retry-After", "")
+            try:
+                wait = max(1, min(30, int(ra_raw)))
+            except (TypeError, ValueError):
+                wait = 2 ** attempt
+            log_event(
+                "warning", "wiki_rate_limited",
+                status=r.status_code, wait_s=wait, attempt=attempt + 1,
+            )
+            await asyncio.sleep(wait)
+            continue
+        return r
+    return None
+
+
 async def _wiki_search(query: str, lang: str, limit: int = 3) -> list[str]:
     """Return up to `limit` matching page titles from Wikipedia search."""
     url = f"https://{lang}.wikipedia.org/w/api.php"
     try:
         async with httpx.AsyncClient(timeout=15.0, headers=_WIKI_HEADERS) as client:
-            r = await client.get(url, params={
+            r = await _wiki_get_with_retry(client, url, params={
                 "action": "query", "list": "search", "format": "json",
                 "srsearch": query, "srlimit": limit, "utf8": 1,
             })
-            r.raise_for_status()
+            if r is None or r.status_code != 200:
+                return []
             return [
                 hit["title"]
                 for hit in (r.json().get("query", {}).get("search", []) or [])
@@ -1108,8 +1149,8 @@ async def _wiki_summary(title: str, lang: str) -> str:
     url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title_safe}"
     try:
         async with httpx.AsyncClient(timeout=15.0, headers=_WIKI_HEADERS) as client:
-            r = await client.get(url)
-            if r.status_code != 200:
+            r = await _wiki_get_with_retry(client, url)
+            if r is None or r.status_code != 200:
                 return ""
             data = r.json()
             extract = (data.get("extract") or "").strip()
@@ -1127,12 +1168,12 @@ async def _wiki_full_extract(title: str, lang: str, max_chars: int = 2500) -> st
     url = f"https://{lang}.wikipedia.org/w/api.php"
     try:
         async with httpx.AsyncClient(timeout=15.0, headers=_WIKI_HEADERS) as client:
-            r = await client.get(url, params={
+            r = await _wiki_get_with_retry(client, url, params={
                 "action": "query", "prop": "extracts", "explaintext": 1,
                 "format": "json", "titles": title, "redirects": 1,
                 "exsectionformat": "plain",
             })
-            if r.status_code != 200:
+            if r is None or r.status_code != 200:
                 return ""
             pages = (r.json().get("query", {}) or {}).get("pages", {}) or {}
             for _pid, page in pages.items():
