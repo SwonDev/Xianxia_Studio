@@ -6,6 +6,52 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.6] — 2026-05-20
+
+### LLM retry backoff: arregla 503 transitorio al despertar llama-server
+
+Al revisar los logs de runs reales conté **4 ocurrencias de
+`key_facts_llm_http_fail`** y otras tantas de `setting_tag_llm_http_fail`.
+Causa raíz: cuando llama-server está en estado *suspended* (TTL 90 min,
+ver v0.2.2 `bugfix_llamacpp_respawn`), la primera request al despertar
+puede devolver **503** durante 5-10 s mientras el modelo se carga en VRAM.
+
+`_extract_key_facts` hacía una sola llamada y devolvía `""` si fallaba →
+guion sin grounding factual (degradación silenciosa).
+`_generate_setting_tag` hacía 4 retries pero **sin esperar entre ellos**,
+así que los 4 disparaban en ráfaga mientras el servidor seguía cargando
+y todos fallaban con el mismo 503.
+
+Fix v0.7.6: añadido **exponential backoff** (1 s, 3 s, 7 s) a ambas
+funciones. La primera tentativa es inmediata; si falla, espera antes
+del retry. Esto da al servidor el tiempo necesario para terminar de
+despertar sin bloquear arbitrariamente la pipeline. Total worst-case:
+11 s de espera extra antes de dar up — comparado con el guion vacío
+que generábamos antes, vale mucho la pena.
+
+Concretamente:
+- `apps/sidecar-py/src/xianxia_ai/routes/script.py::_extract_key_facts`:
+  reorganizado el try/except como bucle con `_delays = [0, 1, 3, 7]`.
+  Loguea `key_facts_llm_retry` por cada intento intermedio + final
+  `key_facts_llm_http_fail` solo cuando agotamos los 4.
+- `apps/sidecar-py/src/xianxia_ai/routes/script.py::_generate_setting_tag`:
+  añadido `await asyncio.sleep(_wait)` dentro del bloque `except` antes
+  del `continue`, con la misma escala (0/1/3/7 s).
+
+### Resultado esperado
+
+El cuello de botella "key_facts_too_short" → guion vago / setting_tag
+fallback prosa Wikipedia debería bajar significativamente. La métrica
+clave a observar en logs futuros es la frecuencia de
+`key_facts_extracted` (success) vs `key_facts_llm_http_fail` (final
+fallback) después del retry chain.
+
+### Sin cambios en presets ni contratos
+
+Cambios puramente defensivos en código de fallback. Cualquier preset
+recibe igual el beneficio. Imports limpios: `asyncio` añadido al top de
+`script.py` (no estaba importado aunque ya se usaba indirectamente).
+
 ## [0.7.5] — 2026-05-20
 
 ### Tres bugs reales detectados por auditoría tras run del Emperador de Jade

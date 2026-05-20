@@ -9,6 +9,7 @@ user picked in Settings → LLM Model Browser.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
@@ -1305,27 +1306,54 @@ async def _extract_key_facts(
         "names (people, titles, places) in their original spelling.\n\n"
         "Output:"
     )
+    # v0.7.6 — retry con exponential backoff (1s, 3s, 7s). llama-server
+    # puede estar despertando del suspend (TTL 90 min, ver v0.2.2) y la
+    # primera request al inicio de /script da 503 en ese estado. El bug
+    # se detectó en logs: 4 ocurrencias de "key_facts_llm_http_fail" en
+    # runs reales — eran fallos transitorios mientras el LLM cargaba.
+    # Sin retry, key_facts queda vacío y el guion sale sin grounding
+    # factual (degradación silenciosa).
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            try:
-                result = await llm_generate(
-                    model=model,
-                    system=system,
-                    prompt=prompt,
-                    options={
-                        "temperature": 0.3,  # tight: we want extraction, not creativity
-                        # v0.1.38: 400 is enough for 12-18 short bullets
-                        "num_predict": 400,
-                        "num_ctx": 6144,
-                    },
-                    think=False,
-                    max_continuations=0,
-                    client=client,
-                    timeout=120.0,
-                )
-            except httpx.HTTPError as exc:
+            result = None
+            _delays = [0.0, 1.0, 3.0, 7.0]  # 1st try immediate, then backoff
+            _last_exc: Exception | None = None
+            for attempt_idx, delay in enumerate(_delays):
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                try:
+                    result = await llm_generate(
+                        model=model,
+                        system=system,
+                        prompt=prompt,
+                        options={
+                            "temperature": 0.3,  # tight: we want extraction, not creativity
+                            # v0.1.38: 400 is enough for 12-18 short bullets
+                            "num_predict": 400,
+                            "num_ctx": 6144,
+                        },
+                        think=False,
+                        max_continuations=0,
+                        client=client,
+                        timeout=120.0,
+                    )
+                    break  # success
+                except httpx.HTTPError as exc:
+                    _last_exc = exc
+                    if attempt_idx < len(_delays) - 1:
+                        log_event(
+                            "info", "key_facts_llm_retry",
+                            attempt=attempt_idx + 1,
+                            next_delay=_delays[attempt_idx + 1],
+                            error=str(exc)[:80],
+                            topic=topic[:60],
+                        )
+                        continue
+            if result is None:
                 log_event("warning", "key_facts_llm_http_fail",
-                          error=str(exc)[:120], topic=topic[:60])
+                          error=str(_last_exc)[:120] if _last_exc else "no result after retries",
+                          attempts=len(_delays),
+                          topic=topic[:60])
                 return ""
             raw = (result.get("response") or "").strip()
             # Keep only lines that look like bullets (start with - or • or *)
@@ -1455,6 +1483,17 @@ async def _generate_setting_tag(
                               error=str(exc)[:120],
                               attempt=attempt_idx,
                               topic=topic[:60])
+                    # v0.7.6 — exponential-ish backoff between retries.
+                    # llama-server can take 5-10 s to wake from the
+                    # suspend state (see v0.2.2 TTL 90 min). Without a
+                    # wait, all 4 attempts fire while the server is
+                    # still loading and we get 4 consecutive 503s for
+                    # nothing. Backoff matches the pattern used by
+                    # _extract_key_facts: 1s after attempt 1, 3s after
+                    # attempt 2, 7s after attempt 3.
+                    _wait = (0.0, 1.0, 3.0, 7.0)[min(attempt_idx, 3)]
+                    if _wait > 0 and attempt_idx < len(attempts):
+                        await asyncio.sleep(_wait)
                     continue
                 raw = (result.get("response") or "").strip()
                 last_raw_len = len(raw)
