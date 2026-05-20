@@ -1661,6 +1661,19 @@ _CAMERA_VARIATIONS: list[str] = [
     "macro detail shot, texture and material focus",
     "side profile shot, silhouette against sky",
     "two-shot framing, subject and environment in dialogue",
+    # v0.7.8 — 8 extra cinematic angles for 20-slot rotation. Lifts the
+    # max distinct-pair count from 12² = 144 to 20² = 400 combinations,
+    # giving a 17-beat run a ~2.6× lower probability of any two beats
+    # sharing camera + lighting framing. Drawn from documentary feature
+    # cinematography vocabulary (Werner Herzog / Ken Burns / Ron Fricke).
+    "tracking dolly shot, parallel motion to subject, smooth lateral parallax",
+    "static locked tripod, formal documentary frame, geometry-led composition",
+    "POV handheld, breath-paced subtle motion, immersive subjective viewpoint",
+    "crane shot rising, vertical reveal, scale through ascent",
+    "rack-focus pull, foreground bokeh to sharp background, attention shift",
+    "symmetrical centred composition, axial geometry, monumental stillness",
+    "rule-of-thirds offset framing, negative space lead-room, contemplative",
+    "anamorphic 2.39:1 widescreen, horizontal letterboxed cinematic feel",
 ]
 
 _LIGHTING_VARIATIONS: list[str] = [
@@ -1676,6 +1689,16 @@ _LIGHTING_VARIATIONS: list[str] = [
     "fog and mist diffusion, atmospheric haze",
     "backlit silhouette, halo rim of light",
     "harsh sidelight, half-face in shadow",
+    # v0.7.8 — 8 extra lighting moods completing 20-slot rotation.
+    # Cover more documentary/historical settings the previous 12 missed.
+    "dappled forest light, mottled green and gold patches",
+    "underground torchlit gloom, deep amber pools against darkness",
+    "snow-reflected indirect light, cool blue-white ambient bounce",
+    "sunset orange-magenta sky, silhouette horizon",
+    "lantern-lit interior, warm pools surrounded by indigo shadow",
+    "high-key flat illumination, archival photography aesthetic",
+    "single source god-rays through atmospheric dust, volumetric beams",
+    "embered firelight close-up, micro-shadows on textured surfaces",
 ]
 
 

@@ -6,6 +6,48 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.9] — 2026-05-20
+
+### +8 ángulos de cámara + 8 moods de luz (12→20 cada uno)
+
+Ampliación de las listas de variaciones cinematográficas en
+`script.py`. Las rotaciones anteriores tenían 12 entradas cada una
+(`_CAMERA_VARIATIONS`, `_LIGHTING_VARIATIONS`), que daban 12² = 144
+combinaciones distintas. Con 17 beats típicos por vídeo, la
+probabilidad de colisión de framing (mismo angle + lighting) entre 2
+beats era ~12 %.
+
+Ahora 20 entradas cada uno → **400 combinaciones**, bajando la
+probabilidad de colisión a ~4 % (≈ 3× menos colisiones de framing).
+
+**Nuevos ángulos de cámara** (documentary feature cinematography
+vocabulary, Herzog / Ken Burns / Ron Fricke):
+- tracking dolly shot, parallel motion
+- static locked tripod, formal documentary frame
+- POV handheld, breath-paced motion
+- crane shot rising, vertical reveal
+- rack-focus pull, foreground bokeh to sharp
+- symmetrical centred composition, axial geometry
+- rule-of-thirds offset framing, negative space lead-room
+- anamorphic 2.39:1 widescreen letterboxed
+
+**Nuevos moods de luz** (cubren contextos históricos/documentales
+no cubiertos por los 12 originales):
+- dappled forest light, mottled green and gold
+- underground torchlit gloom, amber pools
+- snow-reflected indirect light, cool blue-white
+- sunset orange-magenta sky silhouette
+- lantern-lit interior, warm pools, indigo shadow
+- high-key flat illumination, archival photo aesthetic
+- single source god-rays through atmospheric dust
+- embered firelight close-up, micro-shadows
+
+### Sin compilación
+
+Como en v0.7.8, queda commiteado y pusheado sin generar NSIS hasta
+que el usuario lo pida. Cambios puramente Python (workflow JSON +
+constantes en script.py) — solo afectan al sidecar runtime.
+
 ## [0.7.8] — 2026-05-20
 
 ### Auditoría de calidad: 3 mejoras estructurales + workflows Z-Image óptimos
