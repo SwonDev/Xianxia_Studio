@@ -1,0 +1,78 @@
+# v0.7.13 — explicit line-ending normalisation.
+#
+# Without this file, line endings are decided by each developer's
+# `core.autocrlf` setting (Windows default = "true" → converts LF↔CRLF
+# on checkout/commit). The result is the noisy
+#   "warning: in the working copy of 'X', LF will be replaced by CRLF
+#    the next time Git touches it"
+# every commit, AND a real production failure documented in our
+# bugfix_catalog: "CRLF en Cargo.toml bloquea checkout post-build"
+# (lesson from v0.6.0 LTX integration — Cargo refuses CRLF in
+# Cargo.toml and `cargo check` fails after a clean checkout).
+#
+# Rule: the repo stores everything as LF. Each file class is pinned
+# explicitly so a new developer can't accidentally introduce CRLF
+# from a misconfigured editor.
+
+# Default: detect text, store as LF.
+* text=auto eol=lf
+
+# ── Source code (always LF, never CRLF) ─────────────────────────
+*.rs       text eol=lf
+*.toml     text eol=lf
+*.py       text eol=lf
+*.ts       text eol=lf
+*.tsx      text eol=lf
+*.js       text eol=lf
+*.mjs      text eol=lf
+*.jsx      text eol=lf
+*.json     text eol=lf
+*.html     text eol=lf
+*.css      text eol=lf
+*.md       text eol=lf
+*.sql      text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+
+# ── Cargo lockfile MUST be LF — Cargo refuses CRLF here on fresh
+# checkout and breaks the build. Lesson from v0.6.0 LTX integration.
+Cargo.lock text eol=lf
+
+# ── Shell scripts: always LF (Windows shells tolerate it; bash
+# breaks on CRLF).
+*.sh       text eol=lf
+
+# ── Windows batch files: keep CRLF (legacy cmd.exe expectation).
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+*.ps1      text eol=crlf
+
+# ── Binary files: never normalise (Git would corrupt them otherwise).
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.ico      binary
+*.icns     binary
+*.svg      text eol=lf
+*.woff     binary
+*.woff2    binary
+*.ttf      binary
+*.otf      binary
+*.mp3      binary
+*.mp4      binary
+*.wav      binary
+*.ogg      binary
+*.gguf     binary
+*.safetensors binary
+*.pt       binary
+*.ckpt     binary
+*.bin      binary
+*.exe      binary
+*.dll      binary
+*.so       binary
+*.dylib    binary
+*.zip      binary
+*.gz       binary
+*.7z       binary
+*.tar      binary

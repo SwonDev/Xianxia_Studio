@@ -7287,7 +7287,7 @@ dependencies = [
 
 [[package]]
 name = "xianxia-studio"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "anyhow",
  "async-trait",

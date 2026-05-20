@@ -6,6 +6,40 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.13] — 2026-05-20
+
+### `.gitattributes` — fix CRLF/LF que rompía checkout post-build
+
+Auditoría detectó que el repo NO tenía `.gitattributes`, dejando el
+manejo de line endings al cargo del `core.autocrlf` global de cada
+desarrollador. En Windows el default es `true` → convierte LF↔CRLF
+en checkout/commit.
+
+**Consecuencias reales**:
+1. Spam de warnings en cada commit:
+   `"warning: in the working copy of 'X', LF will be replaced by CRLF
+    the next time Git touches it"` (visto en TODOS los commits de
+    esta sesión).
+2. **Bug documentado en `bugfix_catalog`**: "CRLF en Cargo.toml
+   bloquea checkout post-build" — lesson de v0.6.0 LTX integration.
+   Cargo lanza error si encuentra CRLF en `Cargo.toml`.
+
+**Fix**: nuevo archivo `.gitattributes` que pinea explícitamente:
+- Todos los archivos de código fuente → `text eol=lf` (Rust, Python,
+  TS/TSX, JS, JSON, HTML, CSS, MD, SQL, YML, TOML).
+- `Cargo.lock` → `text eol=lf` (crítico, ver lesson v0.6.0).
+- Shell scripts → LF.
+- Batch files `.bat`/`.cmd`/`.ps1` → CRLF (cmd.exe legacy).
+- Binarios (PNG, JPG, MP3, MP4, GGUF, safetensors, etc.) → `binary`,
+  nunca se normalizan.
+
+Esto previene futuros incidentes CRLF y silencia los warnings
+ruidosos que se mostraban en cada `git commit`.
+
+### Sin compilación
+
+Sin NSIS por petición usuario. Sigue acumulando v0.7.6→v0.7.13.
+
 ## [0.7.12] — 2026-05-20
 
 ### Scheduler con backoff exponencial + máximo de intentos (guard de quota YouTube)
