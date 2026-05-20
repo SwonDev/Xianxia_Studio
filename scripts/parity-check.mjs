@@ -97,20 +97,23 @@ console.log('Parity check — dev ↔ prod invariants\n');
   check(
     'subtitles.py exposes intro_offset_seconds for caption sync',
     ok,
-    'subtitles must accept an intro offset so SRT/ASS align with the 6 s intro card',
+    'subtitles must accept an intro offset so SRT/ASS align with the intro card (v0.7.4: 1.5 s)',
   );
 }
 
-// ── (4) rust pipeline passes intro_offset_seconds = 6 to /subtitles ─
+// ── (4) rust pipeline passes intro_offset_seconds = 1.5 to /subtitles ─
+// v0.7.4 — viral intro reduced from 6.0 to 1.5 s. If render.ts ever
+// changes INTRO_SEC, BOTH constants (Node + Rust) must match or every
+// subtitle cue lands ahead/behind the spoken word.
 {
   const ok = contains(
     join(ROOT, 'apps/desktop/src-tauri/src/pipeline/mod.rs'),
-    '"intro_offset_seconds": 6.0',
+    '"intro_offset_seconds": 1.5',
   );
   check(
-    'pipeline/mod.rs sends intro_offset_seconds=6.0 to /subtitles',
+    'pipeline/mod.rs sends intro_offset_seconds=1.5 to /subtitles (v0.7.4 viral intro)',
     ok,
-    'rust pipeline must forward the intro offset constant — otherwise subs desync',
+    'rust pipeline must forward the intro offset constant — otherwise subs desync. If you changed INTRO_SEC in render.ts, sync both this check AND pipeline/mod.rs.',
   );
 }
 

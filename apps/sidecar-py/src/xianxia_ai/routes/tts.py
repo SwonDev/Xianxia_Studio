@@ -606,16 +606,39 @@ async def synthesize(req: TTSRequest) -> TTSResponse:
         sf.write(str(out_path), full, sr or 24000)
         return TTSResponse(audio_path=str(out_path), duration_seconds=0.0, chunks=0)
 
-    # v0.1.34: loudness-normalize each chunk BEFORE crossfade so the gain
-    # stages going into acrossfade are consistent (-14 LUFS target).
-    audio_segments = [
-        _loudnorm_audio(seg.astype("float32"), sr, target_lufs=-14.0, peak_db=-1.0)
-        for seg in audio_segments
-    ]
+    # v0.7.4 — Per-chunk PEAK normalize (not LUFS) BEFORE crossfade so the
+    # join points have matched amplitudes. Full LUFS normalize is applied
+    # ONCE at the end on the final concatenated WAV — see further below.
+    #
+    # Why: v0.1.34 normalized each chunk to -14 LUFS independently before
+    # the crossfade. That made each chunk LOCALLY -14 LUFS but the
+    # PERCEIVED loudness of the final track jumped between chunks because
+    # LUFS is dialogue-aware: a chunk with a louder sentence ends up
+    # compressed more than a chunk with a quieter sentence, and the
+    # listener hears "the voice dropped" at the join. Real bug reported by
+    # the user on 2026-05-20: "sutil pero se nota bastante… baja como el
+    # volumen de algunas partes de las voces".
+    #
+    # Fix: peak-only matching at the seams (cheap, ear-friendly), then
+    # GLOBAL LUFS normalize after the crossfade chain has fused the chunks.
+    audio_segments_arr = [seg.astype("float32") for seg in audio_segments]
+    _PEAK_PRE_DB = -1.0
+    _peak_target_pre = 10.0 ** (_PEAK_PRE_DB / 20.0)
+    audio_segments = []
+    for seg in audio_segments_arr:
+        peak = float(np.max(np.abs(seg))) if len(seg) else 0.0
+        if peak > 0.0:
+            seg = seg * (_peak_target_pre / peak)
+        audio_segments.append(seg.astype("float32"))
 
     # ── Crossfade concat (intra-request) ─────────────────────────────
-    # For N > 1 chunks, chain them with an 80 ms acrossfade (tri curves)
-    # to eliminate the hard click at each concatenation point.
+    # For N > 1 chunks, chain them with a 300 ms acrossfade (sinusoidal
+    # curves) to eliminate the hard click at each concatenation point AND
+    # blend the timbre micro-shift the Qwen3-TTS clone introduces between
+    # independent chunks. v0.1.34 used 80 ms which removed clicks but left
+    # the timbre/pitch jump audible. 300 ms is the sweet spot: still
+    # imperceptible to a listener as a "join", but masks the per-chunk
+    # variation in voice character.
     # For N == 1, skip ffmpeg entirely — no joins, nothing to crossfade.
     # Graceful fallback: if ffmpeg acrossfade fails, raw-concat the chunks
     # (same as the pre-crossfade behaviour) so /tts never breaks.
@@ -630,7 +653,7 @@ async def synthesize(req: TTSRequest) -> TTSResponse:
         import subprocess as _sp
         import tempfile as _tf
 
-        _XFADE_D = 0.08  # 80 ms — removes click cleanly with tri curve
+        _XFADE_D = 0.30  # 300 ms (v0.7.4) — masks Qwen3-TTS clone per-chunk timbre/volume drift, not just click
 
         # Write each chunk to a temp WAV so ffmpeg can read them.
         tmp_dir = Path(_tf.mkdtemp(prefix="tts_xfade_"))
@@ -648,7 +671,10 @@ async def synthesize(req: TTSRequest) -> TTSResponse:
             #   N>2:  [0][1]acrossfade=...[a1];[a1][2]acrossfade=...[a2];...
             #         ...[a{N-2}][{N-1}]acrossfade=...[out]
             n_inputs = len(chunk_paths)
-            xfade_opts = f"acrossfade=d={_XFADE_D}:c1=tri:c2=tri"
+            # v0.7.4 — sinusoidal curves (qua/qua) give a smoother amplitude
+            # transition than triangular (tri/tri), which masks timbre
+            # changes better at the longer 300 ms duration.
+            xfade_opts = f"acrossfade=d={_XFADE_D}:c1=qsin:c2=qsin"
             if n_inputs == 2:
                 fc = f"[0][1]{xfade_opts}[out]"
             else:
@@ -688,6 +714,23 @@ async def synthesize(req: TTSRequest) -> TTSResponse:
         # Raw concat fallback (original behaviour) or single-chunk path.
         full = np.concatenate(audio_segments) if len(audio_segments) > 1 else audio_segments[0]
         sf.write(str(out_path), full, sr)
+
+    # v0.7.4 — GLOBAL LUFS loudness normalize on the FINAL concatenated WAV.
+    # This is the second half of the consistency fix: chunks are joined
+    # without per-chunk LUFS gain rides (which was making the listener
+    # hear "the voice dropped" at joins). Now the whole track is gain-set
+    # ONCE to the broadcast/YouTube target of -14 LUFS. The result is the
+    # listener hears a consistent overall loudness AND consistent timbre
+    # across the entire narration. Skipping silently on errors so /tts
+    # never breaks just because pyloudnorm complained about something.
+    try:
+        _wav, _sr_read = sf.read(str(out_path), dtype="float32")
+        if _wav.ndim > 1:
+            _wav = _wav[:, 0]  # collapse to mono just in case
+        _normed = _loudnorm_audio(_wav, _sr_read, target_lufs=-14.0, peak_db=-1.0)
+        sf.write(str(out_path), _normed, _sr_read)
+    except Exception as _e:
+        log.warning("tts: final LUFS normalize failed (%s) — chunks already peak-matched, shipping as-is", _e)
 
     # Measure duration from the FINAL produced WAV (post-crossfade length
     # differs from sum-of-chunks by xfade_d*(N-1) — reading the file is the

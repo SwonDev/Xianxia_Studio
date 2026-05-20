@@ -291,33 +291,46 @@ async fn try_thumbnail(
         .unwrap_or("")
         .trim_matches(|c: char| !c.is_alphanumeric())
         .to_uppercase();
-    // v0.1.38: derive a SHORT tagline subtitle from the setting_tag instead
-    // of repeating the topic (which doubles as the big title). E.g.
-    // "Ancient Egyptian setting (sand-gold, …)" → "ANCIENT EGYPTIAN ·
-    // REAL HISTORY". When setting_tag is missing we fall back to a
-    // generic tagline so the thumbnail never shows duplicate copy.
-    let core_setting = setting_prefix
-        .splitn(2, |c: char| c == '(' || c == '[')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .trim_end_matches(|c: char| ".,;: ".contains(c))
-        .to_string();
+    // v0.7.4 — Build a SHORT, CLEAN tagline. The previous version walked
+    // the full setting_tag string, which became toxic when v0.7.3 changed
+    // _topic_setting_prefix to return pure style anchors
+    // ("china cinematic setting, period-accurate iconography, era-true
+    // palette, dramatic lighting"). The thumbnail then renders the FULL
+    // technical string as a visible subtitle ("CHINA CINEMATIC SETTING,
+    // PERIOD-ACCURATE ICONOGRAPHY, ERA-TRUE PALETTE, DRAMATIC LIGHTING ·
+    // HISTORIA REAL" — real bug from the 2026-05-20 Emperador de Jade run).
+    //
+    // New strategy: pull ONLY the first 1-2 word cultural/era token
+    // (china / chinese / norse / ancient greek / 16th-century / edo / etc.)
+    // and discard everything else. This keeps the subtitle compact and
+    // readable, never leaks technical pipeline strings, and degrades to
+    // "HISTORIA REAL" cleanly when no useful token is present.
     let core_setting = {
-        let lower = core_setting.to_lowercase();
-        let trimmed = ["setting", "era", "period", "world", "universe", "atmosphere"]
+        // Take everything before the first comma/paren so we don't drag in
+        // "period-accurate iconography" etc.
+        let head = setting_prefix
+            .splitn(2, |c: char| c == ',' || c == '(' || c == '[')
+            .next()
+            .unwrap_or("")
+            .trim();
+        let lower = head.to_lowercase();
+        // Strip any trailing structural noun so "ancient chinese setting"
+        // becomes "ancient chinese", "edo japan world" becomes "edo japan".
+        let stripped = ["setting", "era", "period", "world", "universe", "atmosphere", "cinematic"]
             .iter()
             .fold(lower, |acc, suffix| {
                 if acc.ends_with(suffix) {
                     acc[..acc.len() - suffix.len()].trim().to_string()
                 } else { acc }
             });
-        trimmed.trim_end_matches(|c: char| ".,;: ".contains(c)).to_string()
+        let s = stripped.trim_end_matches(|c: char| ".,;: ".contains(c)).to_string();
+        // Cap at 3 words to keep the subtitle from sprawling.
+        s.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
     };
     let subtitle_text = if core_setting.is_empty() {
-        "REAL HISTORY".to_string()
+        "HISTORIA REAL".to_string()
     } else {
-        format!("{} · REAL HISTORY", core_setting.to_uppercase())
+        format!("{} · HISTORIA REAL", core_setting.to_uppercase())
     };
     let _thumb = client
         .post(format!("{}/render/thumbnail", NODE_SIDECAR))
@@ -2101,13 +2114,12 @@ async fn run(
             "vertical": req.vertical,
             "out_dir": out_dir,
             "style": req.caption_style.clone().unwrap_or_else(|| "xianxia".to_string()),
-            // v0.1.46: tell the subtitle generator the narration audio
-            // sits at t=6 inside the FINAL composed video (the Node
-            // renderer prepends an INTRO_SEC=6.0 intro card + silence).
-            // Without this, every cue appears 6 s ahead of the spoken
-            // word — the desync the user reported across long-form
-            // videos since the intro card was added in v0.1.38.
-            "intro_offset_seconds": 6.0,
+            // v0.7.4 — Node renderer now uses INTRO_SEC=1.5 s (was 6.0)
+            // for the viral over-image intro. Subtitle cues must be
+            // shifted by the same amount or every line lands ahead of
+            // its spoken word. If render.ts ever changes INTRO_SEC,
+            // this constant MUST be updated to match.
+            "intro_offset_seconds": 1.5,
         }))
         .send()
         .await?
