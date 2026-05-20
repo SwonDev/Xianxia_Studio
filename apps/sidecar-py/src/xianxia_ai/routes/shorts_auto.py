@@ -1393,8 +1393,20 @@ def _smart_reframe_to_vertical(
         "-shortest",
         str(out_video),
     ]
+    # v0.7.14 — close_fds=True + stdout=DEVNULL. Sin close_fds, en Windows el
+    # ffmpeg hijo hereda TODOS los handles del sidecar (socket FastAPI :8731,
+    # archivos JSONL abiertos, conexiones a ComfyUI/llama.cpp). Cuando un
+    # shutdown del sidecar mata Python mientras ffmpeg sigue vivo, esos
+    # handles permanecen abiertos en el hijo y el puerto 8731 queda bound
+    # → fallo "address already in use" al reiniciar. stdout=DEVNULL evita
+    # que un stdout no consumido haga backpressure (ffmpeg de Pass 2 sólo
+    # escribe progreso a stderr; stdout es ruido).
     proc = subprocess.Popen(
-        cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE,
+        cmd,
+        stdin=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        close_fds=True,
     )
 
     # v0.1.21 fix: previously we reused the SAME `cap` from Pass 1 and
@@ -1735,7 +1747,7 @@ async def shorts_from_video(req: ShortsFromVideoRequest) -> ShortsAutoResponse:
     else:
         sampled = candidates
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
         # Score sampled candidates IN PARALLEL (was serial — 12×3s = 36 s).
         # asyncio.gather drops it to ~max(per-call) since Ollama with
         # OLLAMA_NUM_PARALLEL>=2 happily handles concurrent generates.
@@ -1827,7 +1839,7 @@ async def shorts_from_video(req: ShortsFromVideoRequest) -> ShortsAutoResponse:
     shorts: list[ShortInfo] = []
     detected_lang = (info.language or "en").lower()
     cta_defaults = _CTA_DEFAULTS.get(detected_lang, _CTA_DEFAULTS["en"])
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
         hooks: list[str] = []
         for c in picked:
             # First sentence of the clip is a sane fallback hook.
@@ -1920,7 +1932,7 @@ async def auto_shorts(req: ShortsAutoRequest) -> ShortsAutoResponse:
     else:
         sampled = candidates
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
         for c in sampled:
             scores = await _score_candidate(client, req.model, c["text"])
             c.update(scores)

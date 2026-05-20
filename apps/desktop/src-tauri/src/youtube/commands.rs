@@ -75,8 +75,19 @@ pub async fn youtube_oauth_start(app: tauri::AppHandle) -> Result<OAuthStartResp
 
     let app_clone = app.clone();
     tokio::spawn(async move {
-        match oauth::wait_for_code(listener, port).await {
-            Ok(code) => match oauth::exchange_code(&code, port).await {
+        // v0.7.14 — timeout duro de 5 minutos. Si el usuario cierra el
+        // navegador sin completar el flujo, `wait_for_code` se quedaba
+        // escuchando el puerto loopback hasta el shutdown de la app, y
+        // cada nueva llamada a `youtube_oauth_start` apilaba un listener
+        // zombi en un puerto distinto. 5 min es generoso para que un
+        // humano complete el consentimiento; tras eso se libera el puerto.
+        let timed = tokio::time::timeout(
+            std::time::Duration::from_secs(300),
+            oauth::wait_for_code(listener, port),
+        )
+        .await;
+        match timed {
+            Ok(Ok(code)) => match oauth::exchange_code(&code, port).await {
                 Ok(creds) => {
                     if let Err(e) = oauth::store_credentials(&creds) {
                         let _ = app_clone.emit("youtube:error", e.to_string());
@@ -88,8 +99,14 @@ pub async fn youtube_oauth_start(app: tauri::AppHandle) -> Result<OAuthStartResp
                     let _ = app_clone.emit("youtube:error", e.to_string());
                 }
             },
-            Err(e) => {
+            Ok(Err(e)) => {
                 let _ = app_clone.emit("youtube:error", e.to_string());
+            }
+            Err(_) => {
+                let _ = app_clone.emit(
+                    "youtube:error",
+                    "OAuth timeout: ningún código recibido en 5 minutos".to_string(),
+                );
             }
         }
     });

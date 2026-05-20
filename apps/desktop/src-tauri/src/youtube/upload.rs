@@ -1,8 +1,25 @@
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Duration;
 
 use super::oauth;
+
+/// v0.7.14 — cliente HTTP reutilizable con timeout robusto y connection
+/// pool. El anterior `reqwest::Client::new()` (1) no tenía timeout
+/// global → un stall TCP en la subida del PUT del vídeo dejaba el
+/// spinner colgado para siempre; (2) creaba TCP fresca por cada
+/// llamada al usar varios métodos, perdiendo el pool de conexiones.
+/// 30 min cubre cómodamente una subida de 500 MB en conexión lenta.
+static YT_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(60 * 30))
+        .connect_timeout(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build()
+        .expect("reqwest::Client::builder must build with valid defaults")
+});
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CaptionTrack {
@@ -41,7 +58,10 @@ pub async fn upload(req: UploadRequest) -> Result<UploadResponse> {
     }
     let token = creds.access_token.as_deref().unwrap_or("");
 
-    let client = reqwest::Client::new();
+    // v0.7.14 — cliente con timeout 30 min + pool reutilizable. Antes
+    // era `reqwest::Client::new()` (sin timeout): un stall TCP en
+    // googleapis.com colgaba el spinner de UI indefinidamente.
+    let client = YT_CLIENT.clone();
 
     // Step 1 — initiate resumable session
     let body = serde_json::json!({
@@ -87,10 +107,21 @@ pub async fn upload(req: UploadRequest) -> Result<UploadResponse> {
     if !resp.status().is_success() {
         return Err(anyhow::anyhow!("upload PUT failed: {}", resp.text().await?));
     }
+    // v0.7.14 — validación robusta del JSON de respuesta. Antes
+    // `video_resource["id"].as_str()` devolvía Null silenciosamente si
+    // video_resource no era un objeto (era array o string), enmascarando
+    // la causa real (quota exhausted, permisos, retry-needed). Ahora se
+    // serializa el cuerpo en el mensaje de error para diagnosticar.
     let video_resource: serde_json::Value = resp.json().await?;
-    let video_id = video_resource["id"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("no video id"))?
+    let video_id = video_resource
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "YouTube response missing 'id' field: {}",
+                serde_json::to_string(&video_resource).unwrap_or_default()
+            )
+        })?
         .to_string();
 
     // Step 3 — thumbnail
@@ -177,7 +208,9 @@ pub async fn publish_now(video_id: &str) -> Result<()> {
         "id": video_id,
         "status": { "privacyStatus": "public" }
     });
-    let resp = reqwest::Client::new()
+    // v0.7.14 — usa el cliente con timeout. videos.update no debería
+    // tardar nunca >30 s, pero sin timeout un stall colgaba el cron.
+    let resp = YT_CLIENT
         .put("https://www.googleapis.com/youtube/v3/videos?part=status")
         .bearer_auth(token)
         .json(&body)
