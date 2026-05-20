@@ -118,13 +118,18 @@ export async function renderNarrative(req: NarrativeRequest): Promise<RenderResu
   const tmpl = await readFile(join(TEMPLATES_DIR, 'narrative.html'), 'utf8');
   // v0.1.38: tail of pure music + fade-to-black after narration ends.
   const MUSIC_TAIL_SEC = 5.0;
-  // v0.1.38 (refactor): true intro segment at the start. The first
-  // INTRO_SEC seconds show only the animated title card (over black);
-  // the narrator does NOT speak during this window — the audio post-
-  // processor prepends INTRO_SEC of silence to the narration so the
-  // first sentence lands exactly when the intro fades out. Music plays
-  // from t=0 as underscore. Beats are shifted by INTRO_SEC.
-  const INTRO_SEC = 6.0;
+  // v0.7.4 — viral-style intro: 1.5 s OVER the first beat image (no more
+  // dead black card). User feedback on 2026-05-20: "las intros no me
+  // gustan porque hacen como un sonido estruendoso, ponen el título y
+  // luego empieza el vídeo, tienen que ser mucho más virales". 6 s of
+  // black + sudden music hit = instant viewer drop. New behaviour:
+  //   • Beats start at t = 0 (first image visible immediately).
+  //   • Title overlays on top of the first image for 1.5 s only.
+  //   • Music fades in 0 → 100 % across those 1.5 s.
+  //   • Narrator stays silent for 1.5 s (audio post-processor prepends
+  //     1500 ms of silence) so first sentence lands cleanly after the
+  //     title card fades out.
+  const INTRO_SEC = 1.5;
   for (const b of req.images) {
     b.start = (b.start ?? 0) + INTRO_SEC;
   }
@@ -767,7 +772,7 @@ async function postProcessCinematic(opts: {
   // those final seconds so the clip closes with a credits-style fade-to-
   // black + slow audio tail-out, not an abrupt cut.
   const MUSIC_TAIL_SEC = 5.0;
-  const INTRO_SEC = 6.0;
+  const INTRO_SEC = 1.5;  // v0.7.4 — viral 1.5 s intro over first beat
   const fadeDurationSec = 4.0;        // fade lasts most of the tail
   const fadeStartOffset = 1.0;        // …starting 1 s into the tail (gives the music a beat to breathe before fading)
   const probedNarration = await ffprobeDurations(narrationPath).catch(() => ({ video: null, container: null }));
@@ -796,7 +801,15 @@ async function postProcessCinematic(opts: {
   // pushes beats by INTRO_SEC = 6 s; same offset goes here). apad=5s
   // appends silence at the END so the music tail keeps playing with
   // amix duration=longest.
-  const INTRO_SILENCE_MS = 6000;
+  // v0.7.4 — 1500 ms (was 6000) so the narrator's first word arrives
+  // right after the title card fades out — no more dead air.
+  const INTRO_SILENCE_MS = 1500;
+  // v0.7.4 — music fade-in over the intro duration so the soundtrack
+  // ramps up from silence instead of slamming in at full volume against
+  // a dead intro. afade type=in, start at 0, duration 1.5 s, curve qsin
+  // gives a smooth perceptual ramp. Applied BEFORE the volume gain so
+  // both the fade and the static music gain stay correct.
+  const MUSIC_FADEIN_SEC = 1.5;
   const narrationPad =
     `[1:a]adelay=${INTRO_SILENCE_MS}|${INTRO_SILENCE_MS},apad=pad_dur=5[npad]`;
   if (musicPath && musicDucking) {
@@ -806,13 +819,13 @@ async function postProcessCinematic(opts: {
     // [npad] as the narration source.
     audioChain =
       `${narrationPad};` +
-      `[2:a]volume=${musicVolume}[m1];` +
+      `[2:a]afade=t=in:st=0:d=${MUSIC_FADEIN_SEC}:curve=qsin,volume=${musicVolume}[m1];` +
       `[npad]asplit=2[n1][n2];` +
       `[m1][n1]sidechaincompress=threshold=0.04:ratio=10:attack=20:release=350:makeup=1.0[duck];` +
       `[duck][n2]amix=inputs=2:duration=longest:dropout_transition=0[a]`;
   } else if (musicPath) {
     inputs.push('-i', musicPath);
-    audioChain = `${narrationPad};[2:a]volume=${musicVolume}[m];[npad][m]amix=inputs=2:duration=longest:dropout_transition=0[a]`;
+    audioChain = `${narrationPad};[2:a]afade=t=in:st=0:d=${MUSIC_FADEIN_SEC}:curve=qsin,volume=${musicVolume}[m];[npad][m]amix=inputs=2:duration=longest:dropout_transition=0[a]`;
   } else {
     audioChain = `${narrationPad};[npad]anull[a]`;
   }

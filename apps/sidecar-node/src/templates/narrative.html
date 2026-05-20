@@ -166,6 +166,11 @@
          - Big serif title revealed via left-to-right mask sweep
          - Subtle scale push-in (1.0 → 1.04) over the full 5s for "breathing" feel
          - Optional eyebrow line (topic / setting tag) above the title in tracked caps */
+      /* v0.7.4 — viral intro: transparent background so the title overlays
+         on the FIRST BEAT IMAGE (which is already rendered behind, z-index 0).
+         The CSS ::before adds a darken layer (45 % black) for legibility so
+         we don't lose contrast against bright images. No more dead black
+         card. */
       .intro-card {
         position: absolute;
         inset: 0;
@@ -173,11 +178,25 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        background: #050507;
+        background: transparent;
         opacity: 0;
         z-index: 7;
         pointer-events: none;
         will-change: opacity, transform;
+      }
+      .intro-card::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          180deg,
+          rgba(0, 0, 0, 0.55) 0%,
+          rgba(0, 0, 0, 0.45) 35%,
+          rgba(0, 0, 0, 0.55) 65%,
+          rgba(0, 0, 0, 0.70) 100%
+        );
+        z-index: 0;
+        pointer-events: none;
       }
       /* Layered radial glows for depth — the larger one is dim warm gold,
          the smaller one is more saturated and animates in over the title. */
@@ -471,40 +490,43 @@
         }
       });
 
-      // v0.1.38 (refactor 2) — professional intro animation. 6 s total.
-      //   0.0 → 0.5 s  : card fades in from black (opacity)
-      //   0.3 → 1.5 s  : gold rules grow from 0 → 38 % width
-      //   0.6 → 1.4 s  : eyebrow tracked-caps fades in
-      //   0.8 → 2.2 s  : title revealed via left-to-right mask sweep
-      //   0.6 → 5.0 s  : radial gold glow eases in
-      //   1.5 → 2.0 s  : shimmer highlight passes along each gold rule
-      //   0.0 → 5.3 s  : intro-content scales 0.98 → 1.04 for breathing feel
-      //   5.3 → 6.0 s  : entire card fades out so beat 0 lands cleanly
+      // v0.7.4 — viral intro animation. 1.5 s total, OVER the first beat
+      // image (no more dead black 6 s card). User feedback 2026-05-20:
+      // "intros tienen que ser mucho más virales" → tighter timing, no
+      // wasted seconds, immediate hook visual.
+      //   0.00 → 0.20 s : card fades in (overlay darken + content)
+      //   0.05 → 0.55 s : gold rules grow from 0 → 38 % width
+      //   0.10 → 0.45 s : eyebrow tracked-caps fades in
+      //   0.15 → 0.85 s : title revealed via left-to-right mask sweep
+      //   0.10 → 1.20 s : radial gold glow eases in
+      //   0.00 → 1.20 s : intro-content scales 1.00 → 1.03 (tight breathing)
+      //   1.20 → 1.50 s : whole card fades out so first beat is fully visible
       var introCard = document.getElementById('intro-card');
       var totalDuration = parseFloat(document.getElementById('root').dataset.duration) || 0;
-      if (introCard && totalDuration >= 12) {
+      // Threshold lowered from 12 s to 3 s — at 1.5 s intro any video
+      // longer than ~3 s benefits from the title overlay.
+      if (introCard && totalDuration >= 3) {
         var introContent = document.getElementById('intro-content');
         var introRules = introCard.querySelectorAll('.intro-rule');
-        var introShimmer = introCard.querySelectorAll('.intro-rule.shimmer::after');
         var introTitle = document.getElementById('intro-title');
         var introEyebrow = document.getElementById('intro-eyebrow');
         var introGlow = introCard.querySelector('.intro-glow');
 
         tl.set(introCard, { opacity: 0 }, 0);
-        tl.set(introContent, { scale: 0.98 }, 0);
+        tl.set(introContent, { scale: 1.00 }, 0);
         tl.set(introRules, { width: 0 }, 0);
         tl.set(introTitle, { clipPath: 'inset(0 100% 0 0)' }, 0);
         tl.set(introEyebrow, { opacity: 0 }, 0);
         tl.set(introGlow, { opacity: 0 }, 0);
 
-        tl.to(introCard, { opacity: 1, duration: 0.5, ease: 'power2.out' }, 0);
-        tl.to(introContent, { scale: 1.04, duration: 5.3, ease: 'sine.inOut' }, 0);
-        tl.to(introRules, { width: '38%', duration: 1.2, ease: 'power3.out' }, 0.3);
-        tl.to(introEyebrow, { opacity: 1, duration: 0.8, ease: 'power2.out' }, 0.6);
-        tl.to(introGlow, { opacity: 1, duration: 1.6, ease: 'power2.out' }, 0.6);
-        tl.to(introTitle, { clipPath: 'inset(0 0% 0 0)', duration: 1.4, ease: 'power3.out' }, 0.8);
+        tl.to(introCard, { opacity: 1, duration: 0.20, ease: 'power2.out' }, 0);
+        tl.to(introContent, { scale: 1.03, duration: 1.20, ease: 'sine.out' }, 0);
+        tl.to(introRules, { width: '38%', duration: 0.50, ease: 'power3.out' }, 0.05);
+        tl.to(introEyebrow, { opacity: 1, duration: 0.35, ease: 'power2.out' }, 0.10);
+        tl.to(introGlow, { opacity: 1, duration: 1.10, ease: 'power2.out' }, 0.10);
+        tl.to(introTitle, { clipPath: 'inset(0 0% 0 0)', duration: 0.70, ease: 'power3.out' }, 0.15);
 
-        tl.to(introCard, { opacity: 0, duration: 0.7, ease: 'power2.in' }, 5.3);
+        tl.to(introCard, { opacity: 0, duration: 0.30, ease: 'power2.in' }, 1.20);
       }
 
       window.__timelines['narrative'] = tl;

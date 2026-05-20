@@ -6,6 +6,96 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.4] — 2026-05-20
+
+### Tres fixes de polish tras vídeo real v0.7.3 entregado al usuario
+
+El vídeo del Emperador de Jade (explainer) salió de extremo a extremo
+con v0.7.3, pero el usuario marcó 3 defectos sensoriales que tocaba
+arreglar antes de declarar el preset divulgativo "terminado":
+
+#### Fix A — Thumbnail con `style_anchor` filtrado como texto visible
+
+El thumbnail.jpg generado mostraba `"CHINA CINEMATIC SETTING,
+PERIOD-ACCURATE ICONOGRAPHY, ERA-TRUE PALETTE, DRAMATIC LIGHTING ·
+HISTORIA REAL"` como subtítulo. Eso es el `style_anchor` técnico
+(prompt CLIP interno) tratado como tagline de texto. Causa: en v0.7.3
+cambié `_topic_setting_prefix` para devolver solo estilo visual; la
+plantilla del thumbnail seguía leyendo TODO el `setting_tag` para el
+subtitle.
+
+`pipeline/mod.rs::try_thumbnail` ahora hace cleanup estricto del
+tagline: corta en la primera coma o paréntesis, quita sufijos
+estructurales (`setting/era/cinematic/...`), y CAPS a 3 palabras
+máximo. Resultado: `"CHINESE · HISTORIA REAL"` en lugar de la cadena
+técnica entera.
+
+#### Fix B — Voz cambia tono y volumen entre chunks (Qwen3-TTS clone)
+
+Síntoma del usuario: *"la voz aunque es la misma cambia el tono o el
+acento, el cambio es sutil pero se nota bastante, porque incluso baja
+como el volumen de algunas partes de las voces"*.
+
+Causa raíz: Qwen3-TTS clone es estocástico por chunk. v0.1.34
+normalizaba **cada chunk** a -14 LUFS por separado, lo que **acentuaba**
+las diferencias de loudness al hacer ganancia local diferente en cada
+uno. El crossfade de 80 ms era demasiado corto para enmascarar el
+salto de timbre.
+
+`routes/tts.py`:
+- **Peak-only matching pre-crossfade**: cada chunk se iguala a -1 dBTP
+  antes de unir (chunks llegan a `acrossfade` con amplitudes consistentes).
+- **Crossfade 80 ms → 300 ms con curva sinusoidal** (`c1=qsin:c2=qsin`):
+  3.75× más tiempo de fusión + curva perceptualmente más suave que
+  triangular. Imperceptible como "join" para el oyente, pero enmascara
+  el cambio sutil de timbre/acento que el modelo introduce.
+- **LUFS normalize GLOBAL post-crossfade**: una sola pasada de -14 LUFS
+  sobre el WAV concatenado completo (era por chunk). Loudness uniforme
+  en toda la narración.
+
+#### Fix C — Intro estruendosa de 6 s con título sobre fondo negro
+
+Síntoma del usuario: *"las intros no me gustan porque hacen como un
+sonido estruendoso, ponen el título y luego empieza el vídeo, las
+intros tienen que ser mucho más virales"*.
+
+Causa: el intro era 6 s de cartel de título sobre **fondo negro
+sólido** + 6 s de silencio narrado + entrada de música de golpe a
+volumen máximo. Eso es eterno para YouTube y suena estruendoso
+porque el primer hit musical entra contra silencio total.
+
+`apps/sidecar-node/src/render.ts`:
+- `INTRO_SEC` 6.0 → 1.5 s (4× más corto).
+- `INTRO_SILENCE_MS` 6000 → 1500.
+- **Music fade-in 0→100 % durante los 1.5 s del intro** (afade type=in,
+  curva qsin) en lugar de hit seco contra silencio. La música se
+  introduce de forma natural mientras el card animado aparece sobre
+  la imagen.
+
+`apps/sidecar-node/src/templates/narrative.html`:
+- `.intro-card` ahora tiene `background: transparent` (era `#050507`
+  negro) y un `::before` con gradiente vertical `rgba(0,0,0,.45-.70)`
+  para legibilidad. La **primera imagen del vídeo se ve directamente
+  detrás del título** — no hay pantalla negra de 6 s nunca más.
+- Animación GSAP comprimida de 6 s a 1.5 s, con tiempos rebalanceados
+  para que el título aparezca con mask-sweep en 0.7 s y todo termine
+  con fade-out a 1.2 s.
+- Threshold `totalDuration >= 12 s` → `>= 3 s` (el intro de 1.5 s
+  aplica a cualquier vídeo de ≥ 3 s).
+
+`apps/desktop/src-tauri/src/pipeline/mod.rs`:
+- `intro_offset_seconds: 6.0` → `1.5` para que los SRT/ASS sigan
+  alineados con la nueva escala.
+
+Parity invariant actualizado a `1.5` con nota explícita sobre
+mantener Node + Rust sincronizados.
+
+#### Sin cambios para `narrative_epic`
+
+Los 3 fixes son aditivos y aplican a TODOS los presets por igual.
+`narrative_epic` (default sin tocar selector) recibe la misma mejora
+de voz, intro viral y thumbnail limpio. Sin contratos cambiados.
+
 ## [0.7.3] — 2026-05-20
 
 ### Fix raíz "imágenes extremadamente parecidas" y "guion sigue épico"
