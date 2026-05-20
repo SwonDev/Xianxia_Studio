@@ -920,18 +920,59 @@ def _topic_setting_prefix(topic: str, context_brief: str = "") -> str:
         if len(descriptor) > 120:
             descriptor = descriptor[:120].rsplit(" ", 1)[0]
 
+    # v0.7.3 — STYLE-ONLY fallback. The descriptor used to be embedded in
+    # the returned string as `"{topic} — {descriptor} — cinematic ..."`,
+    # which meant the topic's noun phrase ("Emperador de Jade — deidad de
+    # la mitología china…") landed at the START of every image prompt.
+    # CLIP weighs leading tokens disproportionately, so all images
+    # collapsed to the same subject regardless of the per-beat body. The
+    # 2026-05-20 generation logged repeat_ratio=0.67 even with the cleaned
+    # descriptor (160 chars instead of 230).
+    #
+    # The new fallback returns ONLY visual-style anchors. The topic IS
+    # already carried in the body of each prompt (built from the
+    # narration sentence), so the diffusion model sees the topic where
+    # it belongs (as content) and NOT as a heavy leading style prefix
+    # that uniforms every image. We do keep one optional culture hint
+    # extracted from the descriptor's first 2 words when it looks like
+    # an era/culture noun phrase — that's compact enough to anchor
+    # period look without dominating semantic content.
+    culture_hint = ""
     if descriptor:
-        return (
-            f"{cleaned_topic} — {descriptor} — cinematic setting "
-            "(period-accurate iconography, era-true palette, rich "
-            "production detail)"
+        # Pull first cultural noun phrase: "ancient Chinese ...", "Norse ...",
+        # "Edo Japan ...", "16th-century ...". Keep at most 5 words.
+        m = re.match(
+            r"\s*((?:ancient|antigua|antiguo|medieval|moderna?|"
+            r"victorian|victoriana?|edwardiana?|"
+            r"\d{1,2}(?:st|nd|rd|th)?[- ]century|"
+            r"siglo\s+(?:[ivxlcdm]+|\d+)|"
+            r"renacimiento|barroco|gótic[oa]|imperial)\s+\w+(?:\s+\w+){0,2})",
+            descriptor,
+            flags=re.IGNORECASE,
         )
-    # No brief at all → still better than pure filler: lean on the topic.
-    return (
-        f"{cleaned_topic} setting "
-        "(period-accurate iconography, era-true palette, "
-        "cinematic production detail faithful to the topic)"
+        if m:
+            culture_hint = m.group(1).lower()
+        else:
+            # Fallback: pull the first nationality / mythology adjective.
+            m2 = re.search(
+                r"\b(china|chinese|japonesa?|japanese|nórdica?|norse|"
+                r"griega?|greek|romana?|roman|egipcia?|egyptian|"
+                r"hindú|hindu|tao(?:ísta|ist)|budista|buddhist|"
+                r"persa|persian|árabe|arab|maya|azteca|aztec|inca|"
+                r"vikinga?|viking|celta|celtic)\b",
+                descriptor,
+                flags=re.IGNORECASE,
+            )
+            if m2:
+                culture_hint = m2.group(1).lower()
+
+    base = (
+        "cinematic setting, period-accurate iconography, "
+        "era-true palette, dramatic lighting, rich production detail"
     )
+    if culture_hint:
+        return f"{culture_hint} cinematic setting, period-accurate iconography, era-true palette, dramatic lighting"
+    return base
 
 
 # Pattern used to clean up the LLM-generated setting tag (which sometimes

@@ -164,6 +164,39 @@ Image markers: ILLUSTRATIVE (period-accurate scenes, real artefacts, locations o
 - DO use teacher voice: "this means that…", "let's look at how…", "a clear example is…".
 - Concrete > abstract. If you write a generic claim, immediately follow with a specific example from the FACTUAL CONTEXT.
 
+═══ EXPLAINER — PROHIBICIONES ESTRICTAS EN ESPAÑOL (NO NEGOCIABLE) ═══
+v0.7.3 — porque Gemma genera prosa española mítica por hábito, esta lista
+es OBLIGATORIA cuando language_name = Spanish. Si la salida contiene
+CUALQUIERA de estas palabras o construcciones, el guion se considera
+fallido. PROHIBIDO usar:
+
+  • Palabras dramáticas: "destino", "monumental", "cósmico", "épico",
+    "épica", "trascender", "trascendental", "tapiz", "vasto", "vasta",
+    "majestuoso", "majestuosa", "glorioso", "gloriosa", "titánico",
+    "titánica", "primordial", "eterno", "eterna", "sublime", "divino"
+    (como adjetivo enfático), "sagrado" (como adjetivo enfático).
+  • Metáforas grandilocuentes: "el corazón del universo", "el orden
+    cósmico", "la propia estructura del cosmos", "el tejido del tiempo",
+    "el alma de", "el espíritu de", "el latir de", "el aliento de".
+  • Frases dramatizadas: "no es solo X, es Y", "más que X, es Y",
+    "no era cualquier X", "su grandeza es", "su destino era",
+    "su propósito iba más allá de", "se dedicó a", "emerge una",
+    "surge una figura", "una figura monumental".
+  • Aperturas tipo cuento: "En el vasto", "En tiempos remotos", "Hace
+    eones", "Cuenta la leyenda", "Se dice que".
+
+Verbo / construcción permitida en su lugar:
+  • "X es una deidad china conocida por…" — DESCRIPCIÓN directa.
+  • "El concepto de X surge en el período…" — CONTEXTO histórico.
+  • "Para entender X, primero veamos…" — DIDÁCTICO.
+  • "Los textos taoístas describen a X como…" — CITA fuente.
+  • "Un ejemplo concreto es…" — EJEMPLO.
+
+Tono español obligatorio: profesor universitario claro, sin adornos.
+Como un divulgador (estilo Punset, Aberrón, o un buen documental
+escrito). Cada frase responde "¿qué es?" o "¿cómo funciona?" o "¿por
+qué importa?" — nunca "¡qué grandioso es!".
+
 ═══ EXPLAINER CLOSING (NON-NEGOTIABLE) ═══
 End with a 1-2 sentence recap + an inviting line about further exploration. Then a warm natural CTA in {language_name} (like/share/subscribe), professorial but enthusiastic — like a teacher who hopes the student will keep learning."""
 

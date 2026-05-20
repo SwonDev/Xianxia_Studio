@@ -6,6 +6,76 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-05-20
+
+### Fix raíz "imágenes extremadamente parecidas" y "guion sigue épico"
+
+La run real de v0.7.2 con preset Divulgativo confirmó:
+1. `repeat_ratio=0.67` — 10/16 pares consecutivos con mismo sujeto
+   (mejoró del 94% pero sigue siendo malo).
+2. El guion sale dramatizado pese a la directiva `explainer`:
+   "el vasto tapiz del panteón… la propia estructura del orden cósmico…
+   destino fue trascender la mera realeza".
+
+#### Fix 1 — Style anchor SOLO visual (sin descripción semántica del topic)
+
+`_topic_setting_prefix` ya no devuelve `"{topic} — {descriptor} —
+cinematic setting (...)"`. Devuelve solo estilo visual:
+
+```
+v0.7.2: "La leyenda del Emperador de Jade — deidad de la mitología
+         china y uno de los más importantes dioses del panteón
+         taoísta — cinematic setting (period-accurate ...)"  (160 chars)
+
+v0.7.3: "chinese cinematic setting, period-accurate iconography,
+         era-true palette, dramatic lighting"  (~90 chars, sin topic)
+```
+
+El topic ya está en el body de cada prompt (de la narración). Inyectarlo
+al inicio como anchor lo cargaba CLIP en el peso de los tokens
+iniciales → todas las imágenes con mismo sujeto. Ahora solo va una
+pista de cultura (chino/nórdico/griego/etc. extraída del descriptor
+con regex) seguida del estilo visual neutral.
+
+Esto se activa SOLO en el path de fallback (cuando el LLM `/setting_tag`
+falla, ~50% de las runs con Gemma 4B abliterated). Cuando el LLM produce
+un `setting_tag` válido, el comportamiento es idéntico a v0.7.2.
+
+#### Fix 2 — Directiva del preset `explainer` con prohibiciones en castellano
+
+Gemma 4B abliterated ignora "AVOID dramatization" en inglés cuando
+genera prosa en español porque su training data en español es
+literatura mítica (no didáctica). Añadido un bloque obligatorio en
+castellano que prohíbe explícitamente:
+
+- **Palabras**: "destino", "monumental", "cósmico", "épico/épica",
+  "trascender", "tapiz", "vasto/a", "majestuoso/a", "glorioso/a",
+  "titánico/a", "primordial", "eterno/a", "sublime", "divino/sagrado"
+  (como adjetivo enfático).
+- **Metáforas**: "el corazón del universo", "el orden cósmico", "la
+  propia estructura del cosmos", "el alma de", "el espíritu de".
+- **Construcciones**: "no es solo X, es Y", "más que X, es Y", "su
+  destino era", "se dedicó a", "emerge una figura", "una figura
+  monumental".
+- **Aperturas**: "En el vasto", "En tiempos remotos", "Hace eones",
+  "Cuenta la leyenda", "Se dice que".
+
+Reemplazadas por construcciones permitidas: "X es una deidad china
+conocida por…", "El concepto de X surge en…", "Para entender X…",
+"Los textos taoístas describen…", "Un ejemplo concreto es…".
+
+Tono español obligatorio: profesor universitario claro estilo Punset
+o Aberrón.
+
+#### Sin cambios para `narrative_epic`
+
+`narrative_epic` (default) sigue siendo byte-idéntico a v0.7.0/0.7.1/0.7.2.
+La nueva directiva en castellano vive solo dentro del bloque
+`_EXPLAINER_DIRECTIVE`, que solo se inyecta cuando `preset_id="explainer"`.
+El cambio en `_topic_setting_prefix` solo afecta la rama de fallback —
+en runs donde el LLM produjo setting_tag válido (~50%), el resultado
+es idéntico.
+
 ## [0.7.2] — 2026-05-20
 
 ### Tres fixes contundentes en presets, anchors y diversidad de imágenes
