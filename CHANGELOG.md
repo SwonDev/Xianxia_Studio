@@ -6,6 +6,71 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.8] — 2026-05-20
+
+### Auditoría de calidad: 3 mejoras estructurales + workflows Z-Image óptimos
+
+Sesión de hardening basada en (a) re-lectura del bugfix_catalog,
+(b) auditoría de patrones problemáticos (imports en hot path, caches
+sin invalidación, polling loops), (c) investigación 2026 actualizada
+sobre Z-Image-Turbo y best practices del modelo.
+
+#### Mejora #1 — Sampler/scheduler óptimo para Z-Image-Turbo
+
+Tongyi-MAI publicó la guía oficial 2026 confirmando que la combinación
+recomendada para el modelo distilled (8 steps, cfg=1.0 baked-in) es
+`euler_ancestral` + `sgm_uniform` en BF16, y `dpmpp_sde` + `sgm_uniform`
+en GGUF. Nuestros workflows usaban `euler + simple` y `dpmpp_sde + beta`
+respectivamente.
+
+Cambios:
+- `apps/sidecar-py/src/xianxia_ai/workflows/z_image_turbo.json`:
+  `euler` → `euler_ancestral`, `simple` → `sgm_uniform`.
+- `apps/sidecar-py/src/xianxia_ai/workflows/z_image_turbo_gguf.json`:
+  `beta` → `sgm_uniform` (mantiene `dpmpp_sde`).
+
+El cambio a `euler_ancestral` añade ruido estocástico controlado
+en cada step (vs `euler` determinista) → ligeramente más diversidad
+de composición entre beats con el mismo prompt y seed adyacentes.
+Calidad subjetiva similar pero con mejor sample variety.
+
+#### Mejora #2 — Import `_comfy_root` fuera del hot path
+
+`apps/sidecar-py/src/xianxia_ai/models/comfyui_client.py::wait_for_image`
+hacía `from .. import _comfy_root` dentro del polling loop, ejecutándose
+hasta **1800 veces durante un timeout de 30 minutos**. Python cachea
+módulos así que cada call era cheap, pero el dotted attribute lookup
+añadía coste medible en polls largos. Movido al top del archivo.
+Same late-binding semantics, zero per-iteration overhead.
+
+#### Mejora #3 — Invalidación de cache TTS clone al unload
+
+Bug latente detectado por auditoría: `_clone_prompt_cache` en `tts.py`
+retiene `prompt_item` objects que contienen tensores PyTorch ligados
+al MODELO base. Cuando se hace `tts_base_model.unload()` y luego
+`load()`, el modelo nuevo NO conoce esos prompt_items. Si una request
+posterior usa `model.generate_voice_clone(voice_clone_prompt=cached)`,
+mezcla model nuevo + prompt viejo → comportamiento indefinido (corrupto
+en el mejor caso, segfault en el peor).
+
+Fix en `apps/sidecar-py/src/xianxia_ai/routes/unload.py`: cuando
+`tts_base_model.unload()` devuelve True, invalidamos el cache de
+prompt items en `tts.py`. El siguiente request reconstruirá los
+prompts contra el modelo recién cargado (cuesta ~15 s extra una
+vez por sesión de voice cloning, pero garantiza correctitud).
+
+### Sin compilación en esta versión
+
+A petición del usuario, esta versión queda commiteada y pusheada pero
+sin generar NSIS. El instalable más reciente disponible sigue siendo
+v0.7.5 hasta que el usuario explícitamente pida un nuevo build.
+
+### Sin cambios en presets ni contratos
+
+Cambios puramente internos / configuración. Cualquier preset recibe
+igual el beneficio. Compatibilidad byte-idéntica preservada para
+`narrative_epic`.
+
 ## [0.7.7] — 2026-05-20
 
 ### 4 mejoras basadas en investigación 2026 + auditoría VRAM

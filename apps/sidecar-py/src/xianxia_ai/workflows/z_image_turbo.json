@@ -48,13 +48,13 @@
   },
   "8": {
     "class_type": "KSampler",
-    "_meta": {"title": "Z-Image-Turbo (8 steps, cfg=1, euler/simple)"},
+    "_meta": {"title": "Z-Image-Turbo (8 steps, cfg=1, euler_ancestral/sgm_uniform — v0.7.8 per Tongyi-MAI docs 2026)"},
     "inputs": {
       "seed": "{{seed}}",
       "steps": 8,
       "cfg": 1.0,
-      "sampler_name": "euler",
-      "scheduler": "simple",
+      "sampler_name": "euler_ancestral",
+      "scheduler": "sgm_uniform",
       "denoise": 1.0,
       "model": ["6", 0],
       "positive": ["4", 0],

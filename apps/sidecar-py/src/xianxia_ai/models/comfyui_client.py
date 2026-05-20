@@ -28,6 +28,16 @@ from pathlib import Path
 
 import httpx
 
+# v0.7.8 — pulled the `from .. import _comfy_root` out of the polling
+# loop hot path. Previously it ran on every iteration (~1 per second
+# during the 30 min worst case = ~1800 redundant imports). Python's
+# import system caches modules so each call was fast, but the dotted
+# attribute lookup still added measurable cost on long polls and
+# polluted the call graph. Doing it once at module load gives the same
+# late-binding resilience (the function is resolved at call time, not
+# import time) without the per-iteration overhead.
+from .. import _comfy_root
+
 
 COMFY_URL = "http://127.0.0.1:8188"
 
@@ -126,14 +136,12 @@ def wait_for_image(prompt_id: str, timeout: float = 1800.0) -> Path:
         outputs = entry.get("outputs", {})
         for _, node_out in outputs.items():
             for img in node_out.get("images", []):
-                from .. import _comfy_root
                 return _comfy_root() / "output" / img["subfolder"] / img["filename"]
         # Cache-hit case: status=success but outputs is empty. ComfyUI ate
         # the workflow as duplicate. Try to recover by finding the most
         # recently modified xianxia_*.png in the output dir.
         status = entry.get("status", {})
         if status.get("status_str") == "success" and not outputs:
-            from .. import _comfy_root
             output_root = _comfy_root() / "output"
             try:
                 cached = max(
