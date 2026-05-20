@@ -6,6 +6,80 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.5] — 2026-05-20
+
+### Tres bugs reales detectados por auditoría tras run del Emperador de Jade
+
+Tras releer logs y código de la última generación encontré 3 bugs latentes
+que estaban silenciosos pero degradaban la experiencia. Los arreglo todos.
+
+#### Bug #1 — Polling infinito de ComfyUI history (CRÍTICO)
+
+`models/comfyui_client.py::wait_for_image` polleaba `/history/{prompt_id}`
+durante **30 minutos** cuando el Rust pipeline respawneaba ComfyUI para
+liberar VRAM. El servidor nuevo no conoce el `prompt_id` viejo, así que
+nunca aparece en `/history` y el polling seguía hasta el timeout. Síntoma
+visible en el run del 2026-05-20: pipeline idle 11 minutos entre fase 6
+(render) done y fase 7 (subs) start, con sidecar-py polleando
+`8eea7e02-…` que ya no existía.
+
+**Fix**: detección de prompt huérfano. Si tras 30 s seguimos sin verlo
+en `/history` AND `/queue` está vacía (ni running ni pending), asumimos
+que ComfyUI restartó entre el submit y este poll → raise `RuntimeError`
+inmediato. El caller (try_thumbnail) ya tiene fallback a
+`extract_frame_thumbnail`, así que el fix solo desbloquea la pipeline
+en vez de quemar 30 min de timeout. La detección es conservadora: solo
+declara orphan si AMBOS signals confirman (history 404 + queue vacía),
+nunca por flap transitorio de red.
+
+#### Bug #2 — Thumbnail fallback extraía frame del intro card (negro)
+
+`extract_frame_thumbnail` seek-eaba a `-ss 5` (5 segundos). Pero el
+intro card duraba 6 s con fondo negro + título centrado (v0.7.3), o
+1.5 s en v0.7.4. Resultado típico (visto en la thumbnail.jpg generada
+para el Emperador de Jade): fondo prácticamente negro con sutil
+resplandor dorado, sin la imagen real del topic.
+
+**Fix**: `extract_frame_thumbnail` ahora hace `ffprobe duration` y
+saca el frame a **35 % del runtime** (`duration * 0.35`). Para un
+vídeo de 4 min eso es ~84 s — siempre en medio del contenido, post-
+intro, antes del fade-out final, sobre una imagen Z-Image plenamente
+cargada. Min 2 s como floor para vídeos muy cortos.
+
+#### Bug #3 — (No-bug, validación) seed per beat ya es random
+
+Auditoría confirmó que `routes/image.py` línea 78 ya usa
+`secrets.randbelow(2**31)` cuando el caller no pasa `seed`. El Rust
+pipeline NO pasa seed para los beats narrativos, así que cada imagen
+ya recibe seed único. La percepción de "imágenes parecidas" tras
+v0.7.3/v0.7.4 viene del style_anchor (ya fixed) y del LLM repitiendo
+sujetos (image_subject_repeat_detected — ya con threshold 0.4/window 6
+en v0.7.2). No hay regresión aquí.
+
+### Investigación 2026: best practices YouTube + voice clone
+
+Búsqueda web durante la auditoría confirmó alineamiento con el state
+of the art:
+
+- **YouTube viral 2026**: hooks 1-3 s, mid-action start, visual+text+
+  verbal en frame 1, swipe-away < 30 % es el target. La intro de
+  v0.7.4 (1.5 s sobre primera imagen + fade-in música) cumple esto.
+- **Voice clone 2026**: Qwen3-TTS sigue siendo el líder (vs F5-TTS,
+  XTTS-v2) en consistencia de prosodia y voice cloning desde 3 s de
+  referencia. El cableado actual es correcto. Si en el futuro hace
+  falta más velocidad, F5-TTS es una alternativa más ligera pero con
+  techo de calidad más bajo.
+- **Stable Diffusion diversity**: seed-per-image + variation seed +
+  CFG variation. Z-Image-Turbo usa cfg=1.0 fijo (es turbo, no admite
+  CFG variation), pero el seed-per-request + facet pool del
+  `_enforce_subject_diversity` ya cubren esto.
+
+### Sin cambios para `narrative_epic` ni otros presets
+
+Los 3 fixes son puramente defensivos / de fallback. Cualquier preset
+los recibe por igual y el comportamiento generativo (script/imágenes/
+voz/música) es byte-idéntico a v0.7.4.
+
 ## [0.7.4] — 2026-05-20
 
 ### Tres fixes de polish tras vídeo real v0.7.3 entregado al usuario
