@@ -261,7 +261,7 @@ function ShortsRoute() {
             className="btn-primary large"
             style={{ justifyContent: 'center', width: '100%' }}
           >
-            {busy ? <CircleNotch size={13} className="pulse" /> : <Sparkle size={13} />}
+            {busy ? <CircleNotch size={13} className="spin" /> : <Sparkle size={13} />}
             {busy ? progress || 'Procesando…' : `Extraer ${nShorts} Shorts`}
           </button>
 

@@ -6,6 +6,54 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.6.7] — 2026-05-20
+
+### Spinner real, Cancelar redondeado, feedback premium por fase
+
+Tres arreglos visuales causa-raíz, todos confirmados leyendo el código
+(no teoría):
+
+- **Spinners "estáticos" en todas las versiones — RESUELTO**. El spinner
+  era `<CircleNotch className="pulse">` pero `.pulse` (`soft-pulse`) es
+  **solo opacidad**, no rota; un anillo ¾ que solo se atenúa parece
+  congelado. Y el `@media (prefers-reduced-motion: reduce)` mataba TODAS
+  las animaciones globalmente — si Windows tiene los efectos de
+  animación desactivados, ni la opacidad se movía. Fix: nuevo
+  `@keyframes xnx-spin` + clase `.spin` con rotación continua, aplicada
+  a los 17 spinners (CircleNotch/ArrowsClockwise en 5 archivos), y
+  **excepción en el bloque reduced-motion** para que el spinner siga
+  girando aunque el SO pida reduced motion (es feedback funcional, no
+  decorativo).
+- **Botón "Cancelar" con marco cuadrado — RESUELTO**. `.btn-destructive`
+  era un modificador suelto sin `border-radius` ni caja base (esperaba
+  combinarse con `.btn`, pero se usaba solo) → degradado rojo en forma
+  de **cuadrado**. Fix: `.btn-destructive` autosuficiente (inline-flex +
+  padding + height + `border-radius:999px` + tipografía).
+- **Feedback premium por fase** (portado del prototipo
+  `design/screens/generator.jsx` que nunca se portó, cableado a
+  señales REALES del `pipelineStore` — cero mock): `ScriptSkeleton`
+  para Guion, `Waveform` (28 barras seno) para Voz, `MusicBars`
+  (ecualizador 14 columnas) para Música, **rejilla real de
+  `imageThumbs`** para Imágenes, `FilmProgress` con
+  `progress` real para Vídeo, `CaptionFrame` (placeholder de
+  subtítulos con cursor + barra real) para Subtítulos. Visuales
+  driven por `useTick` JS (no CSS) para que sigan animando bajo
+  reduced-motion. Sin partículas decorativas (regla dura preservada).
+
+Validación: tsc+vite build verde, parity-check verde, cargo check
+exit 0. Acumula todo lo ya shippeado en la serie 0.6.x (ventana
+macÓS opaca, permisos de ventana, diversidad determinista de
+imágenes, fix engagement TRIBE v2, música/auto-optimizar ON,
+biblioteca separada por formato).
+
+> **Issue conocido pendiente** (no abordado aquí — necesita
+> investigación del `pipeline/mod.rs` post-música): tras
+> `music_gen_done` algunos runs no continúan al ensamblado final
+> (burn-in subs + mux música + SEO + watermark + library entry). La
+> generación produce todos los artefactos individuales (vídeo base,
+> subs, música) pero el `video.subs.mp4` queda sin generar. Tarea
+> dedicada pendiente.
+
 ## [0.6.6] — 2026-05-19
 
 ### Engagement (TRIBE v2) arreglado + música IA y auto-optimización ON por defecto

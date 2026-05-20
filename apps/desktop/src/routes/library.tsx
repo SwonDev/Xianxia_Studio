@@ -447,7 +447,7 @@ function VideoCard({
         )}
         {analyzing && (
           <div className="caption" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <CircleNotch size={12} className="pulse" style={{ color: 'var(--gold-soft)' }} />
+            <CircleNotch size={12} className="spin" style={{ color: 'var(--gold-soft)' }} />
             Analizando con TRIBE v2…
           </div>
         )}
@@ -475,7 +475,7 @@ function VideoCard({
                 className="btn-primary"
                 style={{ width: '100%', justifyContent: 'center', fontSize: 11.5 }}
               >
-                {optimizing ? <CircleNotch size={12} className="pulse" /> : <MagicWand size={12} />}
+                {optimizing ? <CircleNotch size={12} className="spin" /> : <MagicWand size={12} />}
                 {optimizing ? 'Optimizando…' : `Auto-optimizar ${engagement.boring_spots.length} valles`}
               </button>
             )}
@@ -499,7 +499,7 @@ function VideoCard({
         )}
         {seoLoading && (
           <div className="caption" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <CircleNotch size={12} className="pulse" style={{ color: 'var(--gold-soft)' }} />
+            <CircleNotch size={12} className="spin" style={{ color: 'var(--gold-soft)' }} />
             Generando metadatos SEO…
           </div>
         )}
