@@ -279,8 +279,13 @@ class OllamaBackend(LLMBackend):
         except Exception as e:
             return (False, f"ollama unreachable: {e}")
 
-        deadline = asyncio.get_event_loop().time() + timeout_s
-        while asyncio.get_event_loop().time() < deadline:
+        # v0.7.10 — `asyncio.get_event_loop()` is deprecated since Python
+        # 3.12 when called from a coroutine (we're inside `async def`).
+        # Use `get_running_loop()` which is the documented replacement
+        # and won't trigger DeprecationWarning in 3.12+, nor break in
+        # 3.16 when get_event_loop() is removed from coroutine context.
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        while asyncio.get_running_loop().time() < deadline:
             running = await self.list_running()
             if running is None:
                 break
@@ -340,8 +345,9 @@ async def _wait_for_llamacpp_health(url: str, timeout_s: float = 30.0) -> bool:
     so the caller (script.py / subtitles.py / shorts.py) never sees a
     "Connection refused" while the supervisor is mid-respawn.
     """
-    deadline = asyncio.get_event_loop().time() + timeout_s
-    while asyncio.get_event_loop().time() < deadline:
+    # v0.7.10 — get_running_loop() (deprecated get_event_loop() in 3.12+).
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while asyncio.get_running_loop().time() < deadline:
         try:
             async with httpx.AsyncClient(timeout=1.0) as client:
                 r = await client.get(f"{url}/health")
