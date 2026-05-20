@@ -251,15 +251,29 @@ async fn try_thumbnail(
     } else {
         topic.to_string()
     };
+    // v0.7.7 — viral thumbnail prompt refresh based on YouTube CTR
+    // research (MrBeast-style 8-12% CTR analysis, 2026 thumbnail
+    // psychology studies). Key additions:
+    //   • Explicit "human face filling 60-70% of frame" — face-priority
+    //     thumbnails outperform object-only by 25-30 % (facial
+    //     recognition priority, hardwired into human perception).
+    //   • "Wide eyes, mouth open in shock/awe" — extreme expressions
+    //     trigger curiosity gap; reactions outperform neutral 3-4×.
+    //   • "Red/yellow/cyan colour pop" — Proof of Human (POH) trend
+    //     2026 + the YouTube interface is white/grey, so warm saturated
+    //     accents stand out in the feed.
+    //   • Bottom-third clean shadow for text — kept from v0.1.37.
     let prompt = format!(
-        "VIRAL YOUTUBE THUMBNAIL: {prompt_topic}. Extreme dramatic close-up \
-         hero shot, intense emotional expression on the central subject, \
-         iconic element of the topic in the foreground, high-contrast \
-         saturated colours, rim lighting, deep shadows on the lower third \
-         (so title text overlays cleanly), epic atmosphere, photorealistic, \
-         ultra-detailed, sharp focus on subject, shallow depth of field, \
-         clickbait-grade composition, period-correct iconography faithful \
-         to the topic, no text overlay, no logos, no watermarks",
+        "VIRAL YOUTUBE THUMBNAIL: {prompt_topic}. EXTREME close-up of a \
+         human face (60-70% of the frame), eyes WIDE OPEN in shock and awe, \
+         mouth slightly parted, hyper-saturated red and yellow accents \
+         against deep cyan/black background, rim lighting and harsh \
+         contrast (8-12 % CTR look), iconic element of the topic floating \
+         beside the subject, deep clean shadow on the lower third for \
+         title overlay, photorealistic, sharp focus on eyes, micro-detail \
+         in skin (Proof-of-Human aesthetic 2026), dramatic 3-point lighting, \
+         period-correct iconography faithful to the topic, no text overlay, \
+         no logos, no watermarks",
         prompt_topic = prompt_topic
     );
     let bg = client

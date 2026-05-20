@@ -278,7 +278,19 @@ def _force_torch_attention() -> bool:
         return False
 
 
-_ACESTEP_MIN_FREE_VRAM_GB = 4.5  # 2B SFT BF16 (~4 GB) + workspace
+# v0.7.7 — raised from 4.5 to 5.5 GB after multiple ACE-Step v1.5 runs
+# failed in production (real bug, 2026-05-20 Emperador de Jade run x2:
+# "Insufficient free VRAM: need ~2.8 GB, only 1.4 GB available" inside
+# ACE-Step's own pre-flight check). The Python `torch.cuda.mem_get_info`
+# read in main-venv tells us ~6 GB free, but the isolated acestep-venv
+# loads its own torch + xformers + cuda runtime + checkpoint, so by the
+# time ACE measures itself, the working free has dropped to <2 GB.
+# 5.5 GB threshold in the main-venv gives ACE-Step the ~3 GB headroom
+# it actually needs once its venv warms up. If we don't have 5.5 GB
+# free at the gate, we skip ACE and let MusicGen take it (cheaper
+# pre-flight, no subprocess cost). Saves ~60 s of wasted ACE attempt
+# on every long-form run where ComfyUI is still half-resident.
+_ACESTEP_MIN_FREE_VRAM_GB = 5.5  # main-venv read; ACE measures itself lower
 
 
 def _acestep_runtime_dir() -> Path:

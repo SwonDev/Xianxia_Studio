@@ -6,6 +6,74 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.7] — 2026-05-20
+
+### 4 mejoras basadas en investigación 2026 + auditoría VRAM
+
+Investigación web sobre YouTube SEO 2026, mejores TTS/STT del año, y
+psicología del thumbnail aplicada a 4 puntos concretos:
+
+#### Mejora #1 — Whisper `large-v3-turbo` (6× más rápido)
+
+`apps/sidecar-py/src/xianxia_ai/models/whisper_model.py`:
+- Default cambiado de `large-v3` → `large-v3-turbo`.
+- 6× más rápido (4 capas decoder vs 32) manteniendo ~1 % WER.
+- VRAM baja de ~10 GB a ~6 GB → libera presión en post-render.
+- MANTIENE multilingüe: importante porque `distil-whisper` es solo
+  inglés y rompería los presets español/chino/japonés.
+- Override pinning con `XIANXIA_WHISPER_SIZE=large-v3` si alguna
+  vez detectamos regresión.
+
+Fase 7 (subtítulos) bajará de ~30-60 s a ~10-15 s en typical run.
+
+#### Mejora #2 — Thumbnail prompt MrBeast-style (8-12 % CTR)
+
+`apps/desktop/src-tauri/src/pipeline/mod.rs::try_thumbnail`:
+
+Reescritura del prompt Z-Image siguiendo psicología del thumbnail 2026:
+- **Cara humana ocupando 60-70 % del frame** (face-priority,
+  +25-30 % CTR vs object-only — facial recognition hardwired).
+- **Ojos abiertos en shock/awe, boca semiabierta** — extreme
+  reactions outperform neutral 3-4×.
+- **Rojo y amarillo saturados sobre cyan/negro** — POH (Proof of
+  Human) aesthetic 2026 + contraste contra la UI gris/blanca de
+  YouTube.
+- **Sombra limpia inferior** para que el title overlay se lea.
+- Micro-detalle de piel (tendencia POH).
+
+#### Mejora #3 — Skip ACE-Step cuando VRAM < 5.5 GB
+
+`apps/sidecar-py/src/xianxia_ai/routes/music.py`:
+- `_ACESTEP_MIN_FREE_VRAM_GB` 4.5 → **5.5 GB**.
+
+Causa: en las 2 runs reales del Emperador de Jade del 2026-05-20, el
+main-venv leía 6.59 GB libres y aceptaba ACE-Step, pero la
+acestep-venv aislada (con su propio torch+xformers+cuda+ckpt) bajaba
+el working free a 1.42 GB ANTES de llegar al pre-flight interno de
+ACE-Step → fallo predecible. El threshold conservador en main-venv
+le da a ACE el ~3 GB headroom que realmente necesita en su venv.
+
+Cuando no se cumple, saltamos directo a MusicGen sin perder los ~60 s
+de subprocess spin-up + checkpoint load de ACE.
+
+#### Mejora #4 — Título YouTube optimizado para algoritmo 2026
+
+`apps/sidecar-py/src/xianxia_ai/prompts.py::METADATA_PROMPT_TEMPLATE`:
+
+Research 2026 de YouTube SEO confirma que el algoritmo pesa los
+**primeros 40 caracteres** del título para extracción de keywords y
+truncá a 70 chars en resultados de búsqueda. Añadido al template:
+- Primary keyword (named entity del topic) DEBE estar en los
+  primeros 40 chars.
+- Total cap subido de 60 → 70 chars (margen para keywords compuestos
+  como "Empire of Aksum").
+
+### Sin cambios de comportamiento para narrative_epic
+
+Todas las mejoras son aditivas o reemplazan prompts/configuraciones,
+nunca tocan la lógica del flujo de generación. `narrative_epic`
+sigue produciendo guion byte-idéntico a v0.7.6.
+
 ## [0.7.6] — 2026-05-20
 
 ### LLM retry backoff: arregla 503 transitorio al despertar llama-server
