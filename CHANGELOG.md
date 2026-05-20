@@ -6,6 +6,38 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.11] — 2026-05-20
+
+### Fix patrones "es el / es la" filtraban artículos enciclopédicos reales
+
+Auditoría detectó bug latente importante en
+`_FICTIONAL_LEAD_PATTERNS` (`apps/sidecar-py/src/xianxia_ai/routes/script.py`).
+El array tenía las entradas peligrosamente genéricas `"es el "` y
+`"es la "` cuyo propósito era detectar páginas Wikipedia de ficción
+("X es el episodio…", "Y es la película…"). En la práctica,
+**filtraban CUALQUIER definición enciclopédica que empezara con un
+copulativo** — "El Emperador de Jade ES LA deidad principal del
+panteón taoísta", "Tutankamón ES EL faraón egipcio…", etc.
+
+Por suerte, el bug no se disparó en la run real del Emperador de
+Jade (el extract empezaba con coma después del nombre, no copulativo
+directo), pero era una mina latente: cualquier topic cuya Wikipedia
+empezara con "X es el/la Y" hubiese acabado en `topic_facts_empty`
+con guion sin grounding factual.
+
+Fix: purgadas las 2 entradas genéricas. Añadidos en su lugar 13
+patrones más específicos en español + inglés:
+- Spanish: "es una temporada", "es una canción", "es un álbum",
+  "es una saga literaria", "es una obra de teatro", "es un
+  cortometraje", "es un libro de", "es una historieta", "es un
+  manga", "es un anime".
+- English: "is a song", "is an album", "is a fictional",
+  "is a manga", "is an anime", "is the pilot episode".
+
+### Sin compilación
+
+Sin NSIS por petición usuario. Sigue acumulando con v0.7.6→v0.7.11.
+
 ## [0.7.10] — 2026-05-20
 
 ### Fix deprecation `asyncio.get_event_loop()` (Python 3.12+)
