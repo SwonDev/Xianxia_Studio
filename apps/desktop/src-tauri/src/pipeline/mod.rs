@@ -352,13 +352,40 @@ async fn try_thumbnail(
 }
 
 /// Last-resort thumbnail: pull a single frame from the rendered MP4 with
-/// FFmpeg. Picks ~10 % into the runtime so we avoid black frames at start.
+/// FFmpeg. v0.7.5 — sample at 35 % of runtime (was 5 s = inside the intro
+/// card on a 4 min video). The intro is the worst possible thumbnail
+/// frame: dark overlay + title text over the first image. 35 % lands
+/// us in the middle of beat 5-7 which is always a proper image,
+/// well-lit, post-intro, before the closing fade.
 fn extract_frame_thumbnail(video_path: &str, out_path: &str) -> anyhow::Result<()> {
     use crate::process_ext::HideConsole;
+    // Probe the actual duration so we can pick a sensible mid-point seek.
+    let duration_seconds: f64 = (|| -> Option<f64> {
+        let out = std::process::Command::new("ffprobe")
+            .args([
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path,
+            ])
+            .hide_console()
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        std::str::from_utf8(&out.stdout).ok()?.trim().parse().ok()
+    })()
+    .unwrap_or(60.0); // safe fallback if ffprobe missing
+    // 35 % of the runtime — past the intro card (first 1.5 s in v0.7.4)
+    // and the opening sentence, well inside the meat of the narrative,
+    // far from the closing fade-out tail.
+    let seek = (duration_seconds * 0.35).max(2.0);
+    let seek_str = format!("{:.2}", seek);
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-ss", "5",
+            "-ss", &seek_str,
             "-i", video_path,
             "-frames:v", "1",
             "-q:v", "2",

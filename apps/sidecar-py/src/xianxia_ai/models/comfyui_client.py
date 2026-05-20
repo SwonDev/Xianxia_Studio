@@ -67,8 +67,24 @@ def wait_for_image(prompt_id: str, timeout: float = 1800.0) -> Path:
     `execution_cached` and returns `outputs: {}`. The status string still
     says `success`. We detect this case explicitly and recover the output
     path from the SaveImage node's filename_prefix scan of the output dir.
+
+    v0.7.5 — RESPAWN DETECTION. The Rust pipeline hard-respawns ComfyUI
+    when VRAM coordination requires it (between phase 4 and thumbnail,
+    or before whisper). The fresh process knows nothing about the prompt
+    we previously submitted, so /history/{prompt_id} returns 404 forever
+    and the old code would spin until the 30 min timeout while the rest
+    of the pipeline was blocked. Symptom logged on the 2026-05-20
+    Emperador de Jade run: pipeline-rust idle for 11 min between phase 6
+    done and phase 7 start while sidecar-py kept polling 8eea7e02-… on
+    a respawned ComfyUI. Fix: after 30 s of "404 + empty /queue" we
+    declare the prompt orphaned and raise — the caller has a fallback
+    (extract video frame for thumbnail, retry image for narrative beats).
     """
     deadline = time.time() + timeout
+    # Track the first time we see the prompt_id missing so we can give up
+    # if it stays missing AND the queue is empty (i.e. ComfyUI restarted).
+    first_missing_ts: float | None = None
+    _ORPHAN_GRACE_SECONDS = 30.0
     while time.time() < deadline:
         try:
             history = httpx.get(f"{COMFY_URL}/history/{prompt_id}", timeout=5).json()
@@ -76,8 +92,36 @@ def wait_for_image(prompt_id: str, timeout: float = 1800.0) -> Path:
             time.sleep(1)
             continue
         if prompt_id not in history:
+            # v0.7.5 — when the prompt is missing AND ComfyUI's queue is
+            # empty (nothing running, nothing pending), we assume the
+            # server restarted between submission and polling. Give it
+            # 30 s grace in case the prompt is still being parsed/queued.
+            if first_missing_ts is None:
+                first_missing_ts = time.time()
+            elif time.time() - first_missing_ts > _ORPHAN_GRACE_SECONDS:
+                try:
+                    qresp = httpx.get(f"{COMFY_URL}/queue", timeout=5).json()
+                    pending = qresp.get("queue_pending", [])
+                    running = qresp.get("queue_running", [])
+                    if not pending and not running:
+                        raise RuntimeError(
+                            f"ComfyUI prompt {prompt_id} orphaned: not in /history "
+                            f"after {_ORPHAN_GRACE_SECONDS}s AND queue is empty "
+                            f"(ComfyUI likely restarted between submit and poll). "
+                            f"Caller should retry."
+                        )
+                except RuntimeError:
+                    raise
+                except Exception:
+                    # Couldn't check queue (transient HTTP error) — keep
+                    # polling history for a bit longer rather than wrongly
+                    # declaring orphan.
+                    pass
             time.sleep(1)
             continue
+        # Once we found it in history at least once, reset the missing
+        # tracker (this lets us tolerate transient flaps without raising).
+        first_missing_ts = None
         entry = history[prompt_id]
         outputs = entry.get("outputs", {})
         for _, node_out in outputs.items():
