@@ -337,6 +337,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
         "info", "script_generate_start",
         topic=req.topic[:60], minutes=req.target_minutes,
         model=model, language=language_name,
+        preset_id=req.preset_id,
     )
     # Gemma 4 4B abliterated tends to default back to English even when the
     # body of the prompt requests another language. We override the system
@@ -520,6 +521,7 @@ async def _finalize_script(
         markers_image=len(image_markers),
         markers_image_expected_min=expected_min,
         truncated=word_count < target_minutes * 100,
+        preset_id=preset_id,
     )
     # Safety net: if Gemma produced far fewer image markers than the script
     # length warrants, weave in evenly-spaced auto-markers whose prompt is
@@ -821,11 +823,20 @@ def _diversify_subjects(markers: list[Marker]) -> list[Marker]:
         if smaller > 0 and overlap / smaller >= 0.5:
             repeat_warnings += 1
     if repeat_warnings:
+        # v0.7.2 — escalate to ERROR when >=50% of consecutive pairs
+        # share subject keywords. At that ratio the user will see all
+        # images converging to the same look regardless of the per-beat
+        # narration. Visible signal in /diag/snapshot lets us catch it
+        # before render-time instead of relying on the user reporting
+        # "all images look the same" again.
+        ratio = repeat_warnings / max(1, len(image_markers) - 1)
+        level = "error" if ratio >= 0.5 else "warning"
         log_event(
-            "warning",
+            level,
             "image_subject_repeat_detected",
             consecutive_pairs=repeat_warnings,
             total_images=len(image_markers),
+            repeat_ratio=round(ratio, 2),
             note="LLM is repeating subjects across consecutive images despite the diversity rule.",
         )
     return markers
@@ -872,9 +883,18 @@ def _topic_setting_prefix(topic: str, context_brief: str = "") -> str:
     descriptor = ""
     brief = (context_brief or "").strip()
     if brief:
+        # v0.7.2 — Strip the language/source prefix that
+        # `_gather_topic_facts` prepends to each Wikipedia source so the
+        # descriptor doesn't ship "[es] Emperador de Jade\nEl Emperador
+        # de Jade es una deidad..." as style anchor (real bug from the
+        # 2026-05-20 run: Pass-2 inflated the style_anchor to 230 chars
+        # of Wikipedia prose, which CLIP weighed at the start of every
+        # prompt → all 17 images collapsed to the same subject).
+        # Drop "[xx] Title\n" prefix and any leading bullet/dash.
+        brief = re.sub(r'^\s*\[[a-z]{2,3}\][^\n]*\n+', '', brief, flags=re.IGNORECASE)
+        brief = re.sub(r'\s+', ' ', brief).strip()  # collapse newlines
+
         # First 1-2 sentences of the brief carry the real era/culture.
-        # Split on sentence enders; keep enough for cultural cues but
-        # bounded so the prompt prefix stays compact.
         sents = re.split(r'(?<=[.!?])\s+', brief)
         descriptor = " ".join(s.strip() for s in sents[:2] if s.strip())
         # Strip a leading "<Topic> is/was/refers to" so we keep the
@@ -884,9 +904,21 @@ def _topic_setting_prefix(topic: str, context_brief: str = "") -> str:
             r'\b[^,.]*?\b(?:is|was|are|were|refers? to|means?)\b\s*',
             '', descriptor, flags=re.IGNORECASE,
         ).strip()
+        # v0.7.2 — Also strip a leading short-form repeat of the topic
+        # noun, e.g. "Emperador de Jade es una deidad..." when the topic
+        # is "La leyenda del Emperador de Jade". The Wikipedia
+        # definitional sentence usually starts with the short-form
+        # subject + a copula in the local language.
+        descriptor = re.sub(
+            r'^\s*\w[\w\s]{0,40}?\s+(?:es|son|fue|fueron|era|eran|'
+            r'is|was|are|were|refers? to|means?)\s+(?:un[ao]?|el|la|los|las|a|the|an)\s+',
+            '', descriptor, flags=re.IGNORECASE,
+        ).strip()
         descriptor = descriptor.strip('"\'` ')
-        if len(descriptor) > 220:
-            descriptor = descriptor[:220].rsplit(" ", 1)[0]
+        # Truncate AGGRESSIVELY (was 220 → 120). Anything longer is
+        # prose, not a style anchor; long anchors dominate CLIP.
+        if len(descriptor) > 120:
+            descriptor = descriptor[:120].rsplit(" ", 1)[0]
 
     if descriptor:
         return (
@@ -1720,8 +1752,8 @@ def _enforce_subject_diversity(
     distilled: list[str],
     facet_pool: list[str],
     *,
-    window: int = 4,
-    thresh: float = 0.55,
+    window: int = 6,
+    thresh: float = 0.4,
 ) -> list[str]:
     """For each distilled phrase whose subject nouns overlap too much
     with the previous `window` (already-emitted) phrases, prepend the

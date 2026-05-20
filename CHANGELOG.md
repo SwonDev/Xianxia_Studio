@@ -6,6 +6,73 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-05-20
+
+### Tres fixes contundentes en presets, anchors y diversidad de imágenes
+
+La primera generación con preset "Divulgativo" en v0.7.1 (topic "La
+leyenda del Emperador de Jade") expuso 3 bugs que ahora cierro:
+
+1. **`_topic_setting_prefix` inyectaba 230 chars de prosa Wikipedia al
+   inicio de cada prompt de imagen.** Cuando el LLM `/setting_tag`
+   fallaba 4 veces (raw_len=0, ~50% con Gemma 4B abliterated), el
+   fallback construía un descriptor a partir del brief crudo de
+   Wikipedia — pero el brief llega prefijado por `[es] Title\n` y eso
+   confundía el regex de cleanup, dejando el header completo dentro
+   del descriptor. CLIP pesa fuertemente los tokens al inicio del
+   prompt → 17 imágenes con el mismo "Emperador de Jade es una deidad
+   de la mitología china…" al inicio = todas casi idénticas.
+   - Fix: strip `[xx] Title\n` antes de extraer descriptor.
+   - Fix: regex extra para limpiar repetición del topic en forma corta
+     (`"X es una/un... "`).
+   - Fix: truncar descriptor a 120 chars (era 220). Anything longer
+     is prose, not a style anchor.
+
+2. **`_enforce_subject_diversity` era demasiado tolerante.** Default
+   `window=4, thresh=0.55`. Endurecido a `window=6, thresh=0.4` para
+   que más prompts repetidos sean pivoteados a un facet distinto del
+   pool topic-aware antes de llegar a ComfyUI.
+
+3. **`image_subject_repeat_detected` solo emitía warning.** En el run
+   real 16/17 pares consecutivos compartían sujeto y el sistema
+   siguió como si nada. Ahora cuando ≥50% de los pares consecutivos
+   coinciden, el log se promueve a **ERROR** con campo `repeat_ratio`,
+   visible inmediatamente en `/diag/snapshot` y en pipeline-rust
+   correlator.
+
+### Observabilidad del preset en runtime
+
+El bug de raíz que el run del Emperador de Jade reveló — guion claramente
+épico cuando el usuario pidió divulgativo — era opaco porque NINGÚN log
+mostraba qué `preset_id` recibió cada capa. Fix:
+
+- **`pipeline/mod.rs`**: log `tracing::info!` con `preset_id` al entrar
+  al pipeline (antes de tocar la DB). Si la UI envía `narrative_epic`
+  por defecto en lugar del `explainer` seleccionado, queda en el JSONL.
+- **`routes/script.py`**: `script_generate_start` y `script_generate_done`
+  ahora incluyen `preset_id` en su payload de log.
+
+Con estos 2 logs los próximos diagnósticos de "el preset no se aplicó"
+serán inmediatos: si Rust dice `preset_id=narrative_epic` cuando el
+usuario marcó "Divulgativo" → bug en UI/serde. Si Rust dice `explainer`
+pero `script_generate_start` dice `narrative_epic` → bug en el body
+JSON al sidecar. Si ambos dicen `explainer` → bug en `build_script_prompt`.
+
+### Sin cambios de comportamiento para `narrative_epic`
+
+`narrative_epic` (default cuando se omite preset) sigue siendo
+byte-idéntico a v0.7.1. Los 3 fixes son aditivos:
+
+- El fix de `_topic_setting_prefix` solo aplica cuando el setting_tag
+  del LLM falla y se necesita el fallback — y la versión corregida
+  sigue produciendo el mismo prefijo cinematic, solo sin el ruido
+  Wikipedia que ya era un bug.
+- El endurecimiento de `_enforce_subject_diversity` se ejecuta para
+  todos los presets por igual — si los facets del pool resuelven la
+  repetición, las imágenes serán más diversas en todos los modos.
+- El escalado a ERROR de `image_subject_repeat_detected` es solo
+  observabilidad — no cambia el output.
+
 ## [0.7.1] — 2026-05-20
 
 ### Cableado completo de música y voz por preset

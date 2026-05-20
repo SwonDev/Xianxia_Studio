@@ -513,6 +513,19 @@ pub async fn start(
     pool: Arc<DbPool>,
     req: GenerateRequest,
 ) -> Result<String> {
+    // v0.7.2 — Log the preset_id at pipeline entry so any wiring drift
+    // (UI → Tauri serde → Rust) is visible in pipeline-rust.jsonl on
+    // every generation. The 2026-05-20 "Emperador de Jade" run that
+    // came back as narrative_epic instead of the explainer the user
+    // picked was opaque exactly because there was no log proving the
+    // request reached Rust with the correct preset.
+    tracing::info!(
+        topic = %req.topic,
+        preset_id = %req.preset_id,
+        target_minutes = req.target_minutes,
+        languages = ?req.languages,
+        "pipeline start"
+    );
     let project = db::projects::create(
         &pool,
         NewProject {
