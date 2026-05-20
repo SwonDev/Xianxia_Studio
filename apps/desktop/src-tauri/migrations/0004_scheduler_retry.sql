@@ -1,0 +1,23 @@
+-- v0.7.12 — Scheduler retry hardening: stop the publish-flip cron from
+-- hammering the YouTube API forever when a row's publish call repeatedly
+-- fails. Without this, the original `scheduler/mod.rs::run_loop` would
+-- retry every 60 s indefinitely against the same `status='uploaded'` row,
+-- burning the free YouTube Data API quota (50 units per `videos.update`,
+-- 1000 free units/day → ~20 retries/day saturates the quota and locks
+-- legitimate uploads out).
+--
+-- New column `attempt_count` lets the scheduler:
+--   1. Skip rows whose last_attempt_at is too recent (exponential backoff
+--      based on attempt_count).
+--   2. Move to `status='failed'` after N consecutive failures (default 5)
+--      so the user has to manually retry from the Planificador UI.
+--
+-- ALTER TABLE ... ADD COLUMN is the SQLite-safe path; no data loss.
+-- IF NOT EXISTS isn't supported on ADD COLUMN in old SQLite, so we
+-- read the schema first via PRAGMA and ALTER only when missing — but
+-- sqlx migrations run only on fresh `_sqlx_migrations` advances, so
+-- each migration runs exactly once. The ALTER is idempotent across
+-- re-runs of the SAME migration file (sqlx records it as applied),
+-- so a bare ALTER is fine here.
+
+ALTER TABLE scheduled_uploads ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
