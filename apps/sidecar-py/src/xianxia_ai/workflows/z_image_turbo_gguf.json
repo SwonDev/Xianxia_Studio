@@ -46,13 +46,13 @@
   },
   "8": {
     "class_type": "KSampler",
-    "_meta": {"title": "Z-Image-Turbo (8 steps, cfg=1, dpmpp_sde/beta)"},
+    "_meta": {"title": "Z-Image-Turbo GGUF (8 steps, cfg=1, dpmpp_sde/sgm_uniform — v0.7.8 per Tongyi-MAI docs 2026)"},
     "inputs": {
       "seed": "{{seed}}",
       "steps": 8,
       "cfg": 1.0,
       "sampler_name": "dpmpp_sde",
-      "scheduler": "beta",
+      "scheduler": "sgm_uniform",
       "denoise": 1.0,
       "model": ["6", 0],
       "positive": ["4", 0],

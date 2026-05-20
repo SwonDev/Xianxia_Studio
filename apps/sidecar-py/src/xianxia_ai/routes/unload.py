@@ -311,6 +311,24 @@ def unload(target: str = "all") -> UnloadResponse:
         if tts_base_model.unload():
             detail_parts.append("tts_base")
             any_unloaded = True
+            # v0.7.8 — invalidate the voice-clone prompt cache when the
+            # base model is unloaded. The cached `prompt_item` objects
+            # carry PyTorch tensors and internal references tied to the
+            # MODEL instance that produced them. After unload+reload the
+            # model object is new, but the cache still holds prompt_items
+            # bound to the destroyed model → undefined behaviour on the
+            # next `model.generate_voice_clone(voice_clone_prompt=cached)`
+            # call. Wiping the cache here makes the next request rebuild
+            # the prompt against the freshly-loaded model. Cheap: a clone
+            # prompt rebuild is ~15 s and only happens once per request
+            # because `_build_clone_prompt` re-populates the cache.
+            try:
+                from . import tts as _tts_route
+                with _tts_route._clone_prompt_cache_lock:
+                    _tts_route._clone_prompt_cache.clear()
+                detail_parts.append("clone_prompt_cache_cleared")
+            except Exception:
+                pass
     if target in ("whisper", "all"):
         if whisper_model.unload():
             detail_parts.append("whisper")
