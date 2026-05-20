@@ -6,6 +6,103 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-20
+
+### Smart Captions: catálogo de 15 estilos importado de HyperFrames (Apache 2.0)
+
+HeyGen open-sourceó el 17 de mayo 2026 (release `v0.6.19` de HyperFrames)
+**15 componentes de caption-style** vía `npx hyperframes add captions` —
+shadcn-style copy-paste, no npm install. Xianxia ya usa `hyperframes`
+internamente como engine de render desde v0.1.x, así que la integración
+es nativa.
+
+#### Lo que se importó (sólo el catálogo visual)
+
+Cada componente es un HTML/CSS/GSAP self-contained que consume un array
+`WORDS = [{ text, start, end }]` y renderiza overlays sincronizados.
+Hemos copiado los **15** a `apps/sidecar-node/src/captions/styles/`:
+
+| Slug | Look | Recomendado para |
+|---|---|---|
+| `highlight` | TikTok rojo active-word (Hormozi) | Explainer / Shorts (default pre-v0.8.0) |
+| `pill-karaoke` | Karaoke con pill | Música / lyric |
+| `editorial-emphasis` | Documental tipográfico | Narrative, documentary |
+| `glitch-rgb` | RGB cyber-glitch | Tech, gaming |
+| `kinetic-slam` | Slam full-screen | Hook agresivo Shorts |
+| `neon-glow` | Glow neón limpio | Nocturno, vaporwave |
+| `neon-accent` | Neón multi-color | Listicles |
+| `clip-wipe` | Wipe palabra-a-palabra | Marketing limpio |
+| `gradient-fill` | Gradient premium | Deep-dive, luxury |
+| `matrix-decode` | Reveal sci-fi | Mystery, tech |
+| `emoji-pop` | Emoji augmented | Social CTAs |
+| `parallax-layers` | Depth/parallax | Narrative épico cine |
+| `particle-burst` | Partículas drama | Comparativas |
+| `texture` | Lava/texture fill | Xianxia/fantasy/mystic |
+| `weight-shift` | Variable font pulse | Explainer minimal |
+
+#### Mapping automático por preset (v0.7.0)
+
+Cada uno de los 6 video-presets se mapea a un estilo coherente. **El
+default es `highlight`** (preserva el aspecto pre-v0.8.0). Mapping en
+`apps/sidecar-node/src/captions/index.ts::PRESET_TO_STYLE`:
+
+```
+narrative_epic    → parallax-layers
+documentary       → editorial-emphasis
+explainer         → highlight   (pre-v0.8.0 default)
+listicle          → kinetic-slam
+comparative       → particle-burst
+deep_dive         → gradient-fill
+shorts_hormozi    → highlight
+shorts_general    → kinetic-slam
+```
+
+#### Lo que NO se importó (auditoría de la opción completa)
+
+Una investigación cuidadosa del repo HyperFrames descartó adoptar:
+
+- **CLI `hyperframes-media`** (TTS Kokoro + Whisper small + rembg
+  u2net_human_seg) — Xianxia ya tiene mejor stack en cada pieza:
+  Qwen3-TTS con voice cloning, faster-whisper large-v3-turbo + torchaudio
+  forced-alignment, rembg propio.
+- **Engine `@hyperframes/engine`** — `apps/sidecar-node/render.ts`
+  (Playwright + Chromium + GSAP + ffmpeg NVENC) ya hace exactamente lo
+  mismo, más optimizado para nuestro pipeline.
+- **`/hyperframes-media` skills (Claude Code)** — sólo Markdown
+  prompts, no software ejecutable, no aplican a un proyecto Tauri/Rust
+  end-user.
+
+#### Atribución (Apache 2.0)
+
+- Nuevo fichero `apps/sidecar-node/NOTICE.md` con la atribución completa
+  y mapping slug → upstream.
+- Cada `.html` añade un header de 6 líneas con copyright HeyGen + link
+  al upstream + ref a `NOTICE.md`. El resto del contenido es **idéntico
+  byte por byte** al de `heygen-com/hyperframes@v0.6.19`.
+
+#### Estado de la integración
+
+- ✅ **v0.8.0 — Catálogo + metadata + atribución + build pipeline**
+  (esta versión).
+- ⏳ **v0.8.1 — Renderer overlay (Playwright → PNG sequence con alpha) +
+  composición ffmpeg → MP4 final**. Wirea el `caption_style` resuelto
+  por preset al `apps/sidecar-node/render.ts` actual.
+- ⏳ **v0.8.2 — UI selector "Estilo de captions"** en `generator.tsx` /
+  `shorts.tsx` para override manual (override > preset > default).
+- ⏳ **v0.8.3 — Smoke E2E real** con un short y un narrative usando 3
+  estilos distintos para confirmar parity (default sigue idéntico) y
+  diversidad (otros estilos visibles).
+
+#### Bumped a minor (v0.7.x → v0.8.0)
+
+Es feature aditivo grande, no patch. Default sigue siendo `highlight`
+(parity pre-v0.8.0).
+
+### Sin compilación
+
+Acumulado desde v0.7.5 (último NSIS shippeado): v0.7.6 → v0.8.0
+(13 versiones). Se compilará cuando el usuario lo autorice.
+
 ## [0.7.17] — 2026-05-20
 
 ### Seguridad: PII leak en error messages de OAuth Google

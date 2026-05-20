@@ -127,3 +127,4 @@ assets/music/
 # E2E test run outputs (generated MP4/WAV/JPG — huge, NEVER commit).
 # The harness regenerates these; only the test code under tests/e2e/ is tracked.
 tests/e2e/runs/
+.tmp-hyperframes/
