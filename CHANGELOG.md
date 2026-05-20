@@ -6,6 +6,67 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.16] — 2026-05-20
+
+### Subprocess timeouts: cobertura completa de ffmpeg/ffprobe/ollama
+
+Continuación de v0.7.15 (que cubrió 5 sitios). Esta versión cubre los
+**13 sitios restantes** de `subprocess.run(...)` sin `timeout=` que la
+auditoría detectó en el sidecar Python. Resultado: **0 llamadas a
+ffmpeg/ffprobe/ollama pueden colgar indefinidamente el worker FastAPI**.
+
+| Archivo | Linea(s) | Operación | Timeout |
+|---|---|---|---|
+| `render.py:310` | render principal HyperFrames (NVENC + filter_complex) | 30 min |
+| `render.py:367` | concat demuxer (`-c copy`) | 5 min |
+| `render.py:411` | mux audio chunked (sidechain compress) | 15 min |
+| `render.py:557` | render chunk silent | 15 min |
+| `export.py:155` | ffprobe source dimensions | 30 s |
+| `export.py:200` | export preset (1080p/4K) | 30 min |
+| `export.py:205` | ffprobe output duration | 30 s |
+| `shorts.py:233` | slice raw (`-c copy`) | 5 min |
+| `shorts.py:303` | encode short con ASS burn | 15 min |
+| `shorts_auto.py:873` | shorts cut con encoder | 15 min |
+| `shorts_auto.py:1611` | vertical burn-in subs | 15 min |
+| `shorts_auto.py:1649` | audio extract para whisper | 10 min |
+| `music.py:571` | música crossfade pairwise | 5 min |
+| `music.py:614` | música premaster (filtros) | 5 min |
+| `ltx_video.py:164` | mux frames PNG → MP4 (libx264 CRF 18) | 10 min |
+| `install.py:171` | `ollama create` (copia GGUF) | 10 min |
+
+`music.py:399` (ACE-Step) y `depthflow.py:140` ya tenían timeouts
+correctos (40 min y 900 s respectivamente).
+
+### Patrón aplicado en todos
+
+```python
+try:
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=N)
+except subprocess.TimeoutExpired as exc:
+    raise HTTPException(500, f"<operación> timeout (>N): {exc}") from exc
+if proc.returncode != 0:
+    raise HTTPException(500, f"<operación> failed: {proc.stderr[-500:]}")
+```
+
+Mensajes de error específicos en cada sitio para diagnóstico rápido
+desde el log JSONL del sidecar.
+
+### Bugs auditoría restantes
+
+Tras v0.7.16 quedan estos hallazgos NO arreglados:
+- `tokio::spawn` sin handle guardado en `sidecars/mod.rs:580`
+  (autoinstall llama.cpp) — cancelación al cerrar app deja `.tmp`
+  parciales en disco.
+- Triple `Arc<Mutex>` en `sidecars/mod.rs` sin orden documentado
+  (riesgo deadlock teórico, no observado).
+- Race condition potencial `persist_step` fase 4 vs fase 4c (LTX) —
+  requiere wrap transaccional, todavía en evaluación.
+
+### Sin compilación
+
+Acumulado desde v0.7.5 (último NSIS shippeado): v0.7.6 → v0.7.16
+(11 versiones). Se compilará cuando el usuario lo autorice.
+
 ## [0.7.15] — 2026-05-20
 
 ### Robustez extra: HTTP timeouts + subprocess timeouts + probes paralelos

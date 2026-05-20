@@ -161,6 +161,8 @@ def ltx_clip(req: LtxClipRequest) -> LtxClipResponse:
     frame_pattern = str(frame_dir / "ltx_video_%05d.png")
 
     try:
+        # v0.7.16 — timeout 10 min. Mux de frames PNG a MP4 (libx264 CRF 18)
+        # típicamente termina en <2 min; 10 min cubre clips muy largos.
         subprocess.run(
             [
                 "ffmpeg", "-y",
@@ -173,7 +175,13 @@ def ltx_clip(req: LtxClipRequest) -> LtxClipResponse:
             ],
             check=True,
             capture_output=True,
+            timeout=600,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"ffmpeg LTX mux timeout (>10 min): {exc}",
+        ) from exc
     except subprocess.CalledProcessError as exc:
         # ffmpeg stderr for debugging
         stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""

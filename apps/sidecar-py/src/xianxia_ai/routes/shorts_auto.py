@@ -870,7 +870,11 @@ def _cut_short_center_crop(
         str(out_path),
     ]
     cwd = str(burn_ass_path.parent) if burn_ass_path else None
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    # v0.7.16 — timeout 15 min (encode short con ASS burn opcional).
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=900)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"shorts cut timeout (>15 min): {exc}") from exc
     if proc.returncode != 0:
         raise HTTPException(500, f"shorts cut failed: {proc.stderr[-500:]}")
 
@@ -1604,7 +1608,11 @@ def _burn_subs_into_vertical(
         "-movflags", "+faststart",
         str(out_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ass_path.parent))
+    # v0.7.16 — timeout 15 min (burn-in subs sobre vídeo vertical).
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ass_path.parent), timeout=900)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"vertical burn-in timeout (>15 min): {exc}") from exc
     if proc.returncode != 0:
         raise HTTPException(500, f"vertical burn-in failed: {proc.stderr[-500:]}")
 
@@ -1642,12 +1650,17 @@ async def shorts_from_video(req: ShortsFromVideoRequest) -> ShortsAutoResponse:
 
     # 1. Extract audio mono 16k for whisper
     audio_path = out_dir / f"audio-{uuid.uuid4().hex[:8]}.wav"
-    extract = subprocess.run(
-        ["ffmpeg", "-y", "-i", req.video_path,
-         "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
-         str(audio_path)],
-        capture_output=True, text=True,
-    )
+    # v0.7.16 — timeout 10 min. Audio extract es rápido (~realtime/4 con
+    # NVDEC, sin re-encode video) — 10 min cubre vídeos largos.
+    try:
+        extract = subprocess.run(
+            ["ffmpeg", "-y", "-i", req.video_path,
+             "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+             str(audio_path)],
+            capture_output=True, text=True, timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"audio extract timeout (>10 min): {exc}") from exc
     if extract.returncode != 0:
         raise HTTPException(500, f"audio extract failed: {extract.stderr[-300:]}")
 

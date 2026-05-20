@@ -168,11 +168,18 @@ def ollama_create(req: OllamaModelfileRequest) -> dict:
     mf_path = Path(req.gguf_path).parent / f"{req.model_name}.Modelfile"
     mf_path.write_text(modelfile, encoding="utf-8")
 
-    result = subprocess.run(
-        ["ollama", "create", req.model_name, "-f", str(mf_path)],
-        capture_output=True,
-        text=True,
-    )
+    # v0.7.16 — timeout 10 min. `ollama create` copia el GGUF (puede ser
+    # 4-8 GB) y genera el manifest. En disco SATA puede tardar minutos;
+    # un cuelgue real bailaría con esto.
+    try:
+        result = subprocess.run(
+            ["ollama", "create", req.model_name, "-f", str(mf_path)],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"ollama create timeout (>10 min): {exc}") from exc
     if result.returncode != 0:
         raise HTTPException(500, f"ollama create failed: {result.stderr}")
     return {
