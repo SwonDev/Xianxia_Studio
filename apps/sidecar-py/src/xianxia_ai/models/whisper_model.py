@@ -41,7 +41,16 @@ def load():
         from faster_whisper import WhisperModel  # type: ignore
         import torch  # type: ignore
 
-        size = os.environ.get("XIANXIA_WHISPER_SIZE", "large-v3")
+        # v0.7.7 — default to large-v3-turbo. The turbo variant has 4
+        # decoder layers (vs 32 in large-v3), giving ~6× faster inference
+        # while staying within ~1 % WER and KEEPING multilingual support.
+        # Critical: distil-whisper is English-only, so it can't replace
+        # large-v3 here — turbo is the only drop-in that doesn't break
+        # Spanish/Chinese/Japanese narration paths. VRAM also drops
+        # from ~10 GB to ~6 GB which helps post-render coordination on
+        # the 4060 8 GB target.
+        # Caller can still pin XIANXIA_WHISPER_SIZE=large-v3 to revert.
+        size = os.environ.get("XIANXIA_WHISPER_SIZE", "large-v3-turbo")
         device = "cuda" if torch.cuda.is_available() else "cpu"
         compute = "float16" if device == "cuda" else "int8"
         _model = WhisperModel(size, device=device, compute_type=compute)

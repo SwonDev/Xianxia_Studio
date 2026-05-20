@@ -222,7 +222,13 @@ Rules for ALL templates:
   • EXACTLY 1 or 2 words IN ALL-CAPS for emphasis (e.g. "SO Untouched", "REWROTE History"). These caps tokens are short (≤ 7 letters), placed where the surprise lives. Do NOT shout the whole title.
   • No clickbait emojis, no brackets except "(Compilation)" / "(Documentary)" rare cases.
   • Must be specific to the topic — NEVER generic ("Amazing Mystery Revealed!").
-  • Under 60 chars TOTAL (including caps tokens).
+  • v0.7.7 — YouTube 2026 SEO research: the algorithm weighs the FIRST 40
+    CHARACTERS most heavily for keyword extraction. The PRIMARY KEYWORD
+    (the topic's named entity — "Tutankhamun", "Emperador de Jade",
+    "Black hole") MUST appear within the first 40 characters of the
+    title. Truncation at 70 chars cuts the title in search results, so
+    keep total ≤ 70 chars (previously 60, slight relax for two-word
+    primary keywords like "Empire of Aksum").
 
 ═══ JSON SHAPE ═══
 {{
