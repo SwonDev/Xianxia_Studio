@@ -168,7 +168,15 @@ pub async fn exchange_code(code: &str, port: u16) -> Result<OAuthCredentials> {
         .send()
         .await?;
     if !res.status().is_success() {
-        return Err(anyhow::anyhow!("token exchange failed: {}", res.text().await?));
+        // v0.7.17 — PII leak fix. Antes incluíamos `res.text().await?` en
+        // el error, y Google a veces ecoa el `code` o parámetros como
+        // `client_id` en el body de error. Ese mensaje fluye al
+        // `tracing::error!` del comando Tauri y termina en logs/, que
+        // cualquiera con acceso local puede leer. Sólo serializamos el
+        // status HTTP — suficiente para diagnosticar (4xx vs 5xx) sin
+        // exponer credenciales ni códigos de un solo uso.
+        let status = res.status();
+        return Err(anyhow::anyhow!("token exchange failed: HTTP {}", status));
     }
     let token: TokenResponse = res.json().await?;
     Ok(OAuthCredentials {
@@ -192,7 +200,10 @@ pub async fn refresh_access_token(creds: &mut OAuthCredentials) -> Result<()> {
         .send()
         .await?;
     if !res.status().is_success() {
-        return Err(anyhow::anyhow!("refresh failed: {}", res.text().await?));
+        // v0.7.17 — mismo PII leak fix que en exchange_code: el body de
+        // error de Google puede ecoar el refresh_token. Sólo el status.
+        let status = res.status();
+        return Err(anyhow::anyhow!("refresh failed: HTTP {}", status));
     }
     let token: TokenResponse = res.json().await?;
     creds.access_token = Some(token.access_token);
