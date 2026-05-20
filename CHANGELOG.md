@@ -6,6 +6,68 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-05-20
+
+### Cableado completo de música y voz por preset
+
+v0.7.0 introdujo los 6 tipos de vídeo pero dejó la inyección de
+música y voz como "fase 2" en `routes/music.py` y `routes/tts.py`.
+v0.7.1 lo cierra: cuando el usuario elige un preset distinto de
+`narrative_epic`, el sidecar **resuelve los descriptores adecuados
+en las propias fases de audio**, no solo en el guion.
+
+- **`routes/music.py`** — `MusicRequest.preset_id?: str`. En
+  `get_music`, si el preset no es `narrative_epic`, se antepone
+  `MUSIC_MOOD_TO_PROMPT[preset.music_mood]` al `style_hint` que
+  ya derivaba del `setting_tag`. Documentary obtiene un score
+  documental sobrio, listicle uno energético y moderno, deep_dive
+  uno minimalista analítico, etc. La rama de fallback (cuando
+  MusicGen falla y se cae a librería local) también recibe el
+  `preset_id`.
+- **`routes/tts.py`** — `TTSRequest.preset_id?: str`. La resolución
+  del `instruction` que va al modelo de voz Qwen3-TTS sigue una
+  cadena de prioridad explícita: caller-provided `instruction` ⟶
+  `VOICE_TONE_TO_DESCRIPTOR[preset.voice_tone]` ⟶ legacy
+  `"Read in a calm cinematic narrator voice."`. Documentary obtiene
+  "measured documentary narrator, calm authority", explainer
+  "warm patient teacher, clear articulation", listicle "upbeat
+  enthusiastic presenter, fast pace", etc.
+- **`pipeline/mod.rs`** — propaga `req.preset_id` al body JSON de
+  `/tts` y de las **3 llamadas** a `/music` (primaria + 2 fallbacks).
+
+#### Contrato byte-idéntico — sigue intacto
+
+- Si el cliente omite `preset_id`, o lo manda como `"narrative_epic"`,
+  ambas rutas **saltan por completo** el bloque de override.
+  - Música: `style_hint` queda exactamente como lo formaba v0.7.0
+    (topic-derived sin prefijo de preset).
+  - Voz: `instruct` queda como la cadena literal v0.7.0
+    `"Read in a calm cinematic narrator voice."`.
+- Cualquier `instruction` explícita del caller siempre gana sobre
+  el preset (compatible con el wizard de voice cloning y futuros
+  callers que necesiten control fino).
+
+#### Garantías de no-regresión
+
+- **13 tests nuevos** en `apps/sidecar-py/tests/test_presets_wiring.py`
+  que pinean exactamente:
+  - El `style_hint` legacy pasa sin cambios para `narrative_epic`/`None`.
+  - Documentary/explainer/listicle/deep_dive prependen el bias correcto.
+  - El `instruct` para `narrative_epic`/`None` es **byte por byte**
+    la cadena `"Read in a calm cinematic narrator voice."`.
+  - `instruction` explícita gana sobre cualquier preset.
+  - Documentary/explainer/listicle/comparative/deep_dive devuelven los
+    descriptores documentados.
+- **5 invariantes nuevos** en `scripts/parity-check.mjs` que verifican
+  presencia de `preset_id` en los schemas, importación de las tablas
+  desde `presets`, el guard `!= "narrative_epic"` antes del override,
+  la cadena legacy literal, y que `pipeline/mod.rs` propague
+  `preset_id` en ≥ 8 cuerpos JSON (4 v0.7.0 + 1 tts + 3 music).
+
+#### Tests totales en sidecar-py
+
+`22 passed in 0.04s` — 9 del registry (v0.7.0) + 13 del wiring (v0.7.1).
+
 ## [0.7.0] — 2026-05-20
 
 ### 6 tipos de vídeo — el guion ya no es solo "historia épica"

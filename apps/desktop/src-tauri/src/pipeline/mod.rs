@@ -1045,6 +1045,7 @@ async fn run(
                 "language": audio_lang_name,
                 "speaker": req.voice_speaker.clone().unwrap_or_else(|| "Vivian".to_string()),
                 "out_dir": out_dir,
+                "preset_id": req.preset_id,
             }))
             .send()
             .await?
@@ -1638,6 +1639,7 @@ async fn run(
         "duration_seconds": script_resp["estimated_seconds"].as_f64().unwrap_or(900.0),
         "use_musicgen": req.use_musicgen,
         "style_hint": style_hint,
+        "preset_id": req.preset_id,
     });
     let music_first = client
         .post(format!("{}/music", PY_SIDECAR))
@@ -1656,6 +1658,7 @@ async fn run(
                     "duration_seconds": script_resp["estimated_seconds"].as_f64().unwrap_or(900.0),
                     "use_musicgen": false,
                     "style_hint": style_hint,
+                    "preset_id": req.preset_id,
                 });
                 client.post(format!("{}/music", PY_SIDECAR))
                     .timeout(std::time::Duration::from_secs(120))
@@ -1674,6 +1677,7 @@ async fn run(
                 "duration_seconds": script_resp["estimated_seconds"].as_f64().unwrap_or(900.0),
                 "use_musicgen": false,
                 "style_hint": style_hint,
+                "preset_id": req.preset_id,
             });
             client.post(format!("{}/music", PY_SIDECAR))
                 .timeout(std::time::Duration::from_secs(120))

@@ -98,6 +98,14 @@ class TTSRequest(BaseModel):
     # case bounded so long narrations stay under a few minutes wall-time.
     chunk_chars: int = 350
     out_dir: str | None = None
+    # v0.7.1 — Video type preset. When set to a non-default preset AND
+    # `instruction` is not provided, the synthesizer uses
+    # VOICE_TONE_TO_DESCRIPTOR[preset.voice_tone] as the speaker style
+    # instruction (e.g. documentary → "measured documentary narrator,
+    # calm authority"). `narrative_epic` (default) keeps the legacy
+    # cinematic narrator instruction byte-identical to v0.7.0. An
+    # explicit `instruction` always wins.
+    preset_id: str | None = None
 
 
 class TTSResponse(BaseModel):
@@ -509,7 +517,24 @@ async def synthesize(req: TTSRequest) -> TTSResponse:
 
     lang = _LANG_TO_QWEN.get(req.language.lower()[:2], req.language)
     spk_raw = req.speaker.strip()
-    instruct = req.instruction or "Read in a calm cinematic narrator voice."
+    # v0.7.1 — Resolve speaker style instruction with priority:
+    #   1. Explicit req.instruction (caller override) — always wins.
+    #   2. Non-default preset → VOICE_TONE_TO_DESCRIPTOR[preset.voice_tone].
+    #   3. Legacy default → "Read in a calm cinematic narrator voice."
+    # narrative_epic (or omitted preset_id) keeps the legacy instruction
+    # byte-identical to v0.7.0 — zero regression for callers that don't
+    # opt into a new preset.
+    if req.instruction:
+        instruct = req.instruction
+    elif req.preset_id and req.preset_id != "narrative_epic":
+        from ..presets import VOICE_TONE_TO_DESCRIPTOR, get_preset
+
+        preset = get_preset(req.preset_id)
+        instruct = VOICE_TONE_TO_DESCRIPTOR.get(
+            preset.voice_tone, "Read in a calm cinematic narrator voice."
+        )
+    else:
+        instruct = "Read in a calm cinematic narrator voice."
 
     # Voice clone path: speaker = "clone:<id>"
     is_clone = spk_raw.lower().startswith("clone:")
