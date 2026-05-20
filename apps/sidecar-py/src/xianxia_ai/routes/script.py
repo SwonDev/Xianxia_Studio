@@ -876,6 +876,25 @@ _SETTING_TAG_CLEANUP = re.compile(
 )
 
 
+# v0.6.8 — Concrete-object nouns that NEVER belong in a style anchor.
+# If Gemma's setting tag dumps any of these as the first parenthetical
+# segment (e.g. "burning world-tree" instead of "ash-grey palette"),
+# the entire segment is rejected and only the era/culture head is kept
+# so the icon doesn't get stamped on every image.
+_STYLE_ANCHOR_HAS_OBJECT = re.compile(
+    r"\b(?:"
+    r"tree|trees|world-tree|oak|trunk|root|roots|leaf|leaves|forest|"
+    r"hammer|sword|axe|shield|spear|bow|dagger|crown|"
+    r"throne|altar|temple|pyramid|tomb|palace|castle|tower|cathedral|"
+    r"dragon|serpent|wyrm|wolf|wolves|eagle|raven|lion|tiger|bear|horse|"
+    r"rune|runes|tablet|scroll|sigil|glyph|"
+    r"volcano|volcan|mountain|cliff|desert|jungle|ocean|"
+    r"warrior|warriors|knight|monk|priest|shaman|wizard|sorcerer|king|queen|god|goddess"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 def _style_anchor(setting: str) -> str:
     """v0.2.9 — extract a THIN style anchor (era + culture + PALETTE
     only) from a full setting tag, dropping the concrete iconography
@@ -908,6 +927,21 @@ def _style_anchor(setting: str) -> str:
         return head  # no parenthetical → already thin
     inside = rest.split(")", 1)[0]
     palette = inside.split(",")[0].strip().strip(".,;: ")
+    # v0.6.8 — CRITICAL ICONOGRAPHY BLEED FIX. The previous code assumed
+    # the first parenthetical segment was always palette. It isn't:
+    # Gemma frequently dumps a concrete OBJECT first ("burning world-tree,
+    # ash-grey palette, ember sparks") so this prefix got stamped on
+    # EVERY beat → every image rendered the same icon regardless of the
+    # narrated subject (real user complaint, Norse mythology run: 8/15
+    # frames were the same burning tree). Reject any first-segment that
+    # contains a concrete-object noun and fall back to the bare head.
+    if palette and _STYLE_ANCHOR_HAS_OBJECT.search(palette):
+        log_event(
+            "warning", "style_anchor_iconography_dropped",
+            rejected=palette[:80],
+            setting_preview=s[:120],
+        )
+        return head
     if palette:
         # Avoid "... palette palette" if the model already said it.
         tail = "" if palette.lower().endswith("palette") else " palette"
@@ -2091,6 +2125,21 @@ async def _rewrite_image_prompts_from_narration(
     n_words = len(words)
     if n_words == 0:
         return markers
+
+    # v0.6.8 — log the actual setting_tag + extracted style_anchor so
+    # future "imágenes iguales" complaints have hard evidence instead of
+    # theory. The setting_tag is what dominates the CLIP prefix on every
+    # beat; if it leaks iconography ("burning world-tree, ash palette")
+    # the new _STYLE_ANCHOR_HAS_OBJECT guard now drops it and emits a
+    # style_anchor_iconography_dropped warning here.
+    _resolved_setting = setting_tag or _topic_setting_prefix(topic)
+    log_event(
+        "info",
+        "image_prompt_rewrite_start",
+        setting_tag=(setting_tag or "")[:200],
+        topic_setting_fallback=bool(not setting_tag),
+        style_anchor=_style_anchor(_resolved_setting)[:160],
+    )
 
     # ── Pass 1 ─ collect the literal narration sentence for every
     # image marker, in order. Indexed parallel to `image_marker_indices`

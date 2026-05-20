@@ -23,6 +23,7 @@ from xianxia_ai.routes.script import (  # noqa: E402
     _enforce_subject_diversity,
     _extract_subject_keywords,
     _jaccard,
+    _style_anchor,
 )
 
 # A realistic "black holes" brief + setting tag — the exact failure the
@@ -96,6 +97,40 @@ def test_repeated_subject_gets_pivoted_to_facets():
         return sum(pairs) / len(pairs) if pairs else 0.0
 
     assert avg_sim(out) < avg_sim(phrases)
+
+
+def test_style_anchor_rejects_iconography_in_first_segment():
+    """v0.6.8 — the real "Norse mythology" failure: Gemma dumped a
+    concrete object in what should have been palette, so the prefix
+    "burning world-tree" got stamped on every image → 8/15 frames were
+    the same burning tree even though the LLM markers were diverse."""
+    tag = (
+        "Norse mythology setting (burning world-tree, ash-grey palette, "
+        "ember sparks)"
+    )
+    out = _style_anchor(tag).lower()
+    # The whole first-segment must be dropped because it contains a
+    # concrete-object noun.
+    assert "world-tree" not in out
+    assert "tree" not in out
+    assert "burning" not in out
+    # The era/culture head still survives (anti-drift anchor intact).
+    assert out.startswith("norse mythology setting")
+
+
+def test_style_anchor_keeps_clean_palette():
+    """A first-segment that is genuinely a colour palette (no concrete
+    objects) must survive — we don't want to lose colour cohesion."""
+    tag = (
+        "Ancient Greek classical mythic setting (deep ultramarine and gold, "
+        "marble temples, olive groves, thunderbolts)"
+    )
+    out = _style_anchor(tag).lower()
+    assert "deep ultramarine and gold" in out
+    # Iconography after the first comma is still dropped by the existing
+    # split — palette segment is the only piece kept.
+    assert "temple" not in out
+    assert "thunderbolt" not in out
 
 
 def test_genuinely_varied_input_is_left_alone():

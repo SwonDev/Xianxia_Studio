@@ -6,6 +6,38 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.6.8] — 2026-05-20
+
+### Iconography bleed en `_style_anchor` — RESUELTO (causa real del "imágenes iguales")
+
+Diagnóstico con datos del run real (no teoría): el LLM SÍ produce
+markers `[IMAGE: …]` diversos (Thor con martillo, Fenrir, hall de
+Valhalla, barco Naglfar, runas…), pero **8 de 15 imágenes salían el
+mismo árbol ardiente**. La razón estaba en `_style_anchor`: asumía que
+la **primera segment del paréntesis** del setting_tag era siempre la
+paleta, pero Gemma frecuentemente mete ahí un objeto concreto
+("burning world-tree, ash-grey palette, ember sparks"). Como ese
+prefix se inyecta al INICIO de cada prompt y CLIP pondera los tokens
+iniciales, **Z-Image pintaba el árbol ardiente para todos los planos**
+sin importar qué pidiera el body.
+
+- **Fix en `_style_anchor`**: si la "palette" extraída contiene
+  cualquier sustantivo de objeto concreto (tree, hammer, throne,
+  runes, dragon, temple, warrior, …) — vía la nueva regex
+  `_STYLE_ANCHOR_HAS_OBJECT` —, **se descarta entera** y se devuelve
+  solo el head (era+cultura). Anti-drift conservado, iconografía
+  ya no se estampa.
+- **Loggeo evidencial**: `_rewrite_image_prompts_from_narration`
+  emite ahora `image_prompt_rewrite_start` con `setting_tag` real
+  (truncado) + `style_anchor` extraído + `style_anchor_iconography_dropped`
+  cuando el guard rechaza una palette. Esto deja **datos crudos** en
+  `sidecar-py.log` para diagnosticar cualquier futura queja sin
+  especular.
+- Tests unitarios: `test_style_anchor_rejects_iconography_in_first_segment`
+  (caso Norse real: "burning world-tree" → entero descartado) +
+  `test_style_anchor_keeps_clean_palette` (paleta cromática real
+  sobrevive). **22/22 tests del sidecar verde.**
+
 ## [0.6.7] — 2026-05-20
 
 ### Spinner real, Cancelar redondeado, feedback premium por fase
