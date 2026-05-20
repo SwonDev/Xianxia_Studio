@@ -55,6 +55,12 @@ class MusicRequest(BaseModel):
     # for Power Rangers, "ancient Egyptian percussion and oud" for
     # Egyptian gods). Caller passes the LLM-generated setting tag here.
     style_hint: str | None = None
+    # v0.7.1 — Video type preset. When set to a non-default preset, the
+    # route prepends MUSIC_MOOD_TO_PROMPT[preset.music_mood] to the
+    # style_hint so the score matches the narrative type
+    # (documentary / explainer / listicle / comparative / deep_dive).
+    # `narrative_epic` (default) is byte-identical to v0.7.0: no override.
+    preset_id: str | None = None
 
 
 class MusicResponse(BaseModel):
@@ -65,11 +71,26 @@ class MusicResponse(BaseModel):
 
 @router.post("", response_model=MusicResponse)
 def get_music(req: MusicRequest) -> MusicResponse:
+    # v0.7.1 — When a non-default video preset is selected, prepend the
+    # MUSIC_MOOD_TO_PROMPT bias to the style_hint so the score matches
+    # the narrative type. narrative_epic (or None) → no override
+    # (byte-identical to v0.7.0). The mutation lands BEFORE the log so
+    # the log line shows the actual style_hint the generators receive.
+    if req.preset_id and req.preset_id != "narrative_epic":
+        from ..presets import MUSIC_MOOD_TO_PROMPT, get_preset
+
+        preset = get_preset(req.preset_id)
+        bias = MUSIC_MOOD_TO_PROMPT.get(preset.music_mood)
+        if bias:
+            existing = (req.style_hint or "").strip()
+            req.style_hint = f"{bias}, {existing}" if existing else bias
+
     log_event(
         "info", "music_request_received",
         mood=req.mood, duration=req.duration_seconds,
         use_musicgen=req.use_musicgen, use_acestep=req.use_acestep,
         style_hint=(req.style_hint or "")[:80],
+        preset_id=req.preset_id or "",
     )
     # v0.2.9 — ACE-Step v1.5 is the PRINCIPAL music generator (no
     # toggle, no opt-in). Whenever AI music is requested we ALWAYS try

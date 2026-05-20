@@ -1528,6 +1528,58 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ─── v0.7.1: preset wiring into music + voice routes ───────────────
+{
+  const musicTxt = readFileSync(
+    new URL('../apps/sidecar-py/src/xianxia_ai/routes/music.py', import.meta.url),
+    'utf8',
+  );
+  check(
+    'routes/music.py: MusicRequest accepts preset_id (v0.7.1 wiring)',
+    /class MusicRequest\(BaseModel\)[\s\S]{0,2000}preset_id:\s*str\s*\|\s*None/.test(musicTxt),
+    'without this field the Rust pipeline cannot bias the score by video type — music stays generic "epic"',
+  );
+  check(
+    'routes/music.py: get_music prepends MUSIC_MOOD_TO_PROMPT[preset.music_mood] for non-narrative_epic presets',
+    musicTxt.includes('MUSIC_MOOD_TO_PROMPT')
+      && /req\.preset_id\s*!=\s*"narrative_epic"/.test(musicTxt)
+      && /from \.\.presets import MUSIC_MOOD_TO_PROMPT/.test(musicTxt),
+    'documentary/explainer/listicle/comparative/deep_dive must get a music style hint matching their tone; narrative_epic stays byte-identical (no override)',
+  );
+
+  const ttsTxt = readFileSync(
+    new URL('../apps/sidecar-py/src/xianxia_ai/routes/tts.py', import.meta.url),
+    'utf8',
+  );
+  check(
+    'routes/tts.py: TTSRequest accepts preset_id (v0.7.1 wiring)',
+    /class TTSRequest\(BaseModel\)[\s\S]{0,2000}preset_id:\s*str\s*\|\s*None/.test(ttsTxt),
+    'without this field the Rust pipeline cannot bias the speaker style by video type — voice stays default "calm cinematic narrator"',
+  );
+  check(
+    'routes/tts.py: synthesize resolves VOICE_TONE_TO_DESCRIPTOR[preset.voice_tone] for non-narrative_epic presets when instruction is not provided',
+    ttsTxt.includes('VOICE_TONE_TO_DESCRIPTOR')
+      && /req\.preset_id\s*!=\s*"narrative_epic"/.test(ttsTxt)
+      && /from \.\.presets import VOICE_TONE_TO_DESCRIPTOR/.test(ttsTxt)
+      && ttsTxt.includes('Read in a calm cinematic narrator voice.'),
+    'narrative_epic and omitted preset_id MUST keep the legacy "Read in a calm cinematic narrator voice." instruction; only the other 5 presets inject their voice_tone',
+  );
+
+  const pipeTxt = readFileSync(
+    new URL('../apps/desktop/src-tauri/src/pipeline/mod.rs', import.meta.url),
+    'utf8',
+  );
+  // The /tts JSON body and the 3 /music JSON bodies (primary + 2 fallbacks)
+  // must all forward preset_id so the sidecar can resolve it, plus the 4
+  // already added in v0.7.0 for /script* (≥ 8 total).
+  const presetIdForwards = (pipeTxt.match(/"preset_id":\s*req\.preset_id/g) || []).length;
+  check(
+    'pipeline/mod.rs: forwards req.preset_id to /tts and the 3 /music bodies (v0.7.1) + 4 /script* bodies (v0.7.0)',
+    presetIdForwards >= 8,
+    `found ${presetIdForwards} forwardings of req.preset_id; expected ≥ 8 (4 from v0.7.0 script wiring + 1 tts + 3 music). The voice/music phases need preset_id to bias their outputs by video type`,
+  );
+}
+
 // ── Result ─────────────────────────────────────────────────────────
 console.log();
 if (failures.length === 0) {
