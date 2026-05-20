@@ -56,7 +56,7 @@ export function ChapterPreview() {
           }}
           data-testid="chapter-eta"
         >
-          <CircleNotch size={11} className="pulse" />
+          <CircleNotch size={11} className="spin" />
           {etaLine}
         </div>
       )}
@@ -132,7 +132,7 @@ function statusTint(status: ChapterStatus): string {
 function StatusIcon({ status }: { status: ChapterStatus }) {
   switch (status) {
     case 'done':    return <CheckCircle size={11} weight="fill" />;
-    case 'writing': return <CircleNotch size={11} className="pulse" />;
+    case 'writing': return <CircleNotch size={11} className="spin" />;
     case 'failed':  return <Warning size={11} />;
     default:        return <Article size={11} />;
   }

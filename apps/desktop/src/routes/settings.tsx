@@ -804,7 +804,7 @@ function VoiceClonesPanel() {
           )}
           <div style={{ flex: 1 }} />
           <button className="btn-primary" onClick={submit} data-testid="clone-submit" disabled={busy || !pickedPath || !label.trim()}>
-            {busy ? <ArrowsClockwise size={13} className="pulse" /> : <Plus size={13} weight="bold" />}
+            {busy ? <ArrowsClockwise size={13} className="spin" /> : <Plus size={13} weight="bold" />}
             {busy ? 'Subiendo y procesando…' : 'Registrar voz'}
           </button>
         </div>
@@ -953,7 +953,7 @@ function FeatureCard({
       </div>
       {!installed && (
         <button className="btn-primary" onClick={install} disabled={busy} data-testid={`install-${feature.id}`}>
-          {busy ? <ArrowsClockwise size={13} className="pulse" /> : <DownloadSimple size={13} />}
+          {busy ? <ArrowsClockwise size={13} className="spin" /> : <DownloadSimple size={13} />}
           {busy ? 'Instalando…' : 'Instalar'}
         </button>
       )}
@@ -1059,7 +1059,7 @@ function LtxVideoPanel() {
             </div>
             {!installed && (
               <button className="btn-primary" onClick={handleInstall} disabled={busy} data-testid="ltx-install-settings-btn">
-                {busy ? <ArrowsClockwise size={13} className="pulse" /> : <DownloadSimple size={13} />}
+                {busy ? <ArrowsClockwise size={13} className="spin" /> : <DownloadSimple size={13} />}
                 {busy ? 'Instalando…' : 'Instalar'}
               </button>
             )}
@@ -1137,11 +1137,11 @@ function LlmModelPanel() {
                 }
               }}
             >
-              {installing ? <ArrowsClockwise size={13} className="pulse" /> : <DownloadSimple size={13} />}
+              {installing ? <ArrowsClockwise size={13} className="spin" /> : <DownloadSimple size={13} />}
               {installing ? 'Descargando…' : `Forzar (${llStatus.data?.recommended_tag ?? 'b9114'})`}
             </button>
           )}
-          {autoInstalling && <ArrowsClockwise size={15} className="pulse" style={{ color: 'var(--gold-soft)' }} />}
+          {autoInstalling && <ArrowsClockwise size={15} className="spin" style={{ color: 'var(--gold-soft)' }} />}
         </div>
       </div>
 
@@ -1224,7 +1224,7 @@ function LlmModelPanel() {
             placeholder="gemma, qwen, mistral, llama 3.1…"
           />
           <button className="btn" onClick={handleSearch} disabled={searching}>
-            {searching ? <ArrowsClockwise size={13} className="pulse" /> : <Sparkle size={13} />}
+            {searching ? <ArrowsClockwise size={13} className="spin" /> : <Sparkle size={13} />}
             Buscar
           </button>
         </div>

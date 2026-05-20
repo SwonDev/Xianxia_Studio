@@ -429,7 +429,7 @@ function GeneratorWizard() {
                   }
                 }}
               >
-                {suggesting ? <CircleNotch size={13} className="pulse" /> : <Sparkle size={13} />}
+                {suggesting ? <CircleNotch size={13} className="spin" /> : <Sparkle size={13} />}
                 Ideas IA
               </button>
             </div>
@@ -563,7 +563,7 @@ function GeneratorWizard() {
           {cloningStatus && !cloningStatus.base_model_installed && (cloningStatus.registered_clones > 0 || isCloneVoice) && (
             installingVoiceClone ? (
               <div style={{ borderRadius: 10, padding: 12, marginBottom: 16, background: 'rgba(212, 184, 90,0.10)', boxShadow: '0 0 0 0.5px rgba(232, 201, 109,0.30)', display: 'flex', gap: 8, fontSize: 12 }}>
-                <CircleNotch size={16} className="pulse" style={{ color: 'var(--accent-soft)', flexShrink: 0, marginTop: 2 }} />
+                <CircleNotch size={16} className="spin" style={{ color: 'var(--accent-soft)', flexShrink: 0, marginTop: 2 }} />
                 <div>
                   <div style={{ fontWeight: 600, color: 'var(--accent-soft)', marginBottom: 2 }}>Instalando voice cloning automáticamente…</div>
                   <div className="muted">Descargando Qwen3-TTS Base (≈{cloningStatus.download_size_gb} GB). Cuando termine, las voces clonadas aparecerán solas.</div>
@@ -681,7 +681,7 @@ function GeneratorWizard() {
                     style={{ flexShrink: 0 }}
                   >
                     {installingLtx
-                      ? <CircleNotch size={13} className="pulse" />
+                      ? <CircleNotch size={13} className="spin" />
                       : <DownloadSimple size={13} />}
                     {installingLtx ? 'Instalando…' : 'Instalar'}
                   </button>
@@ -824,7 +824,7 @@ function GeneratorWizard() {
               data-testid="active-phase-banner"
               style={{ marginBottom: 14, padding: 12, borderRadius: 10, background: 'var(--gold-bg)', boxShadow: '0 0 0 0.5px rgba(212,184,90,0.35)', display: 'flex', alignItems: 'center', gap: 10 }}
             >
-              <CircleNotch size={15} className="pulse" style={{ color: 'var(--gold-soft)', flexShrink: 0 }} />
+              <CircleNotch size={15} className="spin" style={{ color: 'var(--gold-soft)', flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--gold-soft)' }}>
                   Fase {activePhase}/10 · {PHASES[activePhase - 1]?.label ?? '…'}
@@ -852,8 +852,8 @@ function GeneratorWizard() {
                     padding: 10,
                     borderRadius: 10,
                     display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
+                    flexDirection: 'column',
+                    gap: 8,
                     background: status === 'pending' ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.05)',
                     boxShadow:
                       status === 'running'
@@ -865,17 +865,27 @@ function GeneratorWizard() {
                         : 'inset 0 0.5px 0 rgba(255,255,255,0.05)',
                   }}
                 >
-                  <span className="lg-tile md" style={{ '--tint': tint } as CSSProperties}>
-                    {status === 'done' ? <CheckCircle size={13} weight="fill" /> : status === 'failed' ? <Warning size={13} /> : status === 'running' ? <CircleNotch size={13} className="pulse" /> : <Icon size={13} />}
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label}</div>
-                    <div className="caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {update?.message ?? p.hint}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span className="lg-tile md" style={{ '--tint': tint } as CSSProperties}>
+                      {status === 'done' ? <CheckCircle size={13} weight="fill" /> : status === 'failed' ? <Warning size={13} /> : status === 'running' ? <CircleNotch size={13} className="spin" /> : <Icon size={13} />}
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label}</div>
+                      <div className="caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {update?.message ?? p.hint}
+                      </div>
                     </div>
+                    {update && update.progress > 0 && update.progress < 100 && (
+                      <span className="mono" style={{ fontSize: 11 }}>{Math.round(update.progress)}%</span>
+                    )}
                   </div>
-                  {update && update.progress > 0 && update.progress < 100 && (
-                    <span className="mono" style={{ fontSize: 11 }}>{Math.round(update.progress)}%</span>
+                  {status === 'running' && (
+                    <PhaseDetail
+                      phase={p.phase}
+                      progress={update?.progress ?? 0}
+                      imageCount={imageThumbs.length}
+                      imageTotal={imageThumbs[0]?.total ?? 0}
+                    />
                   )}
                 </li>
               );
@@ -935,6 +945,217 @@ function GeneratorWizard() {
       />
     </div>
   );
+}
+
+/* ─── Premium per-phase feedback (ported from design/screens/generator.jsx
+   PhaseDetail + Waveform, wired to REAL pipeline signals — no fabricated
+   numbers). The bar visualisers are a visual IDIOM (like a spinner), not
+   a sample-accurate render of the audio; the image count, progress bar
+   and phase are real. JS-tick driven so they keep animating even under
+   prefers-reduced-motion (functional feedback, not decoration). */
+function useTick(ms = 120): number {
+  const [t, setT] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setT((v) => v + 1), ms);
+    return () => clearInterval(id);
+  }, [ms]);
+  return t;
+}
+
+const DETAIL_BOX: CSSProperties = {
+  background: 'rgba(0,0,0,0.22)',
+  borderRadius: 6,
+  boxShadow: 'inset 0 0 0 0.5px rgba(255,255,255,0.05)',
+};
+
+function Waveform() {
+  const tick = useTick(110);
+  const bars = Array.from(
+    { length: 30 },
+    (_, i) => 3 + Math.abs(Math.sin((i + tick) * 0.4) * 13 + Math.sin((i + tick * 0.5) * 0.7) * 4),
+  );
+  return (
+    <div style={{ ...DETAIL_BOX, display: 'flex', alignItems: 'center', gap: 2, height: 26, padding: '0 7px' }}>
+      {bars.map((h, i) => (
+        <div
+          key={i}
+          style={{
+            flex: 1,
+            height: h,
+            background: 'var(--accent)',
+            borderRadius: 1,
+            opacity: 0.32 + (h / 17) * 0.68,
+            transition: 'height 110ms linear',
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function MusicBars() {
+  const tick = useTick(150);
+  // Fewer, chunkier columns with a syncopated beat — visually distinct
+  // from the narration waveform so the two phases never look the same.
+  const bars = Array.from({ length: 14 }, (_, i) => {
+    const beat = Math.sin((tick + i * 1.7) * 0.5) + Math.sin((tick * 0.6 + i) * 1.1) * 0.5;
+    return 4 + Math.abs(beat) * 11;
+  });
+  return (
+    <div style={{ ...DETAIL_BOX, display: 'flex', alignItems: 'flex-end', gap: 3, height: 28, padding: '4px 8px' }}>
+      {bars.map((h, i) => (
+        <div
+          key={i}
+          style={{
+            flex: 1,
+            height: h,
+            background: 'linear-gradient(180deg, var(--gold-soft), var(--accent-deep))',
+            borderRadius: 2,
+            transition: 'height 150ms ease',
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ScriptSkeleton() {
+  const tick = useTick(450);
+  const widths = ['92%', '78%', '85%', '64%'];
+  return (
+    <div style={{ ...DETAIL_BOX, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {widths.map((w, i) => (
+        <div
+          key={i}
+          style={{
+            height: 7,
+            width: w,
+            borderRadius: 999,
+            background: 'rgba(255,255,255,0.10)',
+            opacity: i === tick % widths.length ? 0.9 : 0.35,
+            transition: 'opacity 420ms ease',
+          }}
+        />
+      ))}
+      <span
+        style={{
+          width: 6,
+          height: 11,
+          marginTop: 1,
+          background: 'var(--accent-soft)',
+          borderRadius: 1,
+          opacity: tick % 2 ? 1 : 0.15,
+          transition: 'opacity 220ms steps(1)',
+        }}
+      />
+    </div>
+  );
+}
+
+function FilmProgress({ progress }: { progress: number }) {
+  return (
+    <div
+      style={{
+        ...DETAIL_BOX,
+        height: 32,
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '0 8px',
+        overflow: 'hidden',
+      }}
+    >
+      {Array.from({ length: 9 }, (_, i) => (
+        <div
+          key={i}
+          style={{ flex: 1, height: 18, borderRadius: 2, background: 'rgba(255,255,255,0.06)', boxShadow: 'inset 0 0 0 0.5px rgba(255,255,255,0.06)' }}
+        />
+      ))}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          height: 2,
+          width: `${Math.max(2, Math.min(100, progress))}%`,
+          background: 'var(--accent)',
+          transition: 'width 500ms var(--ease)',
+        }}
+      />
+    </div>
+  );
+}
+
+function CaptionFrame({ progress }: { progress: number }) {
+  const tick = useTick(600);
+  // Honest placeholder: we have no subtitle text in the store. Show a
+  // caption-styled frame (what the burned-in subs will look like) with
+  // a live cursor + real progress underline — never fabricated text.
+  return (
+    <div style={{ ...DETAIL_BOX, padding: '10px 10px 8px', position: 'relative' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'center' }}>
+        <div style={{ height: 6, width: '70%', borderRadius: 999, background: 'rgba(255,255,255,0.14)' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+          <div style={{ height: 6, width: 90, borderRadius: 999, background: 'rgba(255,255,255,0.10)' }} />
+          <span
+            style={{
+              width: 5,
+              height: 9,
+              background: 'var(--accent-soft)',
+              borderRadius: 1,
+              opacity: tick % 2 ? 1 : 0.2,
+              transition: 'opacity 260ms steps(1)',
+            }}
+          />
+        </div>
+      </div>
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          height: 2,
+          width: `${Math.max(2, Math.min(100, progress))}%`,
+          background: 'var(--accent)',
+          transition: 'width 500ms var(--ease)',
+        }}
+      />
+    </div>
+  );
+}
+
+function PhaseDetail({
+  phase,
+  progress,
+  imageCount,
+  imageTotal,
+}: {
+  phase: number;
+  progress: number;
+  imageCount: number;
+  imageTotal: number;
+}) {
+  if (phase === 1) return <ScriptSkeleton />;
+  if (phase === 3) return <Waveform />;
+  if (phase === 5) return <MusicBars />;
+  if (phase === 4) {
+    const total = imageTotal > 0 ? imageTotal : Math.max(imageCount, 1);
+    const pct = total > 0 ? (imageCount / total) * 100 : 0;
+    return (
+      <div style={{ ...DETAIL_BOX, padding: '7px 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="mono" style={{ fontSize: 10.5, color: 'var(--gold-soft)', flexShrink: 0 }}>
+          {imageCount}{imageTotal > 0 ? `/${imageTotal}` : ''}
+        </span>
+        <div style={{ flex: 1, height: 4, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${Math.min(100, pct)}%`, background: 'var(--accent)', transition: 'width 500ms var(--ease)' }} />
+        </div>
+      </div>
+    );
+  }
+  if (phase === 6) return <FilmProgress progress={progress} />;
+  if (phase === 8) return <CaptionFrame progress={progress} />;
+  return null;
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
