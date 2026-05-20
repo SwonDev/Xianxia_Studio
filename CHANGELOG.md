@@ -6,6 +6,58 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.12] — 2026-05-20
+
+### Scheduler con backoff exponencial + máximo de intentos (guard de quota YouTube)
+
+Auditoría detectó **bug crítico latente** en
+`apps/desktop/src-tauri/src/scheduler/mod.rs`. El cron `run_loop`
+revisa cada 60 s las filas `scheduled_uploads` con
+`status='uploaded' AND scheduled_at <= now` y llama
+`crate::youtube::publish_now(&video_id)`. Si esa llamada falla por
+**cualquier razón persistente** (token OAuth revocado, vídeo borrado
+manualmente del canal, 403 cuota agotada del día, network down),
+la fila se queda en `'uploaded'` y **se reintenta cada 60 segundos
+para siempre**.
+
+#### Por qué importa
+
+YouTube Data API v3 cobra **50 unidades por llamada
+`videos.update`** y el tier gratis da 1 000 unidades/día. Un solo
+row roto reintenta 60 veces/hora × 24 = 1 440 retries/día = **72 000
+unidades quemadas** vs los 1 000 disponibles. La cuota se satura en
+~20 minutos y todas las uploads legítimas del día quedan bloqueadas
+hasta el reset 00:00 PST.
+
+#### Fix v0.7.12
+
+**Nueva migración 0004**:
+```sql
+ALTER TABLE scheduled_uploads ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
+```
+
+**Lógica nueva en `scheduler::run_loop`**:
+1. Cada fallo incrementa `attempt_count` y graba `error_message` +
+   `last_attempt_at`.
+2. La siguiente tentativa solo dispara cuando
+   `now - last_attempt_at >= 60 * 2^attempt_count` segundos.
+   Schedule: 1 min, 2 min, 4 min, 8 min, 16 min.
+3. Tras **5 fallos consecutivos** el row pasa a `status='failed'`
+   y deja de ser elegible. El usuario debe reintentar manualmente
+   desde la Planificador UI.
+
+Worst-case quota use con un row roto: **5 × 50 = 250 unidades**
+(antes: ∞). Y el log final dice `publish flip failed permanently —
+moving to status=failed (quota guard)` con el error message para
+diagnóstico.
+
+**`db/scheduled.rs::ScheduledUpload`** gana el campo `attempt_count`
+con `#[serde(default)]` para que la UI Planificador pueda mostrarlo.
+
+### Sin compilación
+
+Sin NSIS por petición usuario. Sigue acumulando v0.7.6→v0.7.12.
+
 ## [0.7.11] — 2026-05-20
 
 ### Fix patrones "es el / es la" filtraban artículos enciclopédicos reales

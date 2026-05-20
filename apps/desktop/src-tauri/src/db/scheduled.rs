@@ -27,6 +27,14 @@ pub struct ScheduledUpload {
     pub status: String,
     pub last_attempt_at: Option<i64>,
     pub error_message: Option<String>,
+    /// v0.7.12 — Count of consecutive failed publish_now attempts. The
+    /// cron uses this for exponential backoff (60 * 2^attempts seconds
+    /// between retries) and moves the row to `status='failed'` after 5
+    /// consecutive failures so a single broken row never burns the
+    /// YouTube Data API daily quota (50 units per videos.update call,
+    /// 1000 units free-tier per day → ~20 retries saturate it).
+    #[serde(default)]
+    pub attempt_count: i64,
 }
 
 pub struct NewScheduled {
