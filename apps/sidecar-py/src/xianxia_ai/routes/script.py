@@ -25,7 +25,9 @@ from ..prompts import (
     OUTLINE_PROMPT_TEMPLATE,
     CHAPTER_PROMPT_TEMPLATE,
     SUMMARY_PROMPT_TEMPLATE,
+    build_script_prompt,
 )
+from ..presets import get_preset, IMAGE_STYLE_BIAS
 
 router = APIRouter()
 
@@ -41,6 +43,9 @@ class ScriptRequest(BaseModel):
     languages: list[str] = ["en"]
     model: str = "xianxia-llm"
     experimental: bool = False
+    # v0.7.0 — Tipo de vídeo. Default "narrative_epic" → byte-identical
+    # behaviour to v0.6.x for any client that omits the field.
+    preset_id: str = "narrative_epic"
 
 
 class Marker(BaseModel):
@@ -69,6 +74,11 @@ class OutlineRequest(BaseModel):
     language: str = "es"
     model: str = "xianxia-llm"
     context_facts: str = ""
+    # v0.7.0 — surfaced for parity with /script. The outline template
+    # itself is unchanged in v0.7.0; the preset is recorded and passed
+    # through so downstream phases (script/chapter/image/music/tts)
+    # can read it. v0.7.x can add per-preset outline structure later.
+    preset_id: str = "narrative_epic"
 
 
 class OutlineResponse(BaseModel):
@@ -302,7 +312,14 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
             "specific names, dates or quotes)"
         )
 
-    prompt = SCRIPT_PROMPT_TEMPLATE.format(
+    # v0.7.0 — preset-aware system prompt. For narrative_epic this is
+    # byte-identical to the v0.6.x SCRIPT_PROMPT_TEMPLATE.format(...)
+    # call (the helper short-circuits to the legacy template for that
+    # preset). Other presets get the dynamically-assembled template
+    # with their llm_style_directive substituted into the STORY BEATS
+    # slot.
+    prompt = build_script_prompt(
+        req.preset_id,
         topic=req.topic,
         minutes=req.target_minutes,
         language_name=language_name,
@@ -459,6 +476,7 @@ async def generate_script(req: ScriptRequest) -> ScriptResponse:
     return await _finalize_script(
         script, req.topic, language_name, req.target_minutes, model,
         raw_brief or distilled_facts,
+        preset_id=req.preset_id,
     )
 
 
@@ -469,6 +487,8 @@ async def _finalize_script(
     target_minutes: int,
     model: str,
     context_brief: str = "",
+    *,
+    preset_id: str = "narrative_epic",
 ) -> ScriptResponse:
     """Shared post-processing block for both /script and /script/postprocess.
 
@@ -514,6 +534,14 @@ async def _finalize_script(
         topic, model=model, context_brief=context_brief,
     )
 
+    # v0.7.0 — resolve the image-style suffix once from the preset.
+    # narrative_epic → IMAGE_STYLE_BIAS["cinematic"] which is BYTE-IDENTICAL
+    # to the legacy _STYLE_SUFFIX (asserted by parity invariant). Other
+    # presets get their own bias ("documentary", "editorial_illustrative"…)
+    # which biases Z-Image away from cinematic-photoreal.
+    _preset_resolved = get_preset(preset_id)
+    style_suffix = IMAGE_STYLE_BIAS.get(_preset_resolved.image_style, _STYLE_SUFFIX)
+
     if len(image_markers) < expected_min:
         markers, _injected = _inject_auto_image_markers(
             narration=narration,
@@ -521,6 +549,7 @@ async def _finalize_script(
             target_count=expected_min,
             topic=topic,
             setting_tag=setting_tag,
+            style_suffix=style_suffix,
         )
         image_markers = [m for m in markers if m.kind == "image"]
         log_event(
@@ -557,6 +586,7 @@ async def _finalize_script(
         context_brief=context_brief,
         language_name=language_name,
         model=model,
+        style_suffix=style_suffix,
     )
     # v0.1.42: post-process sanity check — flag (but don't fail) the
     # script when the LLM has drifted into a fictional adaptation of
@@ -600,6 +630,9 @@ class PostprocessRequest(BaseModel):
     languages: list[str] = ["es"]
     target_minutes: int
     model: str = "xianxia-llm"
+    # v0.7.0 — preset propagated through the finaliser so the image
+    # style suffix matches what /script used for this preset.
+    preset_id: str = "narrative_epic"
 
 
 @router.post("/postprocess", response_model=ScriptResponse)
@@ -608,6 +641,7 @@ async def postprocess_script(req: PostprocessRequest) -> ScriptResponse:
     return await _finalize_script(
         req.script, req.topic, language_name, req.target_minutes,
         req.model, "",
+        preset_id=req.preset_id,
     )
 
 
@@ -1411,8 +1445,10 @@ def _inject_auto_image_markers(
     narration: str,
     existing: list[Marker],
     target_count: int,
+    *,
     topic: str = "",
     setting_tag: str = "",
+    style_suffix: str | None = None,
 ) -> tuple[list[Marker], int]:
     """Top up [IMAGE: …] markers when the LLM under-produced.
 
@@ -1448,7 +1484,11 @@ def _inject_auto_image_markers(
             first = first[:180].rsplit(" ", 1)[0]
         if not first:
             continue
-        prompt = f"{first}, {_STYLE_SUFFIX}"
+        # v0.7.0 — preset-aware suffix; None falls back to the legacy
+        # _STYLE_SUFFIX (which equals IMAGE_STYLE_BIAS["cinematic"] for
+        # narrative_epic → byte-identical for existing callers).
+        _suffix = style_suffix if style_suffix is not None else _STYLE_SUFFIX
+        prompt = f"{first}, {_suffix}"
         # v0.2.9 — inject only the THIN style anchor (era+culture+
         # palette), PREFIX ONLY. The old code injected the full setting
         # tag (with concrete objects like "thunderbolts, marble temples")
@@ -2105,6 +2145,7 @@ async def _rewrite_image_prompts_from_narration(
     context_brief: str = "",
     language_name: str = "English",
     model: str = "xianxia-llm",
+    style_suffix: str | None = None,
 ) -> list[Marker]:
     """Replace each image prompt with one that literally describes the
     upcoming narration sentence, plus a forced shot-type rotation.
@@ -2252,7 +2293,9 @@ async def _rewrite_image_prompts_from_narration(
         body_parts.append(camera_hint)
         body_parts.append(lighting_hint)
         body_parts.append(palette_variant)
-        body_parts.append(_STYLE_SUFFIX.rstrip(", "))
+        # v0.7.0 — preset-aware style suffix; None → legacy _STYLE_SUFFIX.
+        _final_suffix = (style_suffix if style_suffix is not None else _STYLE_SUFFIX)
+        body_parts.append(_final_suffix.rstrip(", "))
         body_parts.append(_NO_TEXT_CLAUSE)
         body = ", ".join(p for p in body_parts if p)
         prompt = f"{head}. {body}" if head else body

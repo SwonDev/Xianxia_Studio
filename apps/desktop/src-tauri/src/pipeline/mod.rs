@@ -409,6 +409,10 @@ async fn try_hyperframes_render(
     Ok(json)
 }
 
+fn default_preset_id() -> String {
+    "narrative_epic".to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct GenerateRequest {
     pub topic: String,
@@ -423,6 +427,11 @@ pub struct GenerateRequest {
     #[serde(default)]
     pub subtitle_languages: Option<Vec<String>>,
     pub target_minutes: u32,
+    /// v0.7.0 — "Tipo de vídeo" preset id. Default "narrative_epic"
+    /// guarantees byte-identical pipeline behaviour for any UI
+    /// build that hasn't been updated yet.
+    #[serde(default = "default_preset_id")]
+    pub preset_id: String,
     #[serde(default)]
     pub experimental_llm: bool,
     #[serde(default)]
@@ -692,6 +701,7 @@ async fn run(
                         "language": lang_tag,
                         "model": llm_model,
                         "context_facts": "",
+                        "preset_id": req.preset_id,
                     }))
                     .send()
                     .await
@@ -736,6 +746,7 @@ async fn run(
                     "languages": req.languages,
                     "model": llm_model,
                     "experimental": req.experimental_llm,
+                    "preset_id": req.preset_id,
                 }))
                 .send()
                 .await
@@ -902,6 +913,7 @@ async fn run(
                     "languages": req.languages,
                     "target_minutes": req.target_minutes,
                     "model": llm_model.clone(),
+                    "preset_id": req.preset_id,
                 }))
                 .send()
                 .await
@@ -921,6 +933,7 @@ async fn run(
                 "languages": req.languages,
                 "model": llm_model,
                 "experimental": req.experimental_llm,
+                "preset_id": req.preset_id,
             }))
             .send()
             .await

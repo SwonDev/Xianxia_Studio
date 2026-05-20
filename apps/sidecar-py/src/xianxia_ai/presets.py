@@ -249,7 +249,7 @@ PRESETS: dict[str, VideoPreset] = {
         image_style="cinematic",
         music_mood="epic",
         target_minutes_default=10,
-        markers_per_minute=5.5,
+        markers_per_minute=5.0,  # MATCHES legacy expected_min=target_minutes*5
         hook_style="epic_question",
         cta_style="epic_call",
         use_chapters=False,  # auto-detect by target_minutes ≥ 7 (existing logic)
