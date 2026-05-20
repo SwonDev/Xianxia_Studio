@@ -152,12 +152,16 @@ def export(req: ExportRequest) -> ExportResponse:
     out_path = out_dir / f"{req.preset}-{uuid.uuid4().hex[:8]}.mp4"
 
     # Probe source dims for aspect adaptation.
-    probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height", "-of", "default=nw=1:nk=1",
-         req.video_path],
-        capture_output=True, text=True,
-    )
+    # v0.7.16 — timeout 30 s para evitar cuelgue en MP4 corrupto.
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "default=nw=1:nk=1",
+             req.video_path],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"ffprobe source timeout (>30 s): {exc}") from exc
     src_lines = [l.strip() for l in probe.stdout.splitlines() if l.strip()]
     src_w = int(src_lines[0]) if len(src_lines) > 0 else p["size"][0]
     src_h = int(src_lines[1]) if len(src_lines) > 1 else p["size"][1]
@@ -197,17 +201,25 @@ def export(req: ExportRequest) -> ExportResponse:
         "-movflags", "+faststart",
         str(out_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # v0.7.16 — timeout 30 min (export presets pueden ser 4K/full HD).
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"export timeout (>30 min): {exc}") from exc
     if proc.returncode != 0:
         raise HTTPException(500, f"export failed: {proc.stderr[-500:]}")
 
     # Probe output for response data.
-    out_probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=nw=1:nk=1", str(out_path)],
-        capture_output=True, text=True,
-    )
-    duration = float(out_probe.stdout.strip() or 0.0)
+    # v0.7.16 — timeout 30 s.
+    try:
+        out_probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(out_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        out_probe = None
+    duration = float((out_probe.stdout if out_probe else "").strip() or 0.0)
 
     return ExportResponse(
         output_path=str(out_path),

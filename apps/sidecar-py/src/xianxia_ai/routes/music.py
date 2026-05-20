@@ -568,7 +568,11 @@ def _musicgen(req: MusicRequest) -> MusicResponse:
                 f"[0][1]acrossfade=d={_CROSSFADE_SECONDS}:c1=tri:c2=tri",
                 "-c:a", "pcm_s16le", str(merged_next),
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True)
+            # v0.7.16 — timeout 5 min (crossfade pairwise, audio puro).
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired as exc:
+                raise HTTPException(500, f"music crossfade timeout (>5 min): {exc}") from exc
             if proc.returncode != 0:
                 raise HTTPException(500, f"music crossfade failed: {proc.stderr[-500:]}")
             merged = merged_next
@@ -611,7 +615,11 @@ def _premaster(raw_path: Path, out_dir: Path) -> Path:
         "-af", af, "-ar", "48000", "-c:a", "pcm_s24le",
         str(final_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # v0.7.16 — timeout 5 min (premaster: filtros de audio, sin re-encode pesado).
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"music premaster timeout (>5 min): {exc}") from exc
     if proc.returncode != 0:
         raise HTTPException(500, f"music premaster failed: {proc.stderr[-500:]}")
     try:

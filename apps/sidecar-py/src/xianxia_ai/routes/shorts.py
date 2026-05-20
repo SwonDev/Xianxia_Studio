@@ -230,14 +230,18 @@ def _render_short(
     # Slice the source clip first (fast, no re-encode), so MediaPipe + subtitle
     # subsystems all operate on the same time-aligned shorter file.
     raw_clip = work / "raw.mp4"
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
-            "-i", video_path, "-c", "copy",
-            str(raw_clip),
-        ],
-        check=True, capture_output=True,
-    )
+    # v0.7.16 — timeout 5 min (slice -c copy, no re-encode).
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+                "-i", video_path, "-c", "copy",
+                str(raw_clip),
+            ],
+            check=True, capture_output=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffmpeg slice timeout (>5 min): {exc}") from exc
 
     # ── Reframe filter (subject tracking optional) ──────────────────
     crop_filter = "crop=ih*9/16:ih"  # default centre-crop fallback
@@ -300,7 +304,11 @@ def _render_short(
         cmd += ["-af", audio_filter]
     cmd += ["-c:a", "aac", "-b:a", "128k", str(out_path.resolve())]
 
-    proc = subprocess.run(cmd, cwd=str(work), capture_output=True, text=True)
+    # v0.7.16 — timeout 15 min (encode short con filter_complex + ASS burn).
+    try:
+        proc = subprocess.run(cmd, cwd=str(work), capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffmpeg encode timeout (>15 min): {exc}") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg encode: {proc.stderr[-500:]}")
 

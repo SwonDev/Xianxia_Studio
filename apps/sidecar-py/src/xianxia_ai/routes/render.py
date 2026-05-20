@@ -307,7 +307,14 @@ def render(req: RenderRequest) -> RenderResponse:
 
     import time as _t
     t0 = _t.time()
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # v0.7.16 — timeout 30 min. Render principal HyperFrames cinematic
+    # full = encoded NVENC con filter_complex grande. Sin timeout, un
+    # cuelgue silencioso de ffmpeg dejaba el worker FastAPI bloqueado
+    # para siempre y la UI sin progreso.
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"ffmpeg render timeout (>30 min): {exc}") from exc
     dt = _t.time() - t0
     if proc.returncode != 0:
         raise HTTPException(500, f"ffmpeg render failed: {proc.stderr[-700:]}")
@@ -364,11 +371,16 @@ def _render_chunked(req: RenderRequest) -> RenderResponse:
         encoding="utf-8",
     )
     silent_concat = out_dir / f"concat-{uuid.uuid4().hex[:8]}.mp4"
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
-         "-c", "copy", str(silent_concat)],
-        capture_output=True, text=True, check=True,
-    )
+    # v0.7.16 — timeout 5 min. concat demuxer es -c copy (sin re-encode);
+    # 5 min cubre un vídeo de varias horas sin problema.
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
+             "-c", "copy", str(silent_concat)],
+            capture_output=True, text=True, check=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"ffmpeg concat timeout (>5 min): {exc}") from exc
 
     # 3. Mux the audio mix over the concat'd silent video — single audio pass
     #    with ducking + loudnorm, applied to the full timeline.
@@ -408,7 +420,13 @@ def _render_chunked(req: RenderRequest) -> RenderResponse:
         "-movflags", "+faststart",
         str(out_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # v0.7.16 — timeout 15 min. Mux audio sobre concat: vídeo -c copy +
+    # audio re-encode con filter_complex (sidechain compress) — más
+    # rápido que un render full pero sigue siendo encoding de audio.
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"chunked mux timeout (>15 min): {exc}") from exc
     if proc.returncode != 0:
         raise HTTPException(500, f"chunked mux failed: {proc.stderr[-500:]}")
 
@@ -554,7 +572,13 @@ def _render_silent_chunk(req: RenderRequest, chunk_index: int, out_dir: Path) ->
         "-t", f"{visible:.3f}",
         str(chunk_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # v0.7.16 — timeout 15 min por chunk. Cada chunk típicamente
+    # renderiza CHUNK_SIZE beats (~30 s de vídeo); con NVENC + filter
+    # complex grande, 15 min es generoso pero detecta cuelgues reales.
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"chunk {chunk_index} render timeout (>15 min): {exc}") from exc
     if proc.returncode != 0:
         raise HTTPException(500, f"chunk {chunk_index} render failed: {proc.stderr[-500:]}")
     return chunk_path
