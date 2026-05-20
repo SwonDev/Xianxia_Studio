@@ -6,6 +6,49 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.17] — 2026-05-20
+
+### Seguridad: PII leak en error messages de OAuth Google
+
+Auditoría 2ª ronda detectó que `oauth.rs:171` y `oauth.rs:203` incluían
+`res.text().await?` directamente en el error de anyhow. El body de
+error de Google OAuth puede ecoar parámetros sensibles del request
+(authorization `code` o `refresh_token`), y ese mensaje fluía al
+`tracing::error!` del comando Tauri → terminaba en `logs/`, que
+cualquiera con acceso local puede leer. **CVSS estimado 6.5/10**
+(local privilege required, full credential disclosure).
+
+**Fix**: ambos sitios sólo serializan el status HTTP (`HTTP {status}`),
+suficiente para diagnosticar 4xx vs 5xx sin exponer credenciales ni
+códigos de un solo uso.
+
+### Otros hallazgos auditoría 2 (NO arreglados, documentados)
+
+- **Path traversal en sidecar Python**: ~15 rutas usan `Path(req.X)`
+  sin validar prefix contra `data_dir`/`out_dir`. Riesgo limitado
+  porque sidecar escucha en localhost sin auth, pero defense-in-depth
+  recomienda añadir helper `_safe_path()`. Pendiente.
+- **Migración 0004 no es idempotente**: el `ALTER TABLE ADD COLUMN`
+  fallaría con "duplicate column" si la columna ya existe. Análisis:
+  el auto-heal de v0.1.12 **regenera la DB fresca** (no sólo borra
+  `_sqlx_migrations`), así que el caso NO se dispara en práctica.
+  Cambiar el hash de la migración rompería todos los usuarios v0.7.13
+  vía auto-heal trigger → mantenida sin cambio. Lección apuntada para
+  futuras migraciones.
+- **5× useEffect con StrictMode unsafe** en `install.tsx`,
+  `settings.tsx` y `generator.tsx` — handlers pueden duplicarse en
+  dev. Pendiente.
+- **6+ archivos con `127.0.0.1:8731` hardcoded** — refactor a
+  constante `PY_URL` pendiente.
+- **Múltiples `fetch()` sin AbortController** en rutas — request
+  superviviente al unmount. Pendiente.
+- **Cargo features sub-óptimas** — `reqwest` sin rustls-tls/gzip,
+  `tokio="full"` excesivo. Mejora menor, pendiente.
+
+### Sin compilación
+
+Acumulado desde v0.7.5: v0.7.6 → v0.7.17 (12 versiones).
+
 ## [0.7.16] — 2026-05-20
 
 ### Subprocess timeouts: cobertura completa de ffmpeg/ffprobe/ollama
