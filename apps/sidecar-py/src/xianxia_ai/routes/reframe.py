@@ -291,7 +291,14 @@ def _render_tracked_crop(req: ReframeRequest, track: dict, enc) -> str:
         "-c:a", "copy",
         req.out_path,
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # v0.7.15 — timeout 15 min. ffmpeg con filter_complex pesado +
+    # NVENC tiene un bug conocido que ocasionalmente cuelga sin
+    # progresar (documentado en bugfix_catalog). Sin timeout, el
+    # worker FastAPI queda bloqueado para siempre.
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"ffmpeg tracked-crop timeout (>15 min): {exc}") from exc
     try:
         script_path.unlink()
     except Exception:
@@ -336,7 +343,11 @@ def _render_blur_extend(req: ReframeRequest, enc) -> str:
         "-c:a", "copy",
         req.out_path,
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # v0.7.15 — timeout 15 min (mismo razonamiento que tracked-crop).
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"ffmpeg blur-extend timeout (>15 min): {exc}") from exc
     if proc.returncode != 0:
         raise HTTPException(500, f"ffmpeg blur-extend failed: {proc.stderr[-700:]}")
     return req.out_path

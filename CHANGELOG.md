@@ -6,6 +6,73 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.7.15] — 2026-05-20
+
+### Robustez extra: HTTP timeouts + subprocess timeouts + probes paralelos
+
+Segunda tanda de la auditoría de v0.7.14. 4 mejoras adicionales sin
+cambio funcional:
+
+#### 1. `voice_clones.rs` — cliente HTTP reutilizable con timeout global
+
+Los 3 comandos Tauri creaban un `reqwest::Client::new()` por
+invocación (TCP fresca sin pool) y dependían de un `.timeout(...)`
+per-request frágil — un futuro refactor que olvidase el `.timeout`
+dejaría la UI colgada indefinidamente.
+
+**Fix**: `static SIDECAR_CLIENT: Lazy<Client>` con `timeout=120s`,
+`connect_timeout=5s`, `pool_idle_timeout=60s`. Las tres rutas usan
+el cliente compartido.
+
+#### 2. `subprocess.run` ffmpeg sin timeout — reframe.py + engagement.py
+
+Cuatro llamadas a `subprocess.run(ffmpeg, ...)` sin `timeout=`. ffmpeg
+con `filter_complex` + NVENC tiene un bug conocido que ocasionalmente
+cuelga sin progresar (documentado en `bugfix_catalog`). Sin timeout
+el worker FastAPI quedaba bloqueado para siempre, el spinner UI no
+terminaba.
+
+**Fix**: timeouts explícitos + manejo `subprocess.TimeoutExpired` →
+HTTPException 500:
+- `reframe.py:294` tracked-crop → 15 min
+- `reframe.py:339` blur-extend → 15 min
+- `engagement.py:526` cuts NVENC → 15 min
+- `engagement.py:543` audio swell → 10 min
+- `engagement.py:556` `_probe_duration` ffprobe → 30 s
+
+#### 3. `run_health_loop` probes secuenciales → paralelos
+
+Las 5 probes (python/node/comfy/llama/ollama) se ejecutaban en serie.
+ComfyUI healtcheck puede tardar 1-2 s; sumado a las otras 4 daba
+~3-4 s por tick, lo que degradaba la latencia de los dots verdes del
+topbar.
+
+**Fix**: `tokio::join!` paraleliza las 5 — el ciclo ahora dura
+`~max(per-probe)` (~1-2 s). Las probes son I/O puro, no compiten por
+CPU.
+
+### Bugs auditoría restantes (todavía pendientes)
+
+- `tokio::spawn` sin handle guardado en `sidecars/mod.rs:580`
+  (autoinstall llama.cpp) — cancelar el download al cerrar la app
+  sigue dejando `.tmp` huérfanos.
+- Triple `Arc<Mutex>` en `sidecars/mod.rs` sin orden documentado
+  (riesgo deadlock teórico).
+- Race condition potencial `persist_step` fase 4 vs fase 4c (LTX) —
+  requiere wrap transaccional.
+- `subprocess.run` sin timeout en `music.py`, `render.py`,
+  `export.py`, `depthflow.py`, `install.py` (8 sitios más).
+
+`ACTIVE_RUNS std::sync::Mutex` se evaluó y **NO es bug**: el lock no
+cruza ningún `.await` (ambas secciones críticas son síncronas), y
+`std::sync::Mutex` solo se envenena por **panic**, no por
+`AbortHandle.abort()`. Falso positivo de la auditoría.
+
+### Sin compilación
+
+Acumulado desde v0.7.5 (último NSIS shippeado): v0.7.6 → v0.7.15
+(10 versiones). Se compilará cuando el usuario lo autorice.
+
 ## [0.7.14] — 2026-05-20
 
 ### Production-grade hardening: SQLite + HTTP + subprocess (6 bugs reales arreglados)
