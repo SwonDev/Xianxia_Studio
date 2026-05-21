@@ -660,6 +660,62 @@ pub fn full_manifest() -> Vec<Component> {
             ],
         },
 
+        // ─── v0.11.0 — Stable Audio 3 small-sfx (opt-in, Day-0 ComfyUI) ─
+        //
+        // Modelo dedicado a SFX/foley (459M params + T5Gemma encoder ~600M).
+        // Cabe en 8 GB VRAM holgado (~2 GB FP16) junto a Z-Image. Decisión
+        // documentada en CHANGELOG v0.11.0: reemplaza MMAudio del roadmap
+        // por licencia comercial OK + VRAM menor + ComfyUI Day-0 oficial.
+        //
+        // OPT-IN: el componente NO se incluye en el smoke-test mínimo, el
+        // usuario debe activarlo desde Ajustes → Componentes opcionales.
+        // El sidecar Python lo detecta en `ComfyUI/models/checkpoints/` y
+        // activa el endpoint /sfx/* solo si está presente; si falta,
+        // /sfx/generate devuelve 503 explícito (sin mock, sin fallback).
+        //
+        // Dos sub-componentes con dependencia: el modelo small-sfx
+        // requiere el encoder T5Gemma para CLIPLoader.
+        Component {
+            id: "stable-audio-3-t5gemma".to_string(),
+            label: "Stable Audio 3 — T5Gemma encoder (≈1.2 GB)".to_string(),
+            category: Category::Model,
+            // T5Gemma-b-b-ul2 ≈ 600M params; safetensors FP16 ≈ 1.2 GB.
+            size_bytes: 1_300_000_000,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::HuggingfaceFileTo {
+                repo: "google/t5gemma-b-b-ul2".to_string(),
+                filename: "t5gemma_b_b_ul2.safetensors".to_string(),
+                target_path: "comfyui/models/text_encoders/t5gemma_b_b_ul2.safetensors".to_string(),
+            },
+            required: false,
+            depends_on: vec!["comfyui-clone".to_string()],
+        },
+        Component {
+            id: "stable-audio-3-sfx".to_string(),
+            label: "Stable Audio 3 SFX (opt-in, audio engine)".to_string(),
+            category: Category::Model,
+            // small-sfx 459M params; safetensors F32 ≈ 1.8 GB. ComfyUI
+            // carga FP16 automáticamente (~0.9 GB en VRAM).
+            size_bytes: 1_900_000_000,
+            url: String::new(),
+            url_macos: None,
+            url_linux: None,
+            sha256: None,
+            kind: AssetKind::HuggingfaceFileTo {
+                repo: "stabilityai/stable-audio-3-small-sfx".to_string(),
+                filename: "stable_audio_3_small_sfx.safetensors".to_string(),
+                target_path: "comfyui/models/checkpoints/stable_audio_3_small_sfx.safetensors".to_string(),
+            },
+            required: false,
+            depends_on: vec![
+                "comfyui-clone".to_string(),
+                "stable-audio-3-t5gemma".to_string(),
+            ],
+        },
+
         // ─── Final orchestration ─────────────────────────────────────
         Component {
             id: "ollama-start".to_string(),

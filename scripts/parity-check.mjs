@@ -2005,6 +2005,37 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.12.2) Manifest Stable Audio 3 SFX (opt-in declarativo) ────────
+{
+  const manifest = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/installer/manifest.rs'),
+    'utf8',
+  );
+
+  check(
+    'manifest.rs: declara componente stable-audio-3-t5gemma (encoder)',
+    manifest.includes('"stable-audio-3-t5gemma"')
+      && manifest.includes('t5gemma_b_b_ul2.safetensors')
+      && manifest.includes('comfyui/models/text_encoders/'),
+    'sin el encoder T5Gemma el workflow stable_audio_3_sfx.json no puede cargar',
+  );
+
+  check(
+    'manifest.rs: declara componente stable-audio-3-sfx (checkpoint)',
+    manifest.includes('"stable-audio-3-sfx"')
+      && manifest.includes('stable_audio_3_small_sfx.safetensors')
+      && manifest.includes('comfyui/models/checkpoints/'),
+    'el modelo small-sfx 459M debe descargarse a la ruta exacta que el workflow JSON referencia',
+  );
+
+  check(
+    'manifest.rs: ambos componentes SFX son required=false (opt-in)',
+    /"stable-audio-3-sfx"[\s\S]{0,800}required:\s*false/.test(manifest)
+      && /"stable-audio-3-t5gemma"[\s\S]{0,800}required:\s*false/.test(manifest),
+    'el feature SFX NO debe auto-instalarse: extras opt-in solo',
+  );
+}
+
 // ── Result ─────────────────────────────────────────────────────────
 console.log();
 if (failures.length === 0) {
