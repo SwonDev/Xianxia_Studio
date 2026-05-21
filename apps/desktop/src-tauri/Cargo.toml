@@ -1,6 +1,6 @@
 [package]
 name = "xianxia-studio"
-version = "0.10.0"
+version = "0.11.0"
 description = "Xianxia Studio — automated YouTube content production"
 authors = ["Xianxia Studio Team"]
 edition = "2021"

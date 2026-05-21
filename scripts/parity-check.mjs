@@ -1832,6 +1832,86 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.11.0) SFX/Foley contratos duros ──────────────────────────────
+//
+// Stable Audio 3 small-sfx via ComfyUI Day-0 (PR #14010, v0.22.0,
+// 20-may-2026). El feature reemplaza al candidato MMAudio del roadmap
+// — la decisión es firme por licencia (Community License comercial OK
+// vs CC-BY-NC bloqueador) y VRAM (2 GB vs 5+ GB). Estos invariants
+// protegen el contrato del feature ante refactors.
+{
+  const sfx = readFileSync(
+    join(ROOT, 'apps/sidecar-py/src/xianxia_ai/routes/sfx.py'),
+    'utf8',
+  );
+  const server = readFileSync(
+    join(ROOT, 'apps/sidecar-py/server.py'),
+    'utf8',
+  );
+  const wfPath = join(
+    ROOT,
+    'apps/sidecar-py/src/xianxia_ai/workflows/stable_audio_3_sfx.json',
+  );
+  const comfy = readFileSync(
+    join(ROOT, 'apps/sidecar-py/src/xianxia_ai/models/comfyui_client.py'),
+    'utf8',
+  );
+
+  check(
+    'workflows/stable_audio_3_sfx.json existe + checkpoint small-sfx + T5Gemma encoder',
+    existsSync(wfPath)
+      && contains(wfPath, 'stable_audio_3_small_sfx.safetensors')
+      && contains(wfPath, 't5gemma_b_b_ul2.safetensors'),
+    'el workflow define el modelo correcto (small-sfx 0.6B, no medium 2B) + encoder T5Gemma específico de Stable Audio 3',
+  );
+
+  check(
+    'workflow JSON tiene placeholders {{prompt}} {{duration_seconds}} {{seed}}',
+    contains(wfPath, '{{prompt}}')
+      && contains(wfPath, '{{duration_seconds}}')
+      && contains(wfPath, '{{seed}}'),
+    'sin estos placeholders el _build_workflow del endpoint no puede inyectar parámetros y todas las generaciones serían idénticas',
+  );
+
+  check(
+    'server.py: include_router(sfx.router, prefix="/sfx")',
+    server.includes('sfx.router')
+      && server.includes('prefix="/sfx"'),
+    'sin esta línea ningún /sfx/* endpoint responde y el feature está muerto',
+  );
+
+  check(
+    'routes/sfx.py: 2 endpoints @router.post (/generate y /plan_events)',
+    (sfx.match(/@router\.post\(/g) || []).length >= 2,
+    'generate (clip único) + plan_events (LLM planner para foley layer) son los 2 pilares — falta uno = feature incompleto',
+  );
+
+  check(
+    'comfyui_client.py: wait_for_audio helper para Stable Audio 3 outputs',
+    comfy.includes('def wait_for_audio')
+      && /node_out\.get\(["\']audio["\']/.test(comfy),
+    'ComfyUI emite WAV en node_out["audio"] (no ["images"]). Sin wait_for_audio el endpoint no puede recuperar el path del archivo generado.',
+  );
+
+  check(
+    'routes/sfx.py: usa _iter_balanced_braces de clipmine (parser JSON robusto)',
+    sfx.includes('_iter_balanced_braces'),
+    'parser greedy r"\\{[\\s\\S]*\\}" se come prosa intermedia del LLM; reusar el balanced-braces de v0.9.1 garantiza robustez',
+  );
+
+  check(
+    'routes/sfx.py: categorías SFX validadas (impact/ambient/foley/whoosh/natural/mystic)',
+    /valid_cats\s*=\s*\{[^}]*"impact"[^}]*"ambient"[^}]*"foley"[^}]*"whoosh"[^}]*"natural"[^}]*"mystic"/s.test(sfx),
+    'el LLM puede emitir categorías arbitrarias; el set cerrado evita ruido en el manifest + permite categorizar por capa en el ffmpeg mux',
+  );
+
+  check(
+    'routes/sfx.py: validación timestamp dentro del rango total_duration',
+    sfx.includes('ts > req.total_duration_seconds'),
+    'el LLM puede emitir timestamps fuera de la duración total; sin validación el ffmpeg overlay falla o pone SFX en el vacío',
+  );
+}
+
 // ── Result ─────────────────────────────────────────────────────────
 console.log();
 if (failures.length === 0) {

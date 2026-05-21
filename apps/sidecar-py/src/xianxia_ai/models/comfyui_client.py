@@ -161,6 +161,72 @@ def wait_for_image(prompt_id: str, timeout: float = 1800.0) -> Path:
     raise TimeoutError(f"ComfyUI prompt {prompt_id} did not finish in {timeout}s")
 
 
+def wait_for_audio(prompt_id: str, timeout: float = 600.0) -> Path:
+    """v0.11.0 — variante de `wait_for_image` para Stable Audio 3 SFX.
+
+    ComfyUI emite el output WAV en `node_out["audio"]` (en lugar de
+    `["images"]`). El polling, la detección de orphan (ComfyUI
+    respawn), el grace de 30 s y el timeout son IDÉNTICOS a
+    `wait_for_image` — sólo cambia el campo del output. 10 min default
+    (SFX de 2-10 s en RTX 4060 a 8 steps tarda 5-15 s; 10 min cubre
+    spawn del modelo + workflow heavy).
+    """
+    deadline = time.time() + timeout
+    first_missing_ts: float | None = None
+    _ORPHAN_GRACE_SECONDS = 30.0
+    while time.time() < deadline:
+        try:
+            history = httpx.get(f"{COMFY_URL}/history/{prompt_id}", timeout=5).json()
+        except Exception:
+            time.sleep(1)
+            continue
+        if prompt_id not in history:
+            if first_missing_ts is None:
+                first_missing_ts = time.time()
+            elif time.time() - first_missing_ts > _ORPHAN_GRACE_SECONDS:
+                try:
+                    qresp = httpx.get(f"{COMFY_URL}/queue", timeout=5).json()
+                    pending = qresp.get("queue_pending", [])
+                    running = qresp.get("queue_running", [])
+                    if not pending and not running:
+                        raise RuntimeError(
+                            f"ComfyUI audio prompt {prompt_id} orphaned: not in "
+                            f"/history after {_ORPHAN_GRACE_SECONDS}s AND queue is "
+                            f"empty (ComfyUI likely restarted). Caller should retry."
+                        )
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass
+            time.sleep(1)
+            continue
+        first_missing_ts = None
+        entry = history[prompt_id]
+        outputs = entry.get("outputs", {})
+        for _, node_out in outputs.items():
+            for audio in node_out.get("audio", []):
+                return _comfy_root() / "output" / audio.get("subfolder", "") / audio["filename"]
+        # Cache-hit case para audio.
+        status = entry.get("status", {})
+        if status.get("status_str") == "success" and not outputs:
+            output_root = _comfy_root() / "output"
+            try:
+                cached = max(
+                    output_root.glob("xianxia_sfx*.wav"),
+                    key=lambda p: p.stat().st_mtime,
+                )
+                if time.time() - cached.stat().st_mtime < 60:
+                    return cached
+            except (ValueError, OSError):
+                pass
+            raise RuntimeError(
+                f"ComfyUI audio prompt {prompt_id} returned status=success with "
+                f"empty outputs (cache-hit) and no recoverable .wav in {output_root}"
+            )
+        time.sleep(1)
+    raise TimeoutError(f"ComfyUI audio prompt {prompt_id} did not finish in {timeout}s")
+
+
 def xianxia_workflow(prompt: str, width: int = 1344, height: int = 768, seed: int = 42) -> dict:
     """Default workflow: Z-Image-Turbo, auto-selecting GGUF Q4_K_M (~4.7 GB)
     when VRAM ≤ 9 GB or the GGUF file is present, BF16 (~12 GB) otherwise.
