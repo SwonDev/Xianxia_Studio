@@ -6,6 +6,98 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-21
+
+### Clip Miner inverso: vídeo largo → N viral shorts (backend)
+
+**Feature crucial nueva** identificada en la auditoría de "qué le falta
+para ser la app definitiva". Cierra el segmento de mercado que OpusClip,
+Klap y Vizard cobran a $29-40/mes: convertir podcasts/entrevistas/clases
+grabadas en shorts virales con highlight detection automático.
+
+#### Cómo funciona
+
+1. Usuario sube un MP4 largo (cualquier formato, no necesita ser
+   generado por Xianxia).
+2. `clip_mine_extract`:
+   - **ffmpeg audio extract** 16 kHz mono (10 min timeout).
+   - **faster-whisper large-v3-turbo** word-level transcribe con VAD
+     activo (skip non-speech stretches).
+   - **Gemma 4B** (llama.cpp local) analiza el transcript con un prompt
+     que aplica framework virality 4 ejes alineado con el Virality Score
+     existente (v0.1.22 B3): hook / peak / quotable / value / conflict
+     / reveal.
+   - **PySceneDetect** snap a scene cuts (tolerancia ±1.5 s), reutiliza
+     `_detect_scene_cuts` y `_snap_to_scene_cuts` de v0.1.22 A3.
+   - Validación: clamp duraciones al rango pedido, remove overlaps
+     greedy por score, ordena cronológicamente.
+3. Devuelve N candidatos con `{start, end, duration, score, label,
+   hook_text, summary, snapped_to_scene_cut}`.
+4. **El cliente decide cuáles renderizar**: cada candidato elegido
+   pasa por el pipeline `/shorts/from_video` ya existente (smart
+   reframe YuNet/YOLOv8, Hormozi captions, hook/CTA overlays,
+   virality score, scene boundary snap, blackdetect guard).
+
+**70% del trabajo ya estaba hecho desde v0.1.22**. La feature reutiliza:
+- Whisper large-v3-turbo (v0.7.7).
+- PySceneDetect + `_snap_to_scene_cuts` (v0.1.22 A3).
+- Smart reframe YuNet/YOLOv8 (v0.1.22 F1.1, B1).
+- Hormozi captions (v0.1.22 A2).
+- Virality Score 4 ejes (v0.1.22 B3).
+- Multi-duration candidates (v0.1.22 E).
+- llama.cpp backend (v0.2.0 T1).
+
+#### Reglas duras respetadas
+
+- ✅ 100% local: Whisper + Gemma 4B + PySceneDetect, todo offline.
+- ✅ GPU-only para Whisper.
+- ✅ subprocess.run con timeout explícito (10 min audio extract).
+- ✅ httpx.AsyncClient con timeout (180 s LLM detection).
+- ✅ No mock: si Whisper o LLM fallan, propaga error real con mensaje
+  específico.
+- ✅ JSON validation robusta del output del LLM (tolerante a markdown
+  fences + trailing commas que Gemma a veces emite).
+- ✅ PII safety: el comando Tauri no ecoa bodies de error en clear.
+
+#### Archivos nuevos
+
+- `apps/sidecar-py/src/xianxia_ai/routes/clipmine.py` (354 líneas).
+- `apps/desktop/src-tauri/src/commands/clipmine.rs` (158 líneas + 2
+  unit tests).
+
+#### Archivos modificados
+
+- `apps/sidecar-py/server.py`: import + `include_router` del clipmine.
+- `apps/desktop/src-tauri/src/commands.rs`: `pub mod clipmine`.
+- `apps/desktop/src-tauri/src/lib.rs`: registra
+  `commands::clipmine::clip_mine_extract` en el handler.
+- `apps/desktop/src/lib/tauri.ts`: helper `clipMineExtract` + types
+  `ClipCandidate` + `ClipMineResponse`.
+
+#### Estado del feature
+
+- ✅ **v0.9.0 — Backend completo + Tauri command + types frontend**
+  (esta versión). 2/2 unit tests passing.
+- ⏳ **v0.9.1 — UI nueva ruta `/clip-mine`** con upload + lista de
+  candidatos con score/hook/summary + checkboxes para selección +
+  batch render via `/shorts/from_video` por cada uno.
+- ⏳ **v0.9.2 — Sidebar entry "Extraer Shorts"** + onboarding tooltip
+  + smoke E2E real.
+
+#### Verificación
+
+- ✅ `cargo check` OK.
+- ✅ `cargo test commands::clipmine` 2/2 passing.
+- ✅ `pnpm typecheck` OK.
+- ✅ `py_compile` OK.
+- ✅ `parity-check` (24 invariantes incluyendo los 6 de v0.8.1) all
+  satisfied.
+
+### Sin compilación
+
+Acumulado desde v0.7.5 (último NSIS shippeado): v0.7.6 → v0.9.0
+(15 versiones).
+
 ## [0.8.1] — 2026-05-21
 
 ### Contrato `narrative_epic byte-idéntico` formalizado en parity-check

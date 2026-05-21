@@ -54,6 +54,8 @@ pub fn run() {
             commands::voice_clones::list_voice_clones,
             commands::voice_clones::register_voice_clone,
             commands::voice_clones::delete_voice_clone,
+            // v0.9.0 — Clip Miner: long video → N viral shorts candidates.
+            commands::clipmine::clip_mine_extract,
             commands::library::library_list_videos,
             commands::library::library_delete_video,
             commands::library::library_open_video_folder,
