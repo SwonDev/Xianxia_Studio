@@ -1764,6 +1764,74 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.10.0) Originality Engine contratos duros ──────────────────────
+//
+// Sin estos invariants el feature de protección anti-YouTube-ban es
+// silenciosamente degradable. Los umbrales `SIMILARITY_BLOCKING=0.90`
+// y `SIMILARITY_WARNING=0.75` están calibrados contra canales reales
+// terminados en enero 2026 — bajarlos vuelve permisivo el gate, lo
+// que defeats el propósito entero.
+{
+  const orig = readFileSync(
+    join(ROOT, 'apps/sidecar-py/src/xianxia_ai/routes/originality.py'),
+    'utf8',
+  );
+  const server = readFileSync(
+    join(ROOT, 'apps/sidecar-py/server.py'),
+    'utf8',
+  );
+  const mig = join(
+    ROOT,
+    'apps/desktop/src-tauri/migrations/0005_originality.sql',
+  );
+
+  check(
+    'migrations/0005_originality.sql existe + tabla originality_audits con audit_status',
+    existsSync(mig)
+      && contains(mig, 'CREATE TABLE IF NOT EXISTS originality_audits')
+      && contains(mig, 'audit_status'),
+    'la migration debe crear la tabla con el campo audit_status (pending|approved|rejected) — el gate del pipeline depende de él',
+  );
+
+  check(
+    'server.py: include_router(originality.router, prefix="/originality")',
+    server.includes('originality.router')
+      && server.includes('prefix="/originality"'),
+    'sin esta línea ningún /originality/* endpoint responde y el feature está muerto',
+  );
+
+  check(
+    'routes/originality.py: SIMILARITY_BLOCKING ≥ 0.90 y SIMILARITY_WARNING ≥ 0.75',
+    /SIMILARITY_BLOCKING\s*=\s*0\.9/.test(orig)
+      && /SIMILARITY_WARNING\s*=\s*0\.75/.test(orig),
+    'umbrales calibrados contra canales reales terminados ene 2026; relajarlos vuelve el gate inútil. Si necesitas ajustar, hazlo via settings (v0.10.1+) NO en código.',
+  );
+
+  check(
+    'routes/originality.py: build_manifest exige thesis_user ≥ 20 chars',
+    /len\(thesis\)\s*<\s*20/.test(orig),
+    'el contrato del manifest es "aportación humana REAL". 20 chars mínimo para evitar bypass con "abc" simbólico.',
+  );
+
+  check(
+    'routes/originality.py: 3 endpoints registrados (@router.post)',
+    (orig.match(/@router\.post\(/g) || []).length >= 3,
+    'check_structural + hook_alternatives + build_manifest son los 3 pilares — falta uno = feature incompleto',
+  );
+
+  check(
+    'routes/originality.py: usa Jaccard 5-grama (no greedy) + structural features',
+    orig.includes('_ngrams(') && orig.includes('_structural_features'),
+    'la similitud combinada (60% léxico + 40% estructural) es lo que detecta templating REAL; modelos basados en solo embeddings se saltan los CTAs y la cadencia',
+  );
+
+  check(
+    'routes/originality.py: ai_disclosure default contiene "AI" + "Xianxia Studio" (EU AI Act Art. 50)',
+    /ai_disclosure[\s\S]{0,300}AI[\s\S]{0,200}Xianxia Studio/.test(orig),
+    'EU AI Act Article 50 enforcement 2 agosto 2026 exige disclosure machine-readable + visible. El default no puede estar vacío.',
+  );
+}
+
 // ── Result ─────────────────────────────────────────────────────────
 console.log();
 if (failures.length === 0) {

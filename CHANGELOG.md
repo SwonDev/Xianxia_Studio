@@ -6,6 +6,115 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-05-21
+
+### 🚨 Originality Engine: anti-templating + EU AI Act compliance (backend)
+
+**Riesgo existencial resuelto**. En enero 2026 YouTube ejecutó la mayor
+ola de terminaciones masivas de canales AI ("inauthentic content"
+policy). EU AI Act Article 50 entra en enforcement el **2 agosto 2026**
+exigiendo disclosure de contenido AI generado. Sin este gate, los
+usuarios de Xianxia Studio podían perder monetización tras 2-3 vídeos.
+
+#### Qué hace v0.10.0
+
+**Backend Python** (`apps/sidecar-py/src/xianxia_ai/routes/originality.py`):
+
+1. `POST /originality/check_structural` — detecta similitud estructural
+   contra los N scripts previos del canal usando:
+   - **Jaccard 5-gramas** de palabras (60% del peso) — captura frases
+     enteras re-utilizadas (hooks, CTAs, conectores templated)
+   - **Rasgos estructurales** (40% del peso): chapter_count,
+     avg_chapter_words, cta_density_per1k, question_density,
+     digits_density, caps_runs, chapter_lens_stdev
+   - Score combinado 0.0-1.0. **Umbrales calibrados contra canales
+     reales terminados ene 2026**: `≥0.90 BLOCKING`, `≥0.75 WARNING`
+   - Detecta también **patrón sistémico** (mediana de scores contra
+     últimos 3+ vídeos): "el canal entero está templated"
+
+2. `POST /originality/hook_alternatives` — genera N hooks alternativos
+   (3-5) via LLM Gemma 4B con formatos distintos (question / number /
+   contradiction / promise / story). El usuario elige uno → señal de
+   aportación humana real.
+
+3. `POST /originality/build_manifest` — construye el **Originality
+   Manifest** JSON auditable adjuntable al upload YouTube:
+   - `thesis_user` (mínimo 20 chars — evita bypass con "abc")
+   - `hook_chosen`
+   - `sources[]` con `{url, title, extracted_quote, retrieved_at}` del
+     RAG existente (Wikipedia + futuras fuentes)
+   - `human_edits[]` (cambios al outline/script)
+   - `ai_disclosure` (EU AI Act Article 50 default text)
+   - `generated_at` timestamp
+
+#### Decisiones técnicas clave
+
+- **Cero modelos nuevos**: Jaccard + features estructurales (stdlib
+  Python) + LLM Gemma 4B ya cargado. Sin sentence-transformers, sin
+  bge-m3. 100% local con lo que ya hay.
+- **Sidecar stateless**: el cliente Tauri lee los scripts previos de
+  la DB y los pasa al endpoint. No toca DB desde Python (mismo
+  patrón que `clipmine.py`).
+- **Reutiliza parser balanced-braces** de v0.9.1 (`_iter_balanced_braces`).
+- **Robusto contra LLM**: si el LLM falla, propaga error real (no mock).
+
+#### Schema DB
+
+Nueva migration `0005_originality.sql`:
+
+```sql
+CREATE TABLE IF NOT EXISTS originality_audits (
+    project_id              TEXT PRIMARY KEY REFERENCES projects(id),
+    similarity_score        REAL NOT NULL DEFAULT 0.0,
+    audit_status            TEXT NOT NULL DEFAULT 'pending',
+    manifest_json           TEXT NOT NULL DEFAULT '{}',
+    most_similar_project_id TEXT REFERENCES projects(id),
+    created_at              INTEGER NOT NULL,
+    updated_at              INTEGER NOT NULL
+);
+```
+
+Idempotente. `audit_status` ∈ {pending, approved, rejected}.
+
+#### Parity-check +7 invariantes
+
+`scripts/parity-check.mjs` (total ahora **39 invariantes**):
+
+1. Migration 0005 existe con `audit_status`.
+2. `server.py` registra el router con prefix `/originality`.
+3. Umbrales `SIMILARITY_BLOCKING≥0.90` y `WARNING≥0.75` (no relajables
+   en código; usar settings si se necesita ajustar).
+4. `build_manifest` exige `len(thesis_user) ≥ 20` (anti-bypass).
+5. 3 endpoints `@router.post` (los 3 pilares completos).
+6. Usa Jaccard 5-grama + structural features (no embeddings que se
+   saltan CTAs/cadencia).
+7. `ai_disclosure` default contiene "AI" + "Xianxia Studio" (EU AI
+   Act compliance machine-readable).
+
+#### Verificación
+
+- ✅ `py_compile` originality.py + server.py
+- ✅ `cargo check` exit 0 (migration 0005 compila en sqlx::migrate!)
+- ✅ `parity-check` 39 invariants all satisfied
+
+#### Pendiente para v0.10.1 / v0.10.2
+
+- **v0.10.1**: Tauri commands proxy + tipos TS + DB CRUD Rust
+  (`commands/originality.rs` + `db/originality.rs`).
+- **v0.10.2**: UI nueva fase entre Planner y Script — el pipeline
+  pausa, muestra warnings + 3 hooks + form thesis/edit, solo continúa
+  si `audit_status='approved'`.
+- **v0.10.3**: integración automática del manifest JSON en el upload
+  YouTube (adjuntar a descripción + chapter card visible).
+
+#### Bumped a 0.10.0 (minor)
+
+Es feature nuevo grande con riesgo existencial — minor bump justificado.
+
+### Sin compilación
+
+Acumulado desde v0.7.5: v0.7.6 → v0.10.0 (17 versiones).
+
 ## [0.9.1] — 2026-05-21
 
 ### Fixes críticos del Clip Miner v0.9.0 detectados en auditoría paranoica
