@@ -537,6 +537,9 @@ export const tauri = {
     invoke<ModelRecommendation>('safe_llm_alternative', { tier }),
   ltxCapability: () => invoke<LtxCapability>('ltx_capability'),
   ltxModelsInstalled: () => invoke<boolean>('ltx_models_installed'),
+  /** v0.12.5 — autodetect Stable Audio 3 SFX. True solo si los 2
+   *  safetensors (small-sfx + T5Gemma encoder) están en disco. */
+  sfxModelsInstalled: () => invoke<boolean>('sfx_models_installed'),
   getInstallManifest: (options: InstallOptions) =>
     invoke<InstallComponent[]>('get_install_manifest', { options }),
   runInstall: (options: InstallOptions) =>

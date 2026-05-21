@@ -49,6 +49,16 @@ pub fn ltx_models_installed() -> bool {
     crate::pipeline::ltx_models_installed()
 }
 
+/// v0.12.5 — autodetect SFX (Stable Audio 3 small-sfx + T5Gemma encoder).
+/// True solo si AMBOS safetensors están en `ComfyUI/models/{checkpoints,text_encoders}/`.
+/// Usado por el toggle UI en generator.tsx para mostrar:
+///   - botón "Instalar SFX" si false (espejo del flujo LTX)
+///   - switch on/off si true
+#[tauri::command]
+pub fn sfx_models_installed() -> bool {
+    crate::pipeline::sfx_models_installed()
+}
+
 #[tauri::command]
 pub async fn list_projects(pool: tauri::State<'_, Arc<DbPool>>) -> Result<Vec<Project>, String> {
     projects::list(&pool).await.map_err(|e| e.to_string())

@@ -718,6 +718,31 @@ pub(crate) fn ltx_models_installed() -> bool {
     }
 }
 
+/// v0.12.5 — autodetect SFX: ¿están instalados los pesos de Stable Audio 3
+/// small-sfx + T5Gemma encoder en `ComfyUI/models/{checkpoints,text_encoders}/`?
+///
+/// El feature SFX (v0.11.0) es opcional (declarado `required=false` en
+/// manifest.rs). El toggle UI gate-ea con esta función: si devuelve false,
+/// la UI muestra un botón "Instalar SFX" en lugar del switch, igual que
+/// el patrón LTX. Cero VRAM check porque el modelo es chico (2 GB) y
+/// cabe en cualquier tier ≥6 GB.
+///
+/// Devuelve false si:
+///   - paths::paths() falla,
+///   - el checkpoint `stable_audio_3_small_sfx.safetensors` no existe en
+///     `comfyui/models/checkpoints/`,
+///   - el encoder `t5gemma_b_b_ul2.safetensors` no existe en
+///     `comfyui/models/text_encoders/`.
+pub(crate) fn sfx_models_installed() -> bool {
+    let data_dir = match paths::paths() {
+        Ok(p) => p.data_dir,
+        Err(_) => return false,
+    };
+    let models = data_dir.join("runtime").join("comfyui").join("models");
+    models.join("checkpoints").join("stable_audio_3_small_sfx.safetensors").is_file()
+        && models.join("text_encoders").join("t5gemma_b_b_ul2.safetensors").is_file()
+}
+
 async fn run(
     app: &AppHandle,
     pool: &DbPool,

@@ -6,6 +6,49 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.12.5] — 2026-05-21
+
+### SFX autodetectable + autoinstalable + autoconfigurable
+
+Cumplimiento del contrato del proyecto: **"todo tiene que ser
+autodetectable, autoinstalable y autoconfigurable"**. Antes el toggle
+SFX se mostraba siempre aunque los pesos no estuvieran. Ahora:
+
+- **Autodetect**: helper Rust `pipeline::sfx_models_installed()` lee
+  el FS real. Tauri command `sfx_models_installed` + helper TS.
+  `useQuery` poll 10 s, se detiene cuando ya están instalados.
+- **Autoinstall**: `handleInstallSfx` encadena T5Gemma (≈1.2 GB) →
+  small-sfx (≈1.8 GB) con progreso textual.
+- **Autoconfig**: tras install exitoso, `setEnableSfx(true)` automá-
+  tico, el toggle aparece YA activado.
+
+UI condicional (espejo flujo LTX): si `sfxInstalled===false` muestra
+botón "Instalar (≈3 GB)"; si true muestra el Toggle on/off.
+
+#### Verificación runtime (no solo compile)
+
+- ✅ `cargo check` exit 0
+- ✅ `pnpm typecheck` exit 0
+- ✅ `pnpm build` (vite production, 14 s)
+- ✅ `parity-check` **73 invariants**
+- ✅ Test runtime FS: `sfx_models_installed` devuelve false sin
+  modelos (autodetect funciona end-to-end)
+- ✅ Server Python con `/sfx/*` endpoints runtime
+- ✅ `apply_to_video` con LLM down + MP4 real → `sfx_applied=false`
+  + reason claro, MP4 original INTACTO
+- ✅ Originality runtime: 3 tests (first_video=approved, idéntico=
+  rejected score 1.0, thesis<20=HTTPException 400)
+
+#### Parity-check +8 invariantes (73 total)
+
+`pipeline::sfx_models_installed`, Tauri command, lib.rs handler,
+helper TS, `useQuery` poll condicional, `handleInstallSfx` orden,
+autoconfig `setEnableSfx(true)`, UI condicional.
+
+### Sin compilación
+
+Acumulado: v0.7.6 → v0.12.5 (24 versiones).
+
 ## [0.12.4] — 2026-05-21
 
 ### 🎵 Integración pipeline core SFX — feature COMPLETO end-to-end
