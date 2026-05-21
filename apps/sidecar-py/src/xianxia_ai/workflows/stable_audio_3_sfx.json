@@ -1,0 +1,76 @@
+{
+  "_comment": "ComfyUI workflow for Stable Audio 3 small-sfx (0.6B, 459M diffusion + T5Gemma encoder). Day-0 support en ComfyUI v0.22.0 (PR #14010, 20-may-2026). Modelo especializado en SFX/foley — output 44.1 kHz estéreo, hasta 2 min por generación. Cabe en 8 GB VRAM holgado (~2 GB con T5Gemma FP16). Pesos: ComfyUI/models/checkpoints/stable_audio_3_small_sfx.safetensors + ComfyUI/models/text_encoders/t5gemma_b_b_ul2.safetensors. Licencia: Stability Community License (comercial OK hasta $1M revenue).",
+  "_placeholders": "{{prompt}} {{duration_seconds}} {{seed}} {{steps}} {{cfg}}",
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "Stable Audio 3 small-sfx (459M)"},
+    "inputs": {
+      "ckpt_name": "stable_audio_3_small_sfx.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "_meta": {"title": "T5Gemma-b-b-ul2 (text encoder Stable Audio 3)"},
+    "inputs": {
+      "clip_name": "t5gemma_b_b_ul2.safetensors",
+      "type": "stable_audio"
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Prompt SFX (positivo)"},
+    "inputs": {
+      "text": "{{prompt}}",
+      "clip": ["2", 0]
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negativo (silencio/voz/música — no queremos)"},
+    "inputs": {
+      "text": "silence, speech, dialogue, music, vocals, song, instrumental, white noise",
+      "clip": ["2", 0]
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentAudio",
+    "_meta": {"title": "Latent audio canvas (duración configurable)"},
+    "inputs": {
+      "seconds": "{{duration_seconds}}",
+      "batch_size": 1
+    }
+  },
+  "6": {
+    "class_type": "KSampler",
+    "_meta": {"title": "Sampler (8 steps, dpmpp_3m_sde típico SA3)"},
+    "inputs": {
+      "seed": "{{seed}}",
+      "steps": "{{steps}}",
+      "cfg": "{{cfg}}",
+      "sampler_name": "dpmpp_3m_sde",
+      "scheduler": "sgm_uniform",
+      "denoise": 1.0,
+      "model": ["1", 0],
+      "positive": ["3", 0],
+      "negative": ["4", 0],
+      "latent_image": ["5", 0]
+    }
+  },
+  "7": {
+    "class_type": "VAEDecodeAudio",
+    "_meta": {"title": "Decode → waveform 44.1 kHz estéreo"},
+    "inputs": {
+      "samples": ["6", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "8": {
+    "class_type": "SaveAudio",
+    "_meta": {"title": "Output WAV PCM 16-bit (compatible ffmpeg mux)"},
+    "inputs": {
+      "audio": ["7", 0],
+      "filename_prefix": "xianxia_sfx",
+      "format": "wav"
+    }
+  }
+}

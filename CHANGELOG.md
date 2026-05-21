@@ -6,6 +6,119 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-05-21
+
+### 🎵 Stable Audio 3 SFX — auto-foley engine (backend) — reemplaza MMAudio del roadmap
+
+**Noticia 20-may-2026**: Stability AI lanzó Stable Audio 3 con Day-0
+support en ComfyUI v0.22.0 (PR #14010). 3 variantes en HuggingFace
+[stabilityai/stable-audio-3](https://huggingface.co/collections/stabilityai/stable-audio-3):
+
+| Modelo | Params | Caso |
+|---|---|---|
+| **stable-audio-3-small-sfx** | 0.6B | SFX/foley ← elegido |
+| stable-audio-3-small-music | 0.6B | Música |
+| stable-audio-3-medium | 2B | General |
+
+#### Por qué reemplaza a MMAudio (decisión firme, no entusiasmo)
+
+| Criterio | Stable Audio 3 SFX | MMAudio (descartado) |
+|---|---|---|
+| Licencia comercial | **Community License (OK <$1M revenue)** | **CC-BY-NC — BLOQUEADOR comercial** |
+| VRAM 4060 8GB | 459M + T5Gemma ≈ **2 GB FP16**, cabe junto a Z-Image | 5+ GB pico, requiere unload Z-Image siempre |
+| ComfyUI integration | **Day-0 oficial v0.22.0**, template JSON descargable | Custom node de Kijai, pesos externos 5 GB |
+| Encaja con stack | Replica patrón Z-Image (workflow JSON :8188) | Pipeline distinto |
+| Sync vídeo→audio | No (sólo texto) | Sí nativo Synchformer |
+
+**¿Necesitamos sync nativo vídeo→audio?** NO. Xianxia ya tiene
+timestamps narrativos del planner (HyperFrames image markers, segment
+cuts, virality beats). Generamos SFX por texto + overlay ffmpeg en
+timestamp exacto = pipeline determinista. MMAudio sólo era ventajoso
+para casos donde NO se conocen los timestamps; nosotros sí.
+
+#### Lo que hace v0.11.0
+
+**Workflow ComfyUI** (`apps/sidecar-py/src/xianxia_ai/workflows/stable_audio_3_sfx.json`):
+- 8 nodos (CheckpointLoader + CLIPLoader T5Gemma + 2× CLIPTextEncode +
+  EmptyLatentAudio + KSampler + VAEDecodeAudio + SaveAudio).
+- Sampler `dpmpp_3m_sde` + scheduler `sgm_uniform` (settings recomendados
+  Stability AI para SFX).
+- Placeholders `{{prompt}} {{duration_seconds}} {{seed}} {{steps}} {{cfg}}`.
+- Negative prompt protege contra speech/música contaminada.
+
+**`models/comfyui_client.py`**: nueva función `wait_for_audio` paralela
+a `wait_for_image`. ComfyUI emite WAV en `node_out["audio"]` (no `["images"]`).
+Mismo polling, orphan detection (30 s grace), cache-hit recovery,
+timeout 10 min.
+
+**Backend Python** (`routes/sfx.py`):
+
+1. `POST /sfx/generate` — un clip SFX (prompt + duración 0.5-30 s + seed
+   opcional + steps + cfg). Devuelve `{audio_path, duration_seconds,
+   prompt, seed_used, generated_in_seconds}`.
+
+2. `POST /sfx/plan_events` — LLM (Gemma 4B local) analiza el script y
+   devuelve `events[]` con `{timestamp_seconds, duration_seconds, prompt,
+   category, volume_db, rationale}`. Categorías validadas:
+   `impact | ambient | foley | whoosh | natural | mystic`.
+   Reglas que el LLM debe respetar (en el prompt):
+   - Hook 0-3 s: ≥1 evento `impact` o `whoosh`
+   - Outro últimos 3 s: ≥1 evento `mystic` o `natural`
+   - Mid: mix de `foley` y `ambient` para soportar beats
+   - Prompts EN INGLÉS (Stable Audio 3 fue entrenado con inglés)
+
+#### Decisiones técnicas
+
+- **Reutiliza** `_iter_balanced_braces` de v0.9.1 (parser JSON LLM robusto).
+- **Reutiliza** `comfyui_client.queue_prompt` / `wait_for_audio` (mismo
+  patrón Z-Image).
+- **Stateless**: el sidecar no toca DB. El cliente Rust/Tauri orquesta.
+- **Cero modelos nuevos sin verificar**: ComfyUI Day-0 oficial garantiza
+  que el modelo se carga correcto.
+- **subprocess/httpx con timeouts** (v0.7.14+ hardening continuo).
+- **Sin mock**: si ComfyUI no corre devuelve 503 explícito.
+
+#### Parity-check +7 invariantes (total 46)
+
+1. Workflow JSON existe con checkpoint correcto + T5Gemma encoder.
+2. Placeholders `{{prompt}} {{duration_seconds}} {{seed}}` presentes.
+3. `server.py` registra router con prefix `/sfx`.
+4. `routes/sfx.py` tiene ≥2 endpoints `@router.post`.
+5. `comfyui_client.py` define `wait_for_audio` para outputs `node_out["audio"]`.
+6. Reusa `_iter_balanced_braces` (no greedy regex).
+7. Categorías SFX validadas como set cerrado.
+8. Timestamps validados dentro de `total_duration_seconds`.
+
+#### Verificación
+
+- ✅ `py_compile` server.py + sfx.py + comfyui_client.py
+- ✅ Workflow JSON parsea correctamente
+- ✅ `parity-check` 46 invariants all satisfied
+
+#### Pendiente
+
+- **v0.11.1**: installer/manifest del componente opcional
+  `stable-audio-sfx` (descarga pesos a `ComfyUI/models/checkpoints/`).
+  Triple-gate como LTX: capable + installed + opt-in.
+- **v0.11.2**: Tauri command proxy `sfx_generate` + `sfx_plan_events` +
+  tipos TS frontend.
+- **v0.11.3**: fase nueva en `pipeline/mod.rs` post-render: si user
+  opt-in SFX, planificar eventos → generar c/u → overlay ffmpeg con
+  ducking sobre narration. Best-effort (no rompe pipeline si falla).
+- **v0.11.4**: UI toggle "SFX cinematográfico" en `generator.tsx`.
+
+#### Por qué el cambio del roadmap (MMAudio → Stable Audio 3)
+
+El roadmap previo tenía MMAudio en posición #2 de "features cruciales".
+Stable Audio 3 es **estrictamente mejor** por licencia, VRAM y
+ecosistema. Decisión basada en investigación profunda comparativa
+documentada en el merge commit. Auto-SFX foley sigue siendo el feature
+#2 del roadmap; solo cambió el modelo concreto.
+
+### Sin compilación
+
+Acumulado desde v0.7.5: v0.7.6 → v0.11.0 (18 versiones).
+
 ## [0.10.0] — 2026-05-21
 
 ### 🚨 Originality Engine: anti-templating + EU AI Act compliance (backend)

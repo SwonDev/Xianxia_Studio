@@ -84,6 +84,7 @@ from xianxia_ai.routes import (  # noqa: E402
     render,
     script,
     seo,
+    sfx,
     shorts,
     shorts_auto,
     subtitles,
@@ -235,6 +236,11 @@ app.include_router(clipmine.router, prefix="/clipmine", tags=["clipmine"])
 # terminaciones masivas YouTube "inauthentic content" (ene 2026) + EU
 # AI Act Article 50 (2 ago 2026).
 app.include_router(originality.router, prefix="/originality", tags=["originality"])
+# v0.11.0 — SFX/Foley con Stable Audio 3 small-sfx (Day-0 ComfyUI v0.22.0).
+# Auto-foley layer (impact/ambient/foley/whoosh/natural/mystic) sincronizada
+# con el script via LLM planner. Reemplaza a MMAudio en el roadmap (este
+# tiene licencia comercial OK + 2 GB VRAM vs 5 GB).
+app.include_router(sfx.router, prefix="/sfx", tags=["sfx"])
 app.include_router(depth.router, prefix="/depth", tags=["depth"])
 app.include_router(depthflow.router, prefix="/depthflow", tags=["depthflow"])
 app.include_router(unload.router, prefix="/unload", tags=["unload"])
