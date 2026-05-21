@@ -549,6 +549,16 @@ pub struct GenerateRequest {
     /// Existing requests that omit this field deserialize unchanged (None).
     #[serde(default)]
     pub use_ltx_video: Option<bool>,
+    /// v0.12.4 — opt-in for Stable Audio 3 SFX/foley layer (best-effort
+    /// post-render). Default false. Honored only when ComfyUI is running
+    /// AND the `stable-audio-3-sfx` + `stable-audio-3-t5gemma` opcional
+    /// components fueron instalados via Installer. On any failure logs
+    /// warning and skips — NEVER blocks the pipeline (same pattern as
+    /// AudioSeal v0.2.17). Backend implementation: routes/sfx.py +
+    /// new endpoint /sfx/apply_to_video that orchestrates plan→generate→
+    /// ffmpeg overlay internally.
+    #[serde(default)]
+    pub enable_sfx: bool,
 }
 
 fn default_true() -> bool { true }
@@ -2551,6 +2561,98 @@ async fn run(
             tracing::warn!(phase = 13, reason = %why, "watermark skipped");
             emit(app, pid, 13, "skipped", 0.0,
                  &format!("Marca de agua IA omitida · {}", why));
+        }
+    }
+
+    // ─── Phase 14: SFX/Foley layer (Stable Audio 3 small-sfx) ──────
+    // v0.12.4 — opt-in best-effort. Solo se ejecuta si:
+    //   1. `req.enable_sfx == true` (user toggle UI explícito).
+    //   2. El componente opcional fue instalado (ComfyUI tiene los pesos).
+    //   3. ComfyUI está corriendo.
+    // En cualquier fallo: log warning + skip (NO bloquea pipeline, NO
+    // corrompe el video — el original sigue intacto en `final_video`).
+    // El endpoint Python orquesta plan_events → generate por evento →
+    // ffmpeg overlay con ducking → devuelve nuevo video_path o reason.
+    // Mismo patrón best-effort que watermark v0.2.17 / SEO pack v0.2.14.
+    if req.enable_sfx {
+        emit(app, pid, 14, "running", 0.0, "Generando capa SFX/foley con Stable Audio 3…");
+        // Lectura defensiva del script final desde DB para pasarlo al
+        // planner SFX. Si no hay script persistido (raro), skip.
+        let script_text: String = sqlx::query_scalar::<_, String>(
+            "SELECT output_json FROM pipeline_steps WHERE project_id = ? AND phase = 2 AND status = 'done' ORDER BY id DESC LIMIT 1",
+        )
+        .bind(pid)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|json_str| {
+            // El step de script persiste un JSON con campo `script` o
+            // `full_text`. Extraemos defensivamente cualquiera.
+            serde_json::from_str::<serde_json::Value>(&json_str)
+                .ok()
+                .and_then(|v| {
+                    v.get("script")
+                        .or_else(|| v.get("full_text"))
+                        .or_else(|| v.get("text"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string())
+                })
+        })
+        .unwrap_or_default();
+
+        if script_text.is_empty() {
+            tracing::warn!(phase = 14, reason = "no script persisted", "sfx skipped");
+            emit(app, pid, 14, "skipped", 0.0,
+                 "SFX omitido · script no disponible");
+        } else {
+            // VRAM reclaim antes de cargar Stable Audio 3 (mismo umbral
+            // que usa el commands/sfx.rs proxy: 3 GB libres).
+            let _free_gb = ensure_comfyui_vram(app, &client, 3.0).await;
+
+            let (sfx_resp, sfx_reason): (Option<serde_json::Value>, String) = match client
+                .post(format!("{}/sfx/apply_to_video", PY_SIDECAR))
+                // 30 min cubre extract audio + plan_events LLM + N×generate
+                // SFX (~10 s c/u en 4060 a 8 steps) + ffmpeg overlay final.
+                .timeout(std::time::Duration::from_secs(30 * 60))
+                .json(&serde_json::json!({
+                    "video_path": final_video,
+                    "script_text": script_text,
+                    "out_dir": out_dir,
+                    "target_event_count": 8,
+                    "style_hint": if req.preset_id.is_empty() { "cinematic" } else { req.preset_id.as_str() },
+                }))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => (r.json().await.ok(), String::new()),
+                Ok(r) => (None, format!("HTTP {}", r.status())),
+                Err(e) => (None, format!("request error: {}", e)),
+            };
+
+            match sfx_resp {
+                Some(pack) if pack.get("sfx_applied").and_then(|v| v.as_bool()) == Some(true) => {
+                    let events_count = pack
+                        .get("events_count")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    persist_step(pool, pid, 14, "done", &pack).await?;
+                    emit(app, pid, 14, "done", 100.0,
+                         &format!("Capa SFX aplicada · {} eventos foley", events_count));
+                }
+                _ => {
+                    let why = if !sfx_reason.is_empty() {
+                        sfx_reason
+                    } else if let Some(p) = &sfx_resp {
+                        p.get("reason").and_then(|v| v.as_str()).unwrap_or("no disponible").to_string()
+                    } else {
+                        "no disponible".to_string()
+                    };
+                    tracing::warn!(phase = 14, reason = %why, "sfx skipped");
+                    emit(app, pid, 14, "skipped", 0.0,
+                         &format!("SFX omitido · {}", why));
+                }
+            }
         }
     }
 

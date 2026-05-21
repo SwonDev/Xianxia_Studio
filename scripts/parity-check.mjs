@@ -2005,6 +2005,74 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.12.4) Integración pipeline core SFX (toggle + Phase 14) ───────
+{
+  const genTsx = readFileSync(
+    join(ROOT, 'apps/desktop/src/routes/generator.tsx'),
+    'utf8',
+  );
+  const pipeRs = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/pipeline/mod.rs'),
+    'utf8',
+  );
+  const sfxPy = readFileSync(
+    join(ROOT, 'apps/sidecar-py/src/xianxia_ai/routes/sfx.py'),
+    'utf8',
+  );
+
+  check(
+    'generator.tsx: estado enableSfx + envío en GenerateRequest',
+    genTsx.includes('setEnableSfx')
+      && genTsx.includes('enable_sfx: enableSfx'),
+    'sin el toggle UI + la propagación al request, el feature es invisible al usuario',
+  );
+
+  check(
+    'pipeline/mod.rs: GenerateRequest tiene campo enable_sfx con #[serde(default)]',
+    /#\[serde\(default\)\]\s*\n?\s*pub\s+enable_sfx:\s*bool/.test(pipeRs),
+    'el campo debe tener serde(default) para no romper requests sin el campo (compat)',
+  );
+
+  check(
+    'pipeline/mod.rs: Phase 14 SFX best-effort (skip nunca rompe)',
+    pipeRs.includes('Phase 14: SFX/Foley')
+      && pipeRs.includes('if req.enable_sfx')
+      && pipeRs.includes('"sfx_applied"')
+      && pipeRs.includes('"sfx skipped"'),
+    'la fase debe ser opt-in (gated por enable_sfx) Y best-effort (skip silencioso en fallo)',
+  );
+
+  check(
+    'pipeline/mod.rs: Phase 14 invoca ensure_comfyui_vram(3.0) antes del POST',
+    /enable_sfx[\s\S]{0,5000}ensure_comfyui_vram\(app,\s*&client,\s*3\.0\)/.test(pipeRs),
+    'sin VRAM reclaim Stable Audio 3 OOM si ComfyUI tiene Z-Image cargado',
+  );
+
+  check(
+    'routes/sfx.py: endpoint /sfx/apply_to_video orquesta plan + generate + ffmpeg',
+    sfxPy.includes('@router.post("/apply_to_video"')
+      && sfxPy.includes('ApplyToVideoResponse')
+      && sfxPy.includes('plan_sfx_events(')
+      && sfxPy.includes('sfx_generate(')
+      && sfxPy.includes('"-filter_complex"')
+      && sfxPy.includes('adelay'),
+    'apply_to_video encadena plan + generate y construye filter_complex con adelay por evento',
+  );
+
+  check(
+    'routes/sfx.py: apply_to_video devuelve sfx_applied=false sin lanzar excepción',
+    sfxPy.includes('return ApplyToVideoResponse(')
+      && sfxPy.includes('sfx_applied=False'),
+    'contrato con Phase 14 Rust: 200 + sfx_applied=false en fallo (no HTTPException) → best-effort silencioso',
+  );
+
+  check(
+    'routes/sfx.py: ffmpeg con -c:v copy (vídeo intacto byte-idéntico)',
+    /"-c:v"[\s\S]{0,40}"copy"/.test(sfxPy),
+    'el vídeo original NUNCA se re-encodea; solo se remuxea el audio con la capa SFX',
+  );
+}
+
 // ── (v0.12.2) Manifest Stable Audio 3 SFX (opt-in declarativo) ────────
 {
   const manifest = readFileSync(

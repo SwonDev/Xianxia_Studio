@@ -492,6 +492,11 @@ export interface GenerateRequest {
    *  (byte-idéntico a v0.6.x). Valores: narrative_epic | documentary |
    *  explainer | listicle | comparative | deep_dive. */
   preset_id?: string;
+  /** v0.12.4 — Opt-in SFX/foley layer post-render con Stable Audio 3
+   *  small-sfx via ComfyUI. Best-effort: si los pesos no están
+   *  instalados o falla cualquier paso, el vídeo sale sin SFX (skip
+   *  silencioso con log warn, NUNCA bloquea pipeline). Default false. */
+  enable_sfx?: boolean;
 }
 
 export interface PhaseUpdate {

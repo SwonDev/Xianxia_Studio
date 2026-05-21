@@ -6,6 +6,97 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.12.4] — 2026-05-21
+
+### 🎵 Integración pipeline core SFX — feature COMPLETO end-to-end
+
+Cierre del feature Stable Audio 3 SFX. Antes era backend + Tauri +
+tipos TS pero solo invocable a mano. Ahora **el usuario activa SFX
+desde el toggle en `/generator` y el pipeline lo aplica automáticamente
+post-render**.
+
+#### Wire end-to-end completo
+
+1. TS type `GenerateRequest` (`lib/tauri.ts`): nuevo campo opcional
+   `enable_sfx?: boolean`.
+2. State + toggle en `generator.tsx`: `enableSfx`/`setEnableSfx` +
+   componente `<Toggle>` en sección "Capa SFX cinematográfica".
+3. Rust `GenerateRequest` (`pipeline/mod.rs`): nuevo campo
+   `pub enable_sfx: bool` con `#[serde(default)]`.
+4. **Phase 14 en `pipeline/mod.rs`** (post-render, best-effort):
+   - Gate dual: `req.enable_sfx` + script persistido.
+   - `ensure_comfyui_vram(3.0)` antes del POST (regla GPU-only).
+   - POST a `/sfx/apply_to_video` con timeout 30 min.
+   - Si falla: log warn + `emit(skipped)` + **continúa** (mismo
+     patrón que watermark v0.2.17 / SEO v0.2.14).
+5. **Endpoint Python `/sfx/apply_to_video`** (`routes/sfx.py`):
+   orquestador end-to-end con ffprobe + plan_sfx_events (LLM) + loop
+   sfx_generate por evento + ffmpeg `filter_complex` final con
+   `adelay` per-evento + `amix` SFX + `amix` voz/música (peso 1.0 vs
+   0.85 para SFX) + `-c:v copy` (vídeo intacto byte-idéntico) +
+   cleanup automático WAV temporales. Devuelve
+   `sfx_applied=False + reason` en fallo (no HTTPException) para
+   best-effort silencioso.
+
+#### Parity-check +7 invariantes (total 65)
+
+`generator.tsx` envía `enable_sfx`; Rust tiene campo con
+`#[serde(default)]`; Phase 14 best-effort con skip silencioso;
+`ensure_comfyui_vram(3.0)` antes del POST; `/sfx/apply_to_video`
+orquesta plan+generate+ffmpeg; devuelve `sfx_applied=False` sin
+HTTPException; ffmpeg con `-c:v copy`.
+
+#### Verificación
+
+- ✅ `cargo check` exit 0
+- ✅ `pnpm typecheck` exit 0
+- ✅ `py_compile sfx.py` OK
+- ✅ `parity-check` **65 invariants** all satisfied
+
+#### Estado final del proyecto
+
+| Feature | Backend | Tauri | Tipos TS | UI propia | Pipeline |
+|---|---|---|---|---|---|
+| Clip Miner v0.9 | ✅ | ✅ | ✅ | ✅ `/clip-mine` | n/a |
+| Originality v0.10 | ✅ | ✅ | ✅ | ✅ `<OriginalityGate>` | (componente standalone) |
+| **SFX v0.11+** | ✅ | ✅ | ✅ | ✅ toggle generator | ✅ Phase 14 best-effort |
+
+**3 features cruciales completamente funcionales end-to-end.**
+
+### Sin compilación
+
+Acumulado: v0.7.6 → v0.12.4 (23 versiones).
+
+## [0.12.3] — 2026-05-21
+
+### OriginalityGate component (modal standalone, anti-templating UI)
+
+Componente React reutilizable que orquesta los 3 endpoints del
+Originality Engine (v0.10.0 backend + v0.12.0 Tauri wire) en una
+sola experiencia visual coherente.
+
+Archivos nuevos: `apps/desktop/src/components/originality-gate.tsx`
+(480 LOC). Stages 'checking' → 'review' → 'building' → 'done'/'error'.
+Review con ScoreBlock (porcentaje + color por severity), WarningRow
+list, gate humano de 3 campos (thesis ≥20 chars con contador, 3
+HookAlternative seleccionables via radio, edit del outline ≥5 chars).
+Visual Liquid Glass DESIGN.md v2.
+
+## [0.12.2] — 2026-05-21
+
+### Installer manifest Stable Audio 3 SFX (opt-in declarativo)
+
+Dos componentes opcionales nuevos en `installer/manifest.rs`:
+- `stable-audio-3-t5gemma` (≈1.2 GB, encoder T5Gemma para Stable
+  Audio 3) → `ComfyUI/models/text_encoders/`.
+- `stable-audio-3-sfx` (≈1.8 GB F32, modelo SFX 459M) →
+  `ComfyUI/models/checkpoints/`. Depende del t5gemma encoder.
+
+Ambos `required=false` (opt-in, fuera del smoke-test). El usuario
+los activa desde Ajustes → Componentes opcionales.
+
+Parity +3: ambos declarados con ruta + filename + `required=false`.
+
 ## [0.12.1] — 2026-05-21
 
 ### UI Clip Miner — ruta `/clip-mine` completa
