@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -367,3 +369,233 @@ async def plan_sfx_events(req: PlanSfxEventsRequest) -> PlanSfxEventsResponse:
     )
 
     return PlanSfxEventsResponse(events=events)
+
+
+# ─────────────────── /sfx/apply_to_video (v0.12.4) ──────────────────
+
+
+class ApplyToVideoRequest(BaseModel):
+    """Petición end-to-end: orquesta plan_events + N×generate + ffmpeg
+    overlay sobre un vídeo final ya renderizado. Esta es la entrada
+    única que usa `pipeline/mod.rs` Phase 14 (best-effort)."""
+
+    video_path: str = Field(..., description="MP4 final con audio ya muxeado.")
+    script_text: str = Field(..., description="Script completo para plan_events.")
+    out_dir: str | None = Field(
+        None,
+        description="Directorio donde guardar el nuevo MP4 + SFX. Default `./out/sfx_overlay/`.",
+    )
+    target_event_count: int = Field(8, ge=2, le=20)
+    style_hint: str = Field("cinematic")
+
+
+class ApplyToVideoResponse(BaseModel):
+    sfx_applied: bool
+    output_path: str | None = None
+    reason: str | None = None
+    events_count: int = 0
+
+
+def _probe_video_duration(video_path: str) -> float:
+    """ffprobe duration; v0.7.16 timeout 30 s pattern."""
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", video_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(proc.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+@router.post("/apply_to_video", response_model=ApplyToVideoResponse)
+async def apply_to_video(req: ApplyToVideoRequest) -> ApplyToVideoResponse:
+    """End-to-end SFX overlay sobre un vídeo final. Best-effort.
+
+    Pipeline interno:
+      1. ffprobe duración total del vídeo.
+      2. plan_events vía LLM (Gemma 4B) → N eventos foley.
+      3. Para cada evento: generate vía ComfyUI Stable Audio 3 small-sfx.
+      4. ffmpeg amix multi-input con ducking: voz/música del vídeo
+         original + capa SFX al volumen indicado por evento.
+      5. Devuelve nuevo MP4 path o (False + reason) si cualquier paso
+         falla. NO lanza HTTPException — Rust caller espera 200 con
+         `sfx_applied=false` para detectar skip.
+    """
+    src = Path(req.video_path)
+    if not src.is_file():
+        return ApplyToVideoResponse(
+            sfx_applied=False, reason=f"video not found: {req.video_path}",
+        )
+
+    base_out = Path(req.out_dir or os.environ.get("XIANXIA_OUT_DIR", "./out")) / "sfx_overlay"
+    base_out.mkdir(parents=True, exist_ok=True)
+
+    total_dur = _probe_video_duration(req.video_path)
+    if total_dur <= 0.0:
+        return ApplyToVideoResponse(
+            sfx_applied=False, reason="ffprobe could not read duration",
+        )
+
+    log_event(
+        "info", "sfx_apply_start",
+        video=req.video_path, duration=round(total_dur, 2),
+        target_n=req.target_event_count, style=req.style_hint,
+    )
+
+    # ── 1. plan_events vía el endpoint hermano (con LLM Gemma 4B) ──
+    try:
+        plan_resp = await plan_sfx_events(
+            PlanSfxEventsRequest(
+                script_text=req.script_text,
+                total_duration_seconds=total_dur,
+                target_event_count=req.target_event_count,
+                style_hint=req.style_hint,
+            )
+        )
+        events = plan_resp.events
+    except HTTPException as exc:
+        return ApplyToVideoResponse(
+            sfx_applied=False, reason=f"plan_events failed: {exc.detail}",
+        )
+    except Exception as exc:
+        return ApplyToVideoResponse(
+            sfx_applied=False, reason=f"plan_events crashed: {exc}",
+        )
+
+    if not events:
+        return ApplyToVideoResponse(
+            sfx_applied=False, reason="LLM returned 0 SFX events",
+        )
+
+    # ── 2. Generar cada SFX via ComfyUI Stable Audio 3 ──────────────
+    # Usamos un único cliente para reutilizar conexión TCP.
+    generated: list[dict] = []  # [{event, audio_path}]
+    for i, ev in enumerate(events):
+        try:
+            gen = await sfx_generate(
+                SfxGenerateRequest(
+                    prompt=ev.prompt,
+                    duration_seconds=ev.duration_seconds,
+                    seed=None,
+                    steps=8,
+                    cfg=6.0,
+                )
+            )
+            generated.append({"event": ev, "audio_path": gen.audio_path})
+            log_event(
+                "info", "sfx_apply_event_done",
+                idx=i + 1, total=len(events),
+                category=ev.category, ts=ev.timestamp_seconds,
+                dur=ev.duration_seconds,
+            )
+        except HTTPException as exc:
+            log_event(
+                "warning", "sfx_apply_event_fail",
+                idx=i + 1, prompt=ev.prompt[:60], err=str(exc.detail)[:160],
+            )
+            # Sigue con los demás; falla parcial es aceptable (best-effort).
+            continue
+        except Exception as exc:
+            log_event(
+                "warning", "sfx_apply_event_crash",
+                idx=i + 1, prompt=ev.prompt[:60], err=str(exc)[:160],
+            )
+            continue
+
+    if not generated:
+        return ApplyToVideoResponse(
+            sfx_applied=False,
+            reason="all SFX generation calls failed",
+            events_count=0,
+        )
+
+    # ── 3. ffmpeg overlay multi-input ──────────────────────────────
+    # Construimos un filter_complex con:
+    #   - Input 0 = vídeo + audio originales
+    #   - Inputs 1..N = WAV de cada SFX, con adelay = timestamp_ms y
+    #     volume = volume_db del evento (LLM ya lo dio entre -30 y 0)
+    #   - amix los SFX entre sí + mix con el audio original (que
+    #     domina porque la voz NO se debe enmascarar).
+    out_path = base_out / f"final-sfx-{uuid.uuid4().hex[:10]}.mp4"
+
+    cmd: list[str] = ["ffmpeg", "-y", "-i", str(src)]
+    for g in generated:
+        cmd += ["-i", str(g["audio_path"])]
+
+    # filter_complex: per-SFX delay + volume; luego amix.
+    parts: list[str] = []
+    sfx_labels: list[str] = []
+    for i, g in enumerate(generated, start=1):
+        ev: SfxEvent = g["event"]
+        delay_ms = int(round(ev.timestamp_seconds * 1000))
+        # adelay 1ch → mono → amerge nos forzaría a saber canales; mejor
+        # adelay=NN|NN (stereo). El audio de Stable Audio es 44.1 kHz
+        # estéreo nativo, así que delay en ambos canales.
+        # volume: dB → linear. ffmpeg acepta "0.5dB" pero más portable
+        # es 10^(dB/20). Lo precomputamos.
+        gain = 10 ** (ev.volume_db / 20.0)
+        label = f"[s{i}]"
+        parts.append(
+            f"[{i}:a]adelay={delay_ms}|{delay_ms},volume={gain:.4f}{label}"
+        )
+        sfx_labels.append(label)
+    # Mezcla de todas las pistas SFX entre sí (si solo hay 1, anull es OK).
+    if len(sfx_labels) == 1:
+        parts.append(f"{sfx_labels[0]}anull[sfxmix]")
+    else:
+        parts.append(
+            f"{''.join(sfx_labels)}amix=inputs={len(sfx_labels)}:dropout_transition=0:normalize=0[sfxmix]"
+        )
+    # Mix final: audio original [0:a] + [sfxmix]. dropout_transition=0
+    # para no atenuar la voz al entrar/salir cada SFX.
+    parts.append(
+        "[0:a][sfxmix]amix=inputs=2:dropout_transition=0:weights=1 0.85:normalize=0[aout]"
+    )
+    filter_complex = ";".join(parts)
+
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", "0:v",
+        "-map", "[aout]",
+        "-c:v", "copy",  # vídeo intacto byte-idéntico
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        "-movflags", "+faststart",
+        str(out_path),
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return ApplyToVideoResponse(
+            sfx_applied=False,
+            reason=f"ffmpeg overlay timeout (>10 min): {exc}",
+            events_count=len(generated),
+        )
+    if proc.returncode != 0:
+        return ApplyToVideoResponse(
+            sfx_applied=False,
+            reason=f"ffmpeg overlay failed (rc={proc.returncode}): {proc.stderr[-300:]}",
+            events_count=len(generated),
+        )
+
+    # Cleanup de los WAV temporales (los generados por sfx_generate).
+    for g in generated:
+        try:
+            Path(g["audio_path"]).unlink()
+        except OSError:
+            pass
+
+    log_event(
+        "info", "sfx_apply_done",
+        events=len(generated), output=str(out_path),
+    )
+
+    return ApplyToVideoResponse(
+        sfx_applied=True,
+        output_path=str(out_path),
+        events_count=len(generated),
+    )

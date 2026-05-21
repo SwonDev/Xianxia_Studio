@@ -301,6 +301,11 @@ function GeneratorWizard() {
   const [useLtxVideo, setUseLtxVideo] = useState(false);
   const [installingLtx, setInstallingLtx] = useState(false);
   const [ltxInstallProgress, setLtxInstallProgress] = useState<string>('');
+  // v0.12.4 — opt-in SFX/Foley layer (Stable Audio 3 small-sfx).
+  // Default false. Best-effort post-render: si falla en cualquier paso
+  // del pipeline (modelo no instalado, ComfyUI sin VRAM, LLM down) se
+  // omite con un log warn y el vídeo sale sin SFX — NUNCA bloquea.
+  const [enableSfx, setEnableSfx] = useState(false);
 
   useEffect(() => {
     if (!voices || voices.length === 0) return;
@@ -363,6 +368,7 @@ function GeneratorWizard() {
       auto_optimize_engagement: autoOptimizeEngagement,
       use_ltx_video: ltxOptIn,
       preset_id: videoPreset,
+      enable_sfx: enableSfx,
     };
     try {
       const id = await tauri.startGeneration(req);
@@ -757,6 +763,19 @@ function GeneratorWizard() {
               )}
             </Field>
           )}
+
+          {/* v0.12.4 — SFX/Foley layer (Stable Audio 3 small-sfx).
+              Toggle siempre visible; backend hace best-effort y omite
+              silenciosamente si los pesos no están instalados o
+              ComfyUI no tiene VRAM. NUNCA bloquea el render. */}
+          <Field label="Capa SFX cinematográfica (Stable Audio 3, opt-in)">
+            <Toggle
+              label="Generar capa de SFX/foley sincronizada con el guion"
+              description="Añade impacto, ambient, foley, whoosh y momentos místicos en los timestamps que el LLM detecta como pico narrativo. Best-effort: si los pesos no están instalados o ComfyUI no tiene VRAM, el vídeo sale sin SFX (skip silencioso, NO bloquea). Requiere instalar el componente opcional «Stable Audio 3 SFX» desde el Instalador."
+              checked={enableSfx}
+              onChange={setEnableSfx}
+            />
+          </Field>
 
           <details data-testid="advanced-options" style={{ marginTop: 8 }}>
             <summary
