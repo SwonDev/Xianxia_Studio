@@ -278,6 +278,28 @@ export interface VoiceClone {
   has_ref_text: boolean;
 }
 
+// ── Clip Miner (v0.9.0) — long video → N viral short candidates ──────
+export interface ClipCandidate {
+  start: number;
+  end: number;
+  duration: number;
+  score: number;
+  /** hook | peak | quotable | value | conflict | reveal */
+  label: string;
+  /** 1-6 words punchline */
+  hook_text: string;
+  /** 1-2 sentence summary del clip */
+  summary: string;
+  snapped_to_scene_cut: boolean;
+}
+
+export interface ClipMineResponse {
+  candidates: ClipCandidate[];
+  transcript_language: string;
+  total_duration: number;
+  scene_cuts_detected: number;
+}
+
 export interface VoiceAcquisitionResponse {
   clone_id: string;
   clone_path: string;
@@ -546,6 +568,26 @@ export const tauri = {
       refText: args.refText,
     }),
   deleteVoiceClone: (id: string) => invoke<void>('delete_voice_clone', { id }),
+
+  // ── Clip Miner (v0.9.0) — long video → N viral shorts candidates ─────
+  clipMineExtract: (args: {
+    videoPath: string;
+    nCandidates?: number;
+    targetDuration?: number;
+    minDuration?: number;
+    maxDuration?: number;
+    primaryLanguage?: string;
+  }) =>
+    invoke<ClipMineResponse>('clip_mine_extract', {
+      req: {
+        video_path: args.videoPath,
+        n_candidates: args.nCandidates,
+        target_duration: args.targetDuration,
+        min_duration: args.minDuration,
+        max_duration: args.maxDuration,
+        primary_language: args.primaryLanguage,
+      },
+    }),
 
   // Voice acquisition pipeline (v0.1.24) — extract a clean voice clip
   // from a URL/file/microphone and auto-register it as a clone in one

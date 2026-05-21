@@ -67,6 +67,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 
 from xianxia_ai.routes import (  # noqa: E402
+    clipmine,
     depth,
     depthflow,
     diag,
@@ -226,6 +227,8 @@ app.include_router(subtitles.router, prefix="/subtitles", tags=["subtitles"])
 app.include_router(render.router, prefix="/render", tags=["render"])
 app.include_router(shorts.router, prefix="/shorts", tags=["shorts"])
 app.include_router(shorts_auto.router, prefix="/shorts", tags=["shorts"])
+# v0.9.0 — Clip Miner: extract N viral short candidates from long video.
+app.include_router(clipmine.router, prefix="/clipmine", tags=["clipmine"])
 app.include_router(depth.router, prefix="/depth", tags=["depth"])
 app.include_router(depthflow.router, prefix="/depthflow", tags=["depthflow"])
 app.include_router(unload.router, prefix="/unload", tags=["unload"])

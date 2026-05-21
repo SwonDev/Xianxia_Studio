@@ -1,3 +1,4 @@
+pub mod clipmine;
 pub mod library;
 pub mod music;
 pub mod voice_clones;
