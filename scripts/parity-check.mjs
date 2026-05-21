@@ -13,6 +13,31 @@
  *   - hf_seed.rs forgetting to include the depth-anything model so
  *     DepthFlow downloaded from scratch on every fresh install
  *
+ * v0.8.1 — contrato `narrative_epic byte-idéntico` formalizado.
+ * El contrato original era ambiguo; aquí se documenta exactamente qué
+ * está protegido y qué no:
+ *
+ *   PROTEGIDO (rompe el build si cambia):
+ *     • Las 4 anclas v0.6.x (STORY BEATS literal, STORY ARC + ROUNDED
+ *       CLOSING, IMAGE_STYLE_BIAS["cinematic"], get_preset fallback →
+ *       narrative_epic).
+ *     • Contratos aguas abajo: intro_offset_seconds=1.5, voice_tone
+ *       resolution, preset_id forwarding (≥ 8 sitios), x_vector_only_mode.
+ *     • Mínimos de diversidad: _CAMERA_VARIATIONS ≥ 20, _LIGHTING ≥ 20
+ *       (v0.7.9 baseline). Reducir variedad es regresión.
+ *
+ *   NO PROTEGIDO (mejoras aditivas permitidas):
+ *     • Sampler/scheduler del workflow Z-Image (mejoras de calidad).
+ *     • Pool de _CAMERA_VARIATIONS / _LIGHTING (puede crecer libremente).
+ *     • Longitud y reglas del título SEO (puede evolucionar con YouTube
+ *       2026+).
+ *     • Prompt del thumbnail viral (puede evolucionar con tendencias CTR).
+ *     • Filtros _FICTIONAL_LEAD_PATTERNS (precisión es mejora).
+ *     • Backoff/retry de LLM (robustez es mejora).
+ *
+ * Cuando dudes: si el cambio mejora la calidad SIN romper el shape de
+ * los outputs ni los contratos aguas abajo, va en la categoría aditiva.
+ *
  * Each invariant is one assertion. If any fails the script exits 1
  * with a CLEAR remediation hint — no silent breakage of the next build.
  */
@@ -1580,6 +1605,82 @@ console.log('Parity check — dev ↔ prod invariants\n');
     'pipeline/mod.rs: forwards req.preset_id to /tts and the 3 /music bodies (v0.7.1) + 4 /script* bodies (v0.7.0)',
     presetIdForwards >= 8,
     `found ${presetIdForwards} forwardings of req.preset_id; expected ≥ 8 (4 from v0.7.0 script wiring + 1 tts + 3 music). The voice/music phases need preset_id to bias their outputs by video type`,
+  );
+}
+
+// ── (v0.8.1) Clarificación contrato narrative_epic ────────────────────
+//
+// "narrative_epic byte-idéntico" históricamente ha querido decir cosas
+// distintas. La auditoría v0.8.0 reveló que la regla protegía SOLO 4
+// anclas v0.6.x (STORY BEATS literal, STORY ARC + ROUNDED CLOSING,
+// IMAGE_STYLE_BIAS["cinematic"], get_preset fallback). NO protegía:
+//   • Sampler/scheduler del workflow Z-Image (cambió v0.7.8).
+//   • Tamaño de _CAMERA_VARIATIONS / _LIGHTING_VARIATIONS (creció en
+//     v0.7.9 — más variedad cinematográfica).
+//   • Longitud de título SEO (v0.7.7: 60 → 70 chars).
+//   • Prompt del thumbnail viral (v0.7.7: reescrito MrBeast-style).
+//   • Patrones de filtro _FICTIONAL_LEAD_PATTERNS (v0.7.11: precisos).
+//   • Retry backoff de LLM (v0.7.6: ya no degrada silenciosamente).
+//
+// El contrato real, formalizado aquí: las 4 anclas semánticas + los
+// contratos AGUAS ABAJO (intro=1.5s, voice tone, preset_id forward, etc.)
+// son inmutables. Lo demás puede mejorar libremente. Esta función
+// codifica esos 4 anclas + tamaños MÍNIMOS para variations (nadie
+// puede REDUCIR la variedad por debajo de v0.7.9 sin opt-in explícito).
+{
+  const scriptPy = readFileSync(
+    join(ROOT, 'apps/sidecar-py/src/xianxia_ai/routes/script.py'),
+    'utf8',
+  );
+
+  // Anchor #1 — STORY BEATS literal en presets.py (heredado v0.6.x).
+  const presetsPy = readFileSync(
+    join(ROOT, 'apps/sidecar-py/src/xianxia_ai/presets.py'),
+    'utf8',
+  );
+  check(
+    'presets.py: "STORY BEATS" literal heredado v0.6.x (anchor #1 del contrato narrative_epic)',
+    presetsPy.includes('STORY BEATS'),
+    'el preset narrative_epic histórico usa el marcador literal STORY BEATS en su system prompt; removerlo cambia la salida del LLM',
+  );
+
+  // Anchor #2 — STORY ARC + ROUNDED CLOSING (heredado v0.6.x).
+  check(
+    'presets.py: "STORY ARC + ROUNDED CLOSING" heredado v0.6.x (anchor #2)',
+    presetsPy.includes('STORY ARC + ROUNDED CLOSING'),
+    'narrative_epic requiere arco cerrado; el marcador literal viaja al system prompt',
+  );
+
+  // Anchor #3 — IMAGE_STYLE_BIAS["cinematic"] (heredado v0.6.x).
+  // Vive en presets.py, no en script.py (la regex original apuntaba mal).
+  check(
+    'presets.py: IMAGE_STYLE_BIAS contiene "cinematic" (anchor #3)',
+    /IMAGE_STYLE_BIAS\s*[:=][^}]*"cinematic"/s.test(presetsPy),
+    'el bias visual cinematic es lo que ata narrative_epic al look "cine épico"',
+  );
+
+  // Anchor #4 — get_preset fallback default → narrative_epic.
+  check(
+    'presets.py: get_preset() fallback default = "narrative_epic" (anchor #4)',
+    /def\s+get_preset[\s\S]*?narrative_epic/m.test(presetsPy),
+    'cualquier preset_id desconocido debe degradar a narrative_epic (compat v0.6.x)',
+  );
+
+  // Mínimo de variations: nadie reduce la diversidad por debajo de v0.7.9.
+  // Los arrays son `list[str] = [ ... ]` con corchetes. Contamos strings.
+  const camMatch = scriptPy.match(/_CAMERA_VARIATIONS[^=]*=\s*\[([\s\S]*?)\]/);
+  const ligMatch = scriptPy.match(/_LIGHTING_VARIATIONS[^=]*=\s*\[([\s\S]*?)\]/);
+  const camCount = camMatch ? (camMatch[1].match(/"[^"]+"/g) || []).length : 0;
+  const ligCount = ligMatch ? (ligMatch[1].match(/"[^"]+"/g) || []).length : 0;
+  check(
+    `script.py: _CAMERA_VARIATIONS ≥ 20 entries (got ${camCount}, v0.7.9 baseline)`,
+    camCount >= 20,
+    'reducir variedad cinematográfica es regresión; si necesitas exactamente 12 entries para reproducir v0.7.5 exacto, hazlo en una rama opt-in con flag',
+  );
+  check(
+    `script.py: _LIGHTING_VARIATIONS ≥ 20 entries (got ${ligCount}, v0.7.9 baseline)`,
+    ligCount >= 20,
+    'reducir variedad lumínica es regresión; ver _CAMERA_VARIATIONS',
   );
 }
 
