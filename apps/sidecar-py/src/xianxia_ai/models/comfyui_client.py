@@ -207,21 +207,25 @@ def wait_for_audio(prompt_id: str, timeout: float = 600.0) -> Path:
             for audio in node_out.get("audio", []):
                 return _comfy_root() / "output" / audio.get("subfolder", "") / audio["filename"]
         # Cache-hit case para audio.
+        # v0.12.7 — E2E real confirmó que ComfyUI v0.22.0 graba el output
+        # SIEMPRE como .flac, incluso cuando SaveAudio recibe `format=wav`.
+        # Ampliamos el glob a ambas extensiones para que el recovery no
+        # falle silenciosamente cuando el modelo está warm-cached.
         status = entry.get("status", {})
         if status.get("status_str") == "success" and not outputs:
             output_root = _comfy_root() / "output"
+            candidates: list[Path] = []
+            for ext in ("flac", "wav"):
+                candidates.extend(output_root.glob(f"xianxia_sfx*.{ext}"))
             try:
-                cached = max(
-                    output_root.glob("xianxia_sfx*.wav"),
-                    key=lambda p: p.stat().st_mtime,
-                )
+                cached = max(candidates, key=lambda p: p.stat().st_mtime)
                 if time.time() - cached.stat().st_mtime < 60:
                     return cached
             except (ValueError, OSError):
                 pass
             raise RuntimeError(
                 f"ComfyUI audio prompt {prompt_id} returned status=success with "
-                f"empty outputs (cache-hit) and no recoverable .wav in {output_root}"
+                f"empty outputs (cache-hit) and no recoverable .flac/.wav in {output_root}"
             )
         time.sleep(1)
     raise TimeoutError(f"ComfyUI audio prompt {prompt_id} did not finish in {timeout}s")

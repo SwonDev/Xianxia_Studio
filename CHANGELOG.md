@@ -6,6 +6,91 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.12.8] — 2026-05-21
+
+### Fix definitivo del warning del updater (mismatch de claves)
+
+El wrapper `scripts/tauri-build-local.mjs` cargaba SIEMPRE la clave
+local de `.tauri-keys/local-private.key`, generada con minisign
+ad-hoc, que NO matchea con el `updater.pubkey` declarado en
+`tauri.conf.json`. Resultado: cada release imprimía 3 warnings del
+bundler ("secret key from TAURI_SIGNING_PRIVATE_KEY does not match
+the public key from plugins > updater > pubkey") y el archivo
+`.sig` producido NO validaba al instalar — auto-update roto silen-
+ciosamente durante ~24 releases.
+
+Cambio:
+
+- Nueva orden de resolución en `tauri-build-local.mjs`: primero env
+  `TAURI_SIGNING_PRIVATE_KEY` (CI), luego `~/.tauri/xianxia-updater.key`
+  (clave de producción del owner, **matchea con `tauri.conf.json`**) +
+  password desde `~/.tauri/xianxia-updater.key.password`, finalmente
+  `.tauri-keys/local-private.key` como último recurso ruidoso para
+  contribuidores sin la clave de producción.
+- Dos invariantes nuevas en `parity-check.mjs` (78/78):
+  - "tauri-build-local.mjs: prioriza clave de producción"
+  - "tauri-build-local.mjs: carga password de la clave de producción si existe"
+
+Una vez consolidado, los próximos builds firman con la clave
+correcta y `latest.json` + sus `.sig` validan en cliente. El
+auto-update del updater queda funcional sin tocar `tauri.conf.json`.
+
+## [0.12.7] — 2026-05-21
+
+### Fixes post-E2E real — Stable Audio 3 SFX 100 % funcional
+
+E2E real ejecutado de extremo a extremo (no cargo check, no
+typecheck — modelo descargado, ComfyUI v0.22.0 corriendo con CUDA
+sobre RTX 4060, workflow enviado a la cola, archivo FLAC generado
+y abierto en el reproductor del usuario). Cuatro bugs reales que
+solo aflorarían en runtime quedan corregidos en código y blindados
+con invariantes parity:
+
+1. **Repo HF equivocado** — `manifest.rs` apuntaba a
+   `stabilityai/stable-audio-3-small-sfx` (gated + formato HF
+   transformer multi-archivo que ComfyUI rechaza con
+   `invalid tokenizer` en `spiece_tokenizer.py`) y a
+   `google/t5gemma-b-b-ul2` (inexistente en HF).
+   Corregidos a `Comfy-Org/stable-audio-3` (público, ambos
+   ficheros pre-convertidos con SentencePiece embebido, listos
+   para ComfyUI). `filename` ahora incluye subpath
+   (`checkpoints/...` / `text_encoders/...`); el runner ya
+   soportaba subpaths vía `hf_hub_download`.
+2. **401/403 distinguidos en `/install/hf-download`** —
+   `GatedRepoError` se traducía en 500 opaco. Ahora devuelve
+   `HTTPException(401, {kind=hf_token_missing_or_invalid, remedy})`
+   cuando falta token, y `HTTPException(403, {kind=hf_gated_not_authorized, remedy})`
+   con la URL del modelo cuando hay token pero el usuario no
+   aceptó la licencia. `RepositoryNotFoundError` → 404 explícito.
+3. **`ConditioningStableAudio` obligatorio** —
+   `stable_audio_3_sfx.json` conectaba `CLIPTextEncode` directamente
+   al `KSampler`. ComfyUI v0.22.0 exige el nodo intermedio
+   `ConditioningStableAudio` para añadir `seconds_start`/
+   `seconds_total`; sin él el sampler falla con `KeyError`. Workflow
+   reordenado con nodo "9" entre encode y sampler.
+4. **Cache-hit recovery solo buscaba `.wav`** —
+   `comfyui_client.wait_for_audio` glob `xianxia_sfx*.wav` no
+   encontraba nunca el archivo porque `SaveAudio` graba siempre
+   `.flac` aunque `format='wav'` (bug/feature ComfyUI v0.22.0
+   confirmado en runtime). Ampliado a `for ext in ("flac", "wav")`.
+
+Tres nuevas invariantes en `scripts/parity-check.mjs` (total 76)
+para que los aprendizajes no se vuelvan a perder en una
+refactorización.
+
+Hardware verificación real: RTX 4060 Laptop 8 GB · torch
+2.12.0+cu126 · ComfyUI v0.22.0 · output
+`xianxia_sfx_dragon_roar_00001_.flac` (5.01 s, 44.1 kHz stereo,
+884 KB) generado en ~10 s con 8 steps · cfg 6.0 · dpmpp_3m_sde ·
+sgm_uniform.
+
+### Verificación
+
+- ✅ `cargo check` exit 0 (1m 05s)
+- ✅ `parity-check.mjs` 76/76 invariantes
+- ✅ E2E real con archivo `.flac` audible reproducido en Windows
+- ✅ `manifest.rs` apunta a repos públicos válidos (sin gating)
+
 ## [0.12.5] — 2026-05-21
 
 ### SFX autodetectable + autoinstalable + autoconfigurable

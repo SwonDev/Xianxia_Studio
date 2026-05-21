@@ -117,28 +117,102 @@ class HfDownloadResponse(BaseModel):
 
 @router.post("/hf-download", response_model=HfDownloadResponse)
 def hf_download(req: HfDownloadRequest) -> HfDownloadResponse:
-    """Snapshot or single-file download from HuggingFace via huggingface_hub."""
+    """Snapshot or single-file download from HuggingFace via huggingface_hub.
+
+    v0.12.6 — detección distinguida 401 vs 403:
+      - 401 (GatedRepoError sin token): el usuario NO tiene HF token
+        configurado. La UI muestra "Configura tu token HF en Ajustes".
+      - 403 (GatedRepoError con token pero sin authorized list): el usuario
+        no aceptó la licencia del modelo. La UI muestra "Ve a HF y acepta
+        el modelo: <URL>".
+      - Repo no encontrado: error claro distinto al gated.
+
+    Token resolution order (mismo patrón que huggingface_hub default):
+      1. Env var XIANXIA_HF_TOKEN (preferido: lo controla el usuario en
+         Ajustes vía app_settings).
+      2. Env var HF_TOKEN / HUGGING_FACE_HUB_TOKEN (estándar HF).
+      3. Token guardado en ~/.cache/huggingface/token (login CLI).
+      4. None → solo modelos públicos accesibles.
+    """
+    import os
     try:
         from huggingface_hub import hf_hub_download, snapshot_download
+        from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
     except Exception as e:
         raise HTTPException(503, f"huggingface_hub not installed: {e}") from e
 
     target = Path(req.target_dir)
     target.mkdir(parents=True, exist_ok=True)
 
-    if req.filename:
-        path = hf_hub_download(
-            repo_id=req.repo,
-            filename=req.filename,
-            revision=req.revision,
-            local_dir=str(target),
-        )
-    else:
-        path = snapshot_download(
-            repo_id=req.repo,
-            revision=req.revision,
-            local_dir=str(target),
-        )
+    # Token explícito del entorno (Ajustes UI escribirá esto en una
+    # próxima versión). Si está vacío, huggingface_hub usa el default
+    # chain (env HF_TOKEN o ~/.cache/huggingface/token).
+    token = (
+        os.environ.get("XIANXIA_HF_TOKEN")
+        or os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        or None
+    )
+
+    try:
+        if req.filename:
+            path = hf_hub_download(
+                repo_id=req.repo,
+                filename=req.filename,
+                revision=req.revision,
+                local_dir=str(target),
+                token=token,
+            )
+        else:
+            path = snapshot_download(
+                repo_id=req.repo,
+                revision=req.revision,
+                local_dir=str(target),
+                token=token,
+            )
+    except GatedRepoError as exc:
+        # huggingface_hub.errors.GatedRepoError wraps both 401 (no token)
+        # and 403 (token but not in authorized list). Distinguimos con el
+        # status code real del response wrapped por el SDK.
+        msg = str(exc)
+        # El mensaje del SDK incluye literalmente "401" o "403".
+        if "403" in msg or "authorized list" in msg.lower():
+            raise HTTPException(
+                403,
+                detail={
+                    "kind": "hf_gated_not_authorized",
+                    "repo": req.repo,
+                    "remedy": (
+                        f"Acepta la licencia del modelo: "
+                        f"https://huggingface.co/{req.repo}"
+                    ),
+                    "raw": msg[:300],
+                },
+            ) from exc
+        # 401 → falta token o token sin acceso al repo gated.
+        raise HTTPException(
+            401,
+            detail={
+                "kind": "hf_token_missing_or_invalid",
+                "repo": req.repo,
+                "remedy": (
+                    "Configura tu token HF en Ajustes → HuggingFace, o "
+                    "ejecuta `huggingface-cli login` con un token Read."
+                ),
+                "raw": msg[:300],
+            },
+        ) from exc
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(
+            404,
+            detail={
+                "kind": "hf_repo_not_found",
+                "repo": req.repo,
+                "remedy": "Verifica el repo_id (puede haberse renombrado).",
+                "raw": str(exc)[:300],
+            },
+        ) from exc
+
     p = Path(path)
     size = p.stat().st_size if p.is_file() else sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
     return HfDownloadResponse(path=str(p), bytes=size)
