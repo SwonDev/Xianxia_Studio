@@ -141,7 +141,10 @@ async fn comfyui_vram_free_gb(client: &reqwest::Client) -> Option<f64> {
 /// Returns the best-known free VRAM (GB); `0.0` if it could never be
 /// read. Never fails the pipeline — callers decide what to do with a
 /// low number (skip Z-Image, proceed anyway, etc.).
-async fn ensure_comfyui_vram(app: &AppHandle, client: &reqwest::Client, min_gb: f64) -> f64 {
+// v0.9.1 — promovido a `pub(crate)` por el mismo motivo que `wake_llm`:
+// el comando clipmine carga Whisper (~6 GB en turbo) y necesita reclaim
+// previo cuando ComfyUI está activo, igual que cualquier fase visual.
+pub(crate) async fn ensure_comfyui_vram(app: &AppHandle, client: &reqwest::Client, min_gb: f64) -> f64 {
     let mut free = unload_get_vram(client, "comfyui").await.unwrap_or(0.0);
     if free >= min_gb {
         return free;
@@ -187,7 +190,11 @@ async fn ensure_comfyui_vram(app: &AppHandle, client: &reqwest::Client, min_gb: 
 /// Best-effort: never fails the pipeline. Worst case the LLM call
 /// later sees a still-cold server and retries via the backend's own
 /// 30 s health probe.
-async fn wake_llm(client: &reqwest::Client) {
+// v0.9.1 — promovido a `pub(crate)` para que comandos opt-in fuera de
+// la pipeline principal (ej. clipmine que también necesita LLM caliente
+// antes de hacer su POST) puedan llamarlo y respetar la regla dura
+// "wake_llm proactivo antes de cualquier fase LLM" (memoria del proyecto).
+pub(crate) async fn wake_llm(client: &reqwest::Client) {
     if let Ok(p) = paths::paths() {
         let flag = p.data_dir.join(".llamacpp_suspended");
         if flag.is_file() {

@@ -6,6 +6,110 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-05-21
+
+### Fixes críticos del Clip Miner v0.9.0 detectados en auditoría paranoica
+
+Auditoría exhaustiva post-release detectó **4 bugs reales** que harían
+fallar el feature en producción. Esta versión los arregla todos y
+añade 8 invariantes parity-check para que no regresen.
+
+#### Bugs arreglados
+
+**C1 (CRÍTICO) — Falta `wake_llm()` antes del endpoint LLM**
+- Violaba la regla dura `MEMORY.md#bugfix_llamacpp_respawn` que exige
+  proactividad ante el TTL de 90 min del supervisor.
+- Síntoma: con `llama-server` suspendido, el primer extract espera 30 s
+  silenciosos por el respawn → spinner muerto, UX rota.
+- Fix: promover `wake_llm` y `ensure_comfyui_vram` a `pub(crate)` en
+  `pipeline/mod.rs`. El comando Tauri ahora los invoca antes del POST.
+
+**A1 (ALTO) — Whisper no se libera tras transcribir**
+- Whisper turbo (~6 GB) + Gemma 4B (~3-4 GB) > 8 GB VRAM → OOM en GPU
+  del usuario (RTX 4060 8 GB). Mismo bug que motivó la regla
+  `feedback_no_cpu_offload`.
+- Fix: `whisper_model.unload()` ENTRE transcribe y `llm_generate`, igual
+  que `shorts_auto.py` ya hace.
+
+**A3 (ALTO) — Sin coordinación VRAM con ComfyUI activo**
+- Si el usuario lanza Clip Miner mientras un long-form genera imágenes
+  (SDXL ~6 GB en VRAM), Whisper crashea con OOM al cargar.
+- Fix: `pipeline::ensure_comfyui_vram(&app, &client, 6.0)` antes del
+  POST, mismo patrón que el pipeline normal usa en cada fase visual.
+
+**A4 (ALTO) — Cleanup de audio temporal sólo cubre el camino feliz**
+- WAV temporal de ~230 MB por cada extract de vídeo de 2 h. Errores en
+  LLM o parse JSON lo dejaban en disco. Acumulación silenciosa con
+  fallos repetidos.
+- Fix: refactor a `_do_clipmine_pipeline()` interna envuelta en
+  `try/finally` que borra el WAV en TODOS los paths (éxito, LLM fail,
+  parse fail, validate fail).
+
+**A5 (ALTO) — Parser JSON greedy comía prosa intermedia**
+- `re.search(r'\{[\s\S]*\}', raw)` matchea desde la primera `{` hasta
+  la última `}`. Si el LLM emite "Aquí tienes {junk} y luego {real
+  json}", el regex captura ambos y `json.loads` falla.
+- Fix: nuevo `_iter_balanced_braces` que enumera bloques `{...}` bien
+  formados a nivel 0; el parser prueba cada uno hasta encontrar el que
+  contiene `candidates` o `clips`.
+
+**M2 (MEDIO) — Snap a scene cuts podía sacar duración del rango pedido**
+- `_snap_to_scene_cuts` con tolerancia ±1.5 s podía acortar un clip por
+  debajo del mínimo solicitado, y el "rescate" `min*0.8 ≤ dur ≤
+  max*1.2` toleraba 20 % fuera de spec.
+- Fix: si el snap rompe `[min*0.95, max*1.05]`, se revierte al
+  pre-snap; log estructurado `clipmine_snap_rejected`.
+
+**M3 (MEDIO) — Context window overflow para idiomas CJK**
+- `_build_transcript_text` truncaba a 18 000 chars sin tener en cuenta
+  el idioma. CJK pesa ~1.5 tokens/char vs ~0.3 para inglés → 18k chars
+  CJK = 27k tokens, desbordan `num_ctx=8192`.
+- Fix: nuevo helper `_max_chars_for_lang()`. Para `zh/ja/ko` el cap
+  baja a 9000 chars (~13 500 tokens, deja margen para overhead + 2048
+  num_predict).
+
+#### Parity-check expandido (+8 invariantes)
+
+`scripts/parity-check.mjs` ahora protege:
+1. `wake_llm` + `ensure_comfyui_vram` son `pub(crate)`.
+2. `commands/clipmine.rs` los invoca antes del POST.
+3. `routes/clipmine.py` libera Whisper ANTES de invocar al LLM.
+4. Parser JSON usa `_iter_balanced_braces` (no greedy).
+5. Cleanup audio en `try/finally`.
+6. Context budget consciente del idioma (`_max_chars_for_lang`).
+7. Snap re-validate con `clipmine_snap_rejected` + threshold 0.95.
+8. `lib.rs` registra el comando Tauri.
+
+Total invariantes: 24 + 8 = **32 protegidos**.
+
+#### Tests
+
+- `cargo test --lib commands::clipmine` → **3/3 passing** (añadido
+  `whitespace_path_rejected`). Validación extraída a función pura
+  `validate_video_path` para testabilidad sin AppHandle real.
+
+#### Verificación final
+
+- ✅ `cargo check` exit 0
+- ✅ `cargo test commands::clipmine` 3/3
+- ✅ `py_compile` clipmine.py OK
+- ✅ `parity-check` 32 invariantes, all satisfied
+
+#### Bugs pendientes (no críticos, documentados)
+
+- **M5 (MEDIO)**: la UI `/clip-mine` no existe todavía. El backend está
+  completo, listo para wire — viene en v0.9.2.
+- **M6 (MEDIO)**: el comando Tauri no emite eventos de progreso durante
+  los 10-20 min de extracción; el spinner UI no muestra fase actual.
+  Pendiente.
+- **A2 (ALTO)**: dos llamadas paralelas al endpoint comparten el
+  singleton de faster-whisper (no thread-safe). Mitigación con
+  `asyncio.Lock` pendiente para v0.9.2.
+
+### Sin compilación
+
+Acumulado desde v0.7.5: v0.7.6 → v0.9.1 (16 versiones).
+
 ## [0.9.0] — 2026-05-21
 
 ### Clip Miner inverso: vídeo largo → N viral shorts (backend)
