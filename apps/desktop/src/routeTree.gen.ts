@@ -15,6 +15,7 @@ import { Route as SchedulerRouteImport } from './routes/scheduler'
 import { Route as LibraryRouteImport } from './routes/library'
 import { Route as InstallRouteImport } from './routes/install'
 import { Route as GeneratorRouteImport } from './routes/generator'
+import { Route as ClipMineRouteImport } from './routes/clip-mine'
 import { Route as IndexRouteImport } from './routes/index'
 
 const ShortsRoute = ShortsRouteImport.update({
@@ -47,6 +48,11 @@ const GeneratorRoute = GeneratorRouteImport.update({
   path: '/generator',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ClipMineRoute = ClipMineRouteImport.update({
+  id: '/clip-mine',
+  path: '/clip-mine',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -55,6 +61,7 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/clip-mine': typeof ClipMineRoute
   '/generator': typeof GeneratorRoute
   '/install': typeof InstallRoute
   '/library': typeof LibraryRoute
@@ -64,6 +71,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/clip-mine': typeof ClipMineRoute
   '/generator': typeof GeneratorRoute
   '/install': typeof InstallRoute
   '/library': typeof LibraryRoute
@@ -74,6 +82,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/clip-mine': typeof ClipMineRoute
   '/generator': typeof GeneratorRoute
   '/install': typeof InstallRoute
   '/library': typeof LibraryRoute
@@ -85,6 +94,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/clip-mine'
     | '/generator'
     | '/install'
     | '/library'
@@ -94,6 +104,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/clip-mine'
     | '/generator'
     | '/install'
     | '/library'
@@ -103,6 +114,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/clip-mine'
     | '/generator'
     | '/install'
     | '/library'
@@ -113,6 +125,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ClipMineRoute: typeof ClipMineRoute
   GeneratorRoute: typeof GeneratorRoute
   InstallRoute: typeof InstallRoute
   LibraryRoute: typeof LibraryRoute
@@ -165,6 +178,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GeneratorRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/clip-mine': {
+      id: '/clip-mine'
+      path: '/clip-mine'
+      fullPath: '/clip-mine'
+      preLoaderRoute: typeof ClipMineRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -177,6 +197,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ClipMineRoute: ClipMineRoute,
   GeneratorRoute: GeneratorRoute,
   InstallRoute: InstallRoute,
   LibraryRoute: LibraryRoute,

@@ -6,6 +6,35 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-05-21
+
+### UI Clip Miner — ruta `/clip-mine` completa
+
+Backend Clip Miner (v0.9.0+v0.9.1) listo desde 2 versiones; UI era el
+último bloqueador para que el usuario final pudiera invocar el feature.
+
+- Nueva ruta `apps/desktop/src/routes/clip-mine.tsx` (430 LOC) con
+  file picker (mp4/mov/mkv/webm/avi), form (nCandidates 1-15,
+  targetDuration 15-90s, min/max, primaryLanguage auto), fase con
+  texto dinámico, tabla de candidatos con score visual, etiqueta
+  categoría coloreada, hook text en quotes, summary, indicador snap,
+  timestamps m:ss.s, botón "Generar Short" por candidato → POST a
+  `/shorts/from_video` con `force_start_seconds`+`force_end_seconds`
+  exactos reusando 100% el pipeline standalone v0.1.22.
+- `sidebar.tsx`: nueva entrada "Clip Miner" en grupo Estudio
+  (icono FilmStrip).
+- `routeTree.gen.ts`: regenerado a mano para que '/clip-mine' sea
+  path válido en TypeScript (TanStack Router file-based).
+
+Verificación: ✅ pnpm typecheck, ✅ parity-check 55/55.
+
+Pendiente: v0.12.2 SFX UI + v0.12.3 Originality UI + v0.12.4
+integración pipeline core.
+
+### Sin compilación
+
+Acumulado: v0.7.6 → v0.12.1 (20 versiones).
+
 ## [0.12.0] — 2026-05-21
 
 ### Wire Tauri commands + tipos TS para Originality (v0.10.0) + SFX (v0.11.0)
