@@ -1684,6 +1684,86 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.9.0 / v0.9.1) Clip Miner contratos duros ──────────────────────
+//
+// El endpoint /clipmine/extract necesita los mismos guardrails que el
+// pipeline principal: wake_llm proactivo, VRAM reclaim antes de Whisper,
+// Whisper unload antes del LLM, parser JSON balanced-braces, snap re-
+// validate. Cualquier refactor que los pierda silenciosamente rompe el
+// feature en producción (visto en la auditoría paranoica de v0.9.0 que
+// detectó 4 bugs críticos).
+{
+  const py = readFileSync(
+    join(ROOT, 'apps/sidecar-py/src/xianxia_ai/routes/clipmine.py'),
+    'utf8',
+  );
+  const rs = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/commands/clipmine.rs'),
+    'utf8',
+  );
+  const pipe = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/pipeline/mod.rs'),
+    'utf8',
+  );
+
+  check(
+    'pipeline/mod.rs: wake_llm + ensure_comfyui_vram exportados como pub(crate)',
+    /pub\(crate\)\s+async\s+fn\s+wake_llm/.test(pipe)
+      && /pub\(crate\)\s+async\s+fn\s+ensure_comfyui_vram/.test(pipe),
+    'v0.9.1 promovió ambos a pub(crate) para que comandos opt-in (clipmine, futuros) puedan llamarlos. Si vuelven a privados, romperá clipmine en el primer uso.',
+  );
+
+  check(
+    'commands/clipmine.rs: llama wake_llm + ensure_comfyui_vram antes del POST',
+    rs.includes('pipeline::wake_llm(')
+      && rs.includes('pipeline::ensure_comfyui_vram('),
+    'sin wake_llm el primer extract tras 90 min suspendido tarda 30s extra; sin VRAM reclaim Whisper OOM en 8GB cuando ComfyUI activo. Bugs C1/A3 v0.9.0.',
+  );
+
+  check(
+    'routes/clipmine.py: libera Whisper ANTES de invocar al LLM',
+    /whisper_model\.unload/.test(py)
+      && py.indexOf('whisper_model.unload') < py.indexOf('llm_generate('),
+    'sin unload, Whisper (6GB) + Gemma 4B (3-4GB) >8GB → OOM. Bug A1 v0.9.0. unload debe ir DESPUÉS del transcribe y ANTES de llm_generate.',
+  );
+
+  check(
+    'routes/clipmine.py: parser JSON usa balanced-braces (no greedy)',
+    py.includes('_iter_balanced_braces'),
+    'el parser greedy r"\\{[\\s\\S]*\\}" se come prosa intermedia y corrompe JSON. Bug A5 v0.9.0. _iter_balanced_braces prueba bloques balanceados uno a uno.',
+  );
+
+  check(
+    'routes/clipmine.py: cleanup audio temporal en try/finally',
+    /try:[\s\S]{0,500}_do_clipmine_pipeline[\s\S]{0,500}finally:/.test(py)
+      && py.includes('audio_path.unlink'),
+    'el WAV temporal (≈230 MB para 2h) debe borrarse en TODOS los paths de error, no solo el happy path. Bug A4 v0.9.0.',
+  );
+
+  check(
+    'routes/clipmine.py: context budget consciente del idioma (CJK)',
+    py.includes('_max_chars_for_lang')
+      && /cjk\s*=\s*\{[^}]*"zh"[^}]*"ja"/i.test(py),
+    'idiomas CJK pesan 1.5 tokens/char vs 0.3 para inglés; el cap genérico 18k chars desborda num_ctx=8192 con CJK. Bug M3 v0.9.0.',
+  );
+
+  check(
+    'routes/clipmine.py: snap re-validate dentro del rango duro [min, max]',
+    py.includes('clipmine_snap_rejected')
+      && /req\.min_duration\s*\*\s*0\.95/.test(py),
+    'el snap a scene cuts puede acortar/alargar fuera del rango pedido. Si la nueva duración rompe el rango duro, revertir al pre-snap. Bug M2 v0.9.0.',
+  );
+
+  check(
+    'lib.rs registra clip_mine_extract',
+    contains(
+      join(ROOT, 'apps/desktop/src-tauri/src/lib.rs'),
+      'commands::clipmine::clip_mine_extract',
+    ),
+    'sin esto el comando Tauri no es invocable desde la UI; toda la cadena de fixes anteriores es inútil',
+  );
+}
+
 // ── Result ─────────────────────────────────────────────────────────
 console.log();
 if (failures.length === 0) {

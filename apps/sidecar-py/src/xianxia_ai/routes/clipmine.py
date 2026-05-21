@@ -190,12 +190,26 @@ def _probe_total_duration(video_path: str) -> float:
         return 0.0
 
 
+def _max_chars_for_lang(lang: str) -> int:
+    """v0.9.1 fix M3 — context budget consciente del idioma.
+
+    Para idiomas CJK (zh/ja/ko) cada carácter pesa ~1.5 tokens en BPE
+    (vs ~0.3 para inglés), así que 18 000 chars desbordarían `num_ctx=
+    8192` del Gemma 4B. Para CJK bajamos a ~9 000 chars de transcript
+    (≈ 13 500 tokens, deja margen para el prompt overhead + 2048 num
+    predict).
+    """
+    cjk = {"zh", "ja", "ko", "zh-cn", "zh-tw"}
+    return 9000 if lang.lower() in cjk else 18000
+
+
 def _build_transcript_text(words: list[dict], max_chars: int = 18000) -> str:
     """Compacta words into per-segment lines for the LLM prompt.
 
     Cada N palabras se agrupa en un bloque `[start-end] text`. 18k chars
-    es el umbral seguro para Gemma 4B con contexto de 8k tokens
-    (overhead del prompt + JSON schema ~3k tokens).
+    es el umbral seguro para Gemma 4B con contexto de 8k tokens en
+    idiomas latinos (overhead del prompt + JSON schema ~3k tokens). Ver
+    `_max_chars_for_lang` para el ajuste por idioma.
     """
     # Agrupar en ventanas de ~6s para que el LLM tenga buenas anclas.
     lines: list[str] = []
@@ -231,23 +245,61 @@ def _build_transcript_text(words: list[dict], max_chars: int = 18000) -> str:
     return text
 
 
+def _iter_balanced_braces(text: str):
+    """Yield every well-formed `{...}` substring at any depth de `text`.
+
+    El parser ingenuo `re.search(r'\\{[\\s\\S]*\\}', raw)` matchea desde
+    la PRIMERA `{` hasta la ÚLTIMA `}`, lo cual rompe si el LLM emite
+    prosa intermedia tipo "Aquí tienes {junk} y este {real json}".
+    Este iterador encuentra todos los bloques balanceados y permite
+    probarlos uno a uno hasta dar con uno parseable.
+    """
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                yield text[start : i + 1]
+                start = -1
+            elif depth < 0:
+                depth = 0  # corregir si hay basura
+
+
 def _parse_llm_candidates(raw: str) -> list[dict]:
-    """Extract the candidates array from an LLM JSON response, tolerantly."""
-    # Algunos backends devuelven con markdown fences o prosa antes/después.
-    m = re.search(r"\{[\s\S]*\}", raw)
-    if not m:
-        raise ValueError(f"no JSON object in LLM output (first 200 chars): {raw[:200]}")
-    obj_text = m.group(0)
-    try:
-        data = json.loads(obj_text)
-    except json.JSONDecodeError as exc:
-        # Intentar limpiar trailing commas (Gemma a veces los emite).
-        cleaned = re.sub(r",(\s*[}\]])", r"\1", obj_text)
-        data = json.loads(cleaned)  # may raise again, then bubble up
-    cands = data.get("candidates") or data.get("clips") or []
-    if not isinstance(cands, list):
-        raise ValueError(f"'candidates' is not a list: {type(cands).__name__}")
-    return cands
+    """Extract the candidates array from an LLM JSON response, tolerantly.
+
+    v0.9.1 — parser balanced-braces. Antes el `re.search(r'\\{[\\s\\S]*\\}')`
+    podía matchear desde la primera `{` de prosa hasta la última `}`,
+    corrompiendo el JSON. Ahora intentamos cada bloque balanceado y
+    devolvemos el PRIMERO que parsea y contiene `candidates`/`clips`.
+    """
+    last_exc: Exception | None = None
+    for obj_text in _iter_balanced_braces(raw):
+        try:
+            data = json.loads(obj_text)
+        except json.JSONDecodeError as exc:
+            # Trailing commas (Gemma a veces los emite).
+            cleaned = re.sub(r",(\s*[}\]])", r"\1", obj_text)
+            try:
+                data = json.loads(cleaned)
+            except json.JSONDecodeError as exc2:
+                last_exc = exc2
+                continue
+        if not isinstance(data, dict):
+            continue
+        cands = data.get("candidates") or data.get("clips")
+        if isinstance(cands, list):
+            return cands
+    # Ningún bloque parseó. Reportar con preview legible.
+    raise ValueError(
+        f"no parseable JSON candidates object in LLM output "
+        f"(first 200 chars): {raw[:200]} | last_err: {last_exc}"
+    )
 
 
 def _validate_and_clamp_candidate(
@@ -331,9 +383,6 @@ async def clipmine_extract(req: ClipMineRequest) -> ClipMineResponse:
       4. PySceneDetect snap a scene cuts (reusa shorts_auto._detect_scene_cuts).
       5. Validate + clamp + remove overlaps + sort by timestamp.
     """
-    from ..models import whisper_model
-    from .shorts_auto import _detect_scene_cuts, _snap_to_scene_cuts
-
     src = Path(req.video_path)
     if not src.is_file():
         raise HTTPException(404, f"video not found: {req.video_path}")
@@ -350,6 +399,32 @@ async def clipmine_extract(req: ClipMineRequest) -> ClipMineResponse:
     # 1. Audio para Whisper.
     audio_path = _extract_audio_for_whisper(req.video_path, out_dir)
     total_duration = _probe_total_duration(req.video_path)
+
+    # v0.9.1 fix A4 — todo el resto del flow va envuelto en try/finally
+    # para que el WAV temporal (≈230 MB para 2 h) se borre incluso si el
+    # LLM, el parser JSON o el snap fallan. Antes solo el camino feliz
+    # limpiaba, y los errores acumulaban ficheros en `<data>/out/clipmine/`.
+    try:
+        return await _do_clipmine_pipeline(
+            req, audio_path, total_duration,
+        )
+    finally:
+        try:
+            audio_path.unlink()
+        except OSError:
+            pass
+
+
+async def _do_clipmine_pipeline(
+    req: ClipMineRequest,
+    audio_path: Path,
+    total_duration: float,
+) -> ClipMineResponse:
+    """Pipeline core de Clip Miner, extraído del endpoint para que el
+    `finally` del cleanup del audio temporal aplique a TODOS los paths
+    de error (whisper, llm, parse, snap, validate). v0.9.1 fix A4."""
+    from ..models import whisper_model
+    from .shorts_auto import _detect_scene_cuts, _snap_to_scene_cuts
 
     # 2. Transcripción (firma real: transcribe_words(path, language, *, vad)
     #    → (segments_list, info)). vad=True para vídeo uploaded (skip
@@ -400,8 +475,22 @@ async def clipmine_extract(req: ClipMineRequest) -> ClipMineResponse:
         duration=total_duration,
     )
 
+    # v0.9.1 fix A1 — liberar Whisper de la VRAM ANTES de invocar al LLM.
+    # En GPUs de 8 GB no caben Whisper (6 GB en turbo) + Gemma 4B (3-4 GB)
+    # simultáneamente. Misma pauta que `shorts_auto.py` aplica antes de
+    # llamar al LLM. best-effort; si la unload falla, se sigue (el LLM
+    # backend tiene su propio health probe que detectará el OOM).
+    try:
+        if await asyncio.to_thread(whisper_model.unload):
+            log_event("info", "clipmine_whisper_unloaded")
+    except Exception as exc:
+        log_event("warning", "clipmine_whisper_unload_fail", err=str(exc)[:200])
+
     # 3. LLM candidate detection.
-    transcript_text = _build_transcript_text(words)
+    # v0.9.1 fix M3 — context budget consciente del idioma (CJK pesa más).
+    transcript_text = _build_transcript_text(
+        words, max_chars=_max_chars_for_lang(detected_lang),
+    )
     prompt = _VIRALITY_PROMPT_TEMPLATE.format(
         transcript_text=transcript_text,
         n_candidates=req.n_candidates,
@@ -458,42 +547,47 @@ async def clipmine_extract(req: ClipMineRequest) -> ClipMineResponse:
     scene_cuts = await asyncio.to_thread(_detect_scene_cuts, req.video_path)
     log_event("info", "clipmine_scenes", scene_cuts=len(scene_cuts))
 
+    # v0.9.1 fix M2 — snap solo si la nueva duración SIGUE dentro del
+    # rango duro [min, max] pedido por el cliente. Antes el snap podía
+    # acortar el clip por debajo del mínimo (start +1.4 s, end inalterado
+    # → duración -1.4 s), y el rescate de "min*0.8 ≤ dur ≤ max*1.2" era
+    # demasiado laxo: devolvía clips fuera de spec a la UI. Ahora si el
+    # snap rompe el rango duro, se REVERTI al pre-snap.
     for v in validated:
-        if scene_cuts:
-            # Firma real: _snap_to_scene_cuts(cuts, t_start, t_end, tolerance).
-            # Tolerancia 1.5 s antes/después: si hay scene cut cerca, ajustar
-            # al cut limpio; si no, dejar timestamps LLM.
-            snapped_start, snapped_end = _snap_to_scene_cuts(
-                scene_cuts, v["start"], v["end"], tolerance=1.5,
-            )
-            if (snapped_start, snapped_end) != (v["start"], v["end"]):
-                v["start"] = round(snapped_start, 3)
-                v["end"] = round(snapped_end, 3)
-                v["duration"] = round(snapped_end - snapped_start, 3)
-                v["snapped_to_scene_cut"] = True
-            else:
-                v["snapped_to_scene_cut"] = False
-        else:
+        if not scene_cuts:
             v["snapped_to_scene_cut"] = False
+            continue
+        snapped_start, snapped_end = _snap_to_scene_cuts(
+            scene_cuts, v["start"], v["end"], tolerance=1.5,
+        )
+        if (snapped_start, snapped_end) == (v["start"], v["end"]):
+            v["snapped_to_scene_cut"] = False
+            continue
+        new_dur = snapped_end - snapped_start
+        # Solo aceptar el snap si conserva el rango duro pedido. Margen
+        # 5% para tolerar el redondeo de PySceneDetect.
+        if req.min_duration * 0.95 <= new_dur <= req.max_duration * 1.05:
+            v["start"] = round(snapped_start, 3)
+            v["end"] = round(snapped_end, 3)
+            v["duration"] = round(new_dur, 3)
+            v["snapped_to_scene_cut"] = True
+        else:
+            # Snap rompería el rango: descartar el snap, mantener pre-snap.
+            v["snapped_to_scene_cut"] = False
+            log_event(
+                "info", "clipmine_snap_rejected",
+                reason="duration_out_of_range",
+                new_dur=round(new_dur, 3),
+                min_d=req.min_duration, max_d=req.max_duration,
+            )
 
-    # Re-validate duraciones tras snap (puede sacarlas de min/max).
-    final: list[dict] = []
-    for v in validated:
-        if req.min_duration * 0.8 <= v["duration"] <= req.max_duration * 1.2:
-            final.append(v)
-    if not final:
-        # Si todo el snap rompió duraciones, devolver pre-snap.
-        final = validated
-        log_event("warning", "clipmine_snap_invalidated_all")
+    # Tras aceptar/rechazar snap, todos los candidates siguen en su rango.
+    # No hace falta un re-validate suave: `validated` ya está limpio.
+    final = list(validated)
 
     # 6. Remove overlaps + sort.
     final = _remove_overlaps(final)[: req.n_candidates]
-
-    # Cleanup audio temporal.
-    try:
-        audio_path.unlink()
-    except OSError:
-        pass
+    # (cleanup del audio temporal: el `finally` del endpoint padre lo hace.)
 
     log_event(
         "info", "clipmine_done",
