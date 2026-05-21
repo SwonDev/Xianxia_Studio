@@ -306,6 +306,16 @@ function GeneratorWizard() {
   // del pipeline (modelo no instalado, ComfyUI sin VRAM, LLM down) se
   // omite con un log warn y el vídeo sale sin SFX — NUNCA bloquea.
   const [enableSfx, setEnableSfx] = useState(false);
+  // v0.12.5 — autodetect SFX models: poll cada 10 s mientras estén
+  // ausentes (durante install) y deja de hacer polling cuando ya están.
+  // Mismo patrón que ltxModelsInstalled.
+  const { data: sfxInstalled, refetch: refetchSfxInstalled } = useQuery({
+    queryKey: ['sfx-models-installed'],
+    queryFn: tauri.sfxModelsInstalled,
+    refetchInterval: (q) => (q.state.data === true ? false : 10_000),
+  });
+  const [installingSfx, setInstallingSfx] = useState(false);
+  const [sfxInstallProgress, setSfxInstallProgress] = useState<string>('');
 
   useEffect(() => {
     if (!voices || voices.length === 0) return;
@@ -338,6 +348,34 @@ function GeneratorWizard() {
       toast.error('No se pudieron instalar los modelos LTX-2.3', String(e));
     } finally {
       setInstallingLtx(false);
+    }
+  };
+
+  // v0.12.5 — autoinstall SFX. Descarga primero el encoder T5Gemma
+  // (~1.2 GB) y luego el checkpoint small-sfx (~1.8 GB). El runner
+  // hace el dependency chain por sí mismo si install_optional_component
+  // respeta `depends_on`; lo encadenamos explícitamente por robustez.
+  const handleInstallSfx = async () => {
+    if (installingSfx) return;
+    setInstallingSfx(true);
+    setSfxInstallProgress('Descargando T5Gemma encoder (≈1.2 GB)…');
+    try {
+      await tauri.installOptionalComponent('stable-audio-3-t5gemma');
+      setSfxInstallProgress('Descargando Stable Audio 3 small-sfx (≈1.8 GB)…');
+      await tauri.installOptionalComponent('stable-audio-3-sfx');
+      setSfxInstallProgress('Verificando modelos…');
+      const ok = await refetchSfxInstalled();
+      setSfxInstallProgress('');
+      if (ok.data) {
+        // Auto-activamos el toggle tras instalar: feature funciona out-of-the-box.
+        setEnableSfx(true);
+        toast.success('SFX cinematográfico listo', 'Capa de foley activada automáticamente.');
+      }
+    } catch (e) {
+      setSfxInstallProgress('');
+      toast.error('No se pudieron instalar los modelos SFX', String(e));
+    } finally {
+      setInstallingSfx(false);
     }
   };
 
@@ -764,17 +802,56 @@ function GeneratorWizard() {
             </Field>
           )}
 
-          {/* v0.12.4 — SFX/Foley layer (Stable Audio 3 small-sfx).
-              Toggle siempre visible; backend hace best-effort y omite
-              silenciosamente si los pesos no están instalados o
-              ComfyUI no tiene VRAM. NUNCA bloquea el render. */}
+          {/* v0.12.5 — SFX/Foley con autodetect + autoinstall + autoconfig:
+                - Si los modelos NO están en disco → muestra botón
+                  "Instalar SFX" con progreso textual.
+                - Si están → muestra el switch on/off.
+                - Tras install exitoso → auto-activa el toggle.
+              Mismo patrón que LTX (handleInstallLtx). */}
           <Field label="Capa SFX cinematográfica (Stable Audio 3, opt-in)">
-            <Toggle
-              label="Generar capa de SFX/foley sincronizada con el guion"
-              description="Añade impacto, ambient, foley, whoosh y momentos místicos en los timestamps que el LLM detecta como pico narrativo. Best-effort: si los pesos no están instalados o ComfyUI no tiene VRAM, el vídeo sale sin SFX (skip silencioso, NO bloquea). Requiere instalar el componente opcional «Stable Audio 3 SFX» desde el Instalador."
-              checked={enableSfx}
-              onChange={setEnableSfx}
-            />
+            {sfxInstalled === false || sfxInstalled === undefined ? (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 'var(--space-3)',
+                  padding: 'var(--space-3)',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'rgba(255, 255, 255, 0.025)',
+                  border: '1px solid rgba(255, 255, 255, 0.05)',
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--xs-text-1)' }}>
+                    Stable Audio 3 SFX no instalado (~3 GB)
+                  </div>
+                  <div className="caption" style={{ fontSize: 10.5, marginTop: 2 }}>
+                    {installingSfx
+                      ? sfxInstallProgress || 'Instalando…'
+                      : 'Capa de impacto + ambient + foley + whoosh sincronizada con el guion. Best-effort: si falla durante el render, el vídeo sale sin SFX (no bloquea).'}
+                  </div>
+                </div>
+                <button
+                  className="btn-primary"
+                  disabled={installingSfx}
+                  data-testid="sfx-install-btn"
+                  onClick={handleInstallSfx}
+                  style={{ flexShrink: 0 }}
+                >
+                  {installingSfx
+                    ? <CircleNotch size={13} className="spin" />
+                    : <DownloadSimple size={13} />}
+                  {installingSfx ? 'Instalando…' : 'Instalar'}
+                </button>
+              </div>
+            ) : (
+              <Toggle
+                label="Generar capa SFX/foley sincronizada con el guion"
+                description="Añade impacto, ambient, foley, whoosh y momentos místicos en los timestamps que el LLM detecta como pico narrativo. Best-effort: si ComfyUI no tiene VRAM disponible, el vídeo sale sin SFX (skip silencioso, NO bloquea)."
+                checked={enableSfx}
+                onChange={setEnableSfx}
+              />
+            )}
           </Field>
 
           <details data-testid="advanced-options" style={{ marginTop: 8 }}>

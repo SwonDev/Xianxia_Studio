@@ -2005,6 +2005,87 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.12.5) SFX autodetect + autoinstall + autoconfig ──────────────
+{
+  const pipeRsAuto = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/pipeline/mod.rs'),
+    'utf8',
+  );
+  const cmdsRsAuto = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/commands.rs'),
+    'utf8',
+  );
+  const libRsAuto = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/lib.rs'),
+    'utf8',
+  );
+  const tauriTsAuto = readFileSync(
+    join(ROOT, 'apps/desktop/src/lib/tauri.ts'),
+    'utf8',
+  );
+  const genTsxAuto = readFileSync(
+    join(ROOT, 'apps/desktop/src/routes/generator.tsx'),
+    'utf8',
+  );
+
+  check(
+    'pipeline/mod.rs: sfx_models_installed() verifica los 2 safetensors en disco',
+    pipeRsAuto.includes('pub(crate) fn sfx_models_installed()')
+      && pipeRsAuto.includes('stable_audio_3_small_sfx.safetensors')
+      && pipeRsAuto.includes('t5gemma_b_b_ul2.safetensors'),
+    'el autodetect debe leer el FS real, verificando los 2 archivos en las rutas que el workflow espera',
+  );
+
+  check(
+    'commands.rs: Tauri command sfx_models_installed',
+    cmdsRsAuto.includes('pub fn sfx_models_installed()')
+      && cmdsRsAuto.includes('crate::pipeline::sfx_models_installed()'),
+    'el comando debe ser thin proxy del helper de pipeline',
+  );
+
+  check(
+    'lib.rs: registra sfx_models_installed en invoke_handler',
+    libRsAuto.includes('commands::sfx_models_installed'),
+    'sin esta línea el invoke desde TS falla con "command not found"',
+  );
+
+  check(
+    'lib/tauri.ts: helper sfxModelsInstalled',
+    tauriTsAuto.includes('sfxModelsInstalled:'),
+    'helper TS necesario para que React invoque el autodetect',
+  );
+
+  check(
+    'generator.tsx: useQuery sfx-models-installed con poll condicional',
+    /queryKey:\s*\[['"]sfx-models-installed['"]\]/.test(genTsxAuto)
+      && genTsxAuto.includes('tauri.sfxModelsInstalled')
+      && /q\.state\.data\s*===\s*true\s*\?\s*false\s*:\s*\d+/.test(genTsxAuto),
+    'la query debe parar de hacer polling cuando data===true (modelos instalados)',
+  );
+
+  check(
+    'generator.tsx: handleInstallSfx encadena T5Gemma → small-sfx',
+    genTsxAuto.includes('handleInstallSfx')
+      && genTsxAuto.includes("installOptionalComponent('stable-audio-3-t5gemma')")
+      && genTsxAuto.includes("installOptionalComponent('stable-audio-3-sfx')"),
+    'el encoder T5Gemma debe descargarse ANTES del checkpoint small-sfx',
+  );
+
+  check(
+    'generator.tsx: autoconfig — tras install exitoso, setEnableSfx(true)',
+    /refetchSfxInstalled[\s\S]{0,400}setEnableSfx\(true\)/.test(genTsxAuto),
+    'todo autoconfigurable: tras instalar, el toggle se activa solo',
+  );
+
+  check(
+    'generator.tsx: UI condicional botón Instalar SFX vs Toggle',
+    genTsxAuto.includes('sfxInstalled === false')
+      && genTsxAuto.includes('sfx-install-btn')
+      && genTsxAuto.includes('handleInstallSfx'),
+    'si sfxInstalled=false la UI muestra el botón Instalar (data-testid sfx-install-btn); si true muestra el Toggle',
+  );
+}
+
 // ── (v0.12.4) Integración pipeline core SFX (toggle + Phase 14) ───────
 {
   const genTsx = readFileSync(
