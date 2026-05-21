@@ -21,6 +21,7 @@ import {
   DownloadSimple,
   GearSix,
   SidebarSimple,
+  FilmStrip,
   type Icon as PhosphorIcon,
 } from '@phosphor-icons/react';
 import { tauri } from '@/lib/tauri';
@@ -47,6 +48,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/', label: 'Resumen', icon: House, tint: '#e8c96d' },
       { to: '/generator', label: 'Generador', icon: Sparkle, tint: '#d4b85a' },
       { to: '/shorts', label: 'Smart Shorts', icon: Scissors, tint: '#c9a84c' },
+      { to: '/clip-mine', label: 'Clip Miner', icon: FilmStrip, tint: '#b8964a' },
     ],
   },
   {
