@@ -6,6 +6,83 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-05-21
+
+### Wire Tauri commands + tipos TS para Originality (v0.10.0) + SFX (v0.11.0)
+
+Los backends Python v0.10.0 (Originality Engine) y v0.11.0 (SFX/Foley)
+existían pero eran **inalcanzables desde el frontend**. Esta versión
+cierra esa deuda con thin Tauri command proxies + tipos TS + helpers.
+
+#### Commands nuevos (5 totales)
+
+**`commands/originality.rs`** — 3 commands:
+- `originality_check_structural` — POST scripts previos al sidecar.
+- `originality_hook_alternatives` — clamp local n=2-5 + POST.
+- `originality_build_manifest` — **validación local**: rechaza
+  `thesis_user < 20 chars` y `hook_chosen < 10 chars` ANTES del POST
+  (feedback inmediato, no espera al sidecar).
+
+**`commands/sfx.rs`** — 2 commands con gates duros:
+- `sfx_generate` — llama `pipeline::ensure_comfyui_vram(3.0)` antes
+  del POST (sin esto, Stable Audio 3 OOM si Z-Image cargado).
+- `sfx_plan_events` — llama `pipeline::wake_llm()` antes del POST
+  (sin esto, primer LLM tras TTL 90 min espera 30 s al respawn).
+
+#### Tipos TS espejo (Pydantic ↔ Rust ↔ TS)
+
+- Originality: `PreviousScript`, `StructuralWarning`,
+  `StructuralCheckResponse`, `HookAlternative`,
+  `HookAlternativesResponse`, `ManifestSource`, `OriginalityManifest`.
+- SFX: `SfxGenerateResponse`, `SfxEvent` (categorías cerradas
+  `'impact'|'ambient'|'foley'|'whoosh'|'natural'|'mystic'`),
+  `PlanSfxEventsResponse`.
+
+5 helpers: `tauri.originalityCheckStructural()`,
+`tauri.originalityHookAlternatives()`, `tauri.originalityBuildManifest()`,
+`tauri.sfxGenerate()`, `tauri.sfxPlanEvents()`.
+
+#### Tests Rust (10 nuevos, **15/15 verde** total)
+
+- originality (4): valid passes, thesis < 20 chars rechaza, hook < 10
+  rechaza, project_id vacío rechaza.
+- sfx (6): prompt vacío rechaza, duration fuera rango rechaza, steps
+  fuera rango rechaza, válido pasa, script vacío rechaza, duration ≤ 0
+  rechaza.
+
+#### Parity-check +9 invariantes (total **55**)
+
+1. `commands.rs` declara módulos.
+2-3. `lib.rs` registra los 5 commands.
+4. `sfx.rs` usa `ensure_comfyui_vram`.
+5. `sfx.rs` usa `wake_llm` en planner.
+6. `originality.rs` rechaza thesis < 20 chars LOCAL.
+7-8. `tauri.ts` exporta los 5 helpers.
+9. `tauri.ts` define los tipos espejo.
+
+#### Verificación
+
+- ✅ `cargo check` exit 0
+- ✅ `cargo test --lib commands::` 15/15 passing
+- ✅ `pnpm typecheck` exit 0
+- ✅ `parity-check` 55 invariants all satisfied
+
+#### Estado actual de features cruciales
+
+| Feature | Backend | Tauri | Tipos TS | UI propia | Pipeline |
+|---|---|---|---|---|---|
+| Clip Miner v0.9 | ✅ | ✅ | ✅ | ⏳ v0.12.1 | n/a |
+| Originality v0.10 | ✅ | ✅ | ✅ | ⏳ v0.12.2 | ⏳ v0.12.4 |
+| SFX v0.11 | ✅ | ✅ | ✅ | ⏳ v0.12.3 | ⏳ v0.12.4 |
+
+Los 3 backends son ahora invocables desde React vía
+`tauri.<helper>()`. UI componentes propios + integración pipeline
+queda para v0.12.1-v0.12.4.
+
+### Sin compilación
+
+Acumulado desde v0.7.5: v0.7.6 → v0.12.0 (19 versiones).
+
 ## [0.11.0] — 2026-05-21
 
 ### 🎵 Stable Audio 3 SFX — auto-foley engine (backend) — reemplaza MMAudio del roadmap

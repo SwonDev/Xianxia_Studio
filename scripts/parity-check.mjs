@@ -1912,6 +1912,99 @@ console.log('Parity check — dev ↔ prod invariants\n');
   );
 }
 
+// ── (v0.12.0) Wire Tauri commands Originality + SFX ────────────────────
+// Sin Tauri commands los backends Originality (v0.10.0) y SFX (v0.11.0)
+// son inalcanzables desde el frontend. Estos invariants garantizan que
+// el wire básico (modules, handler, helpers TS, gates duros) no regresa.
+{
+  const libRs = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/lib.rs'),
+    'utf8',
+  );
+  const cmdsRs = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/commands.rs'),
+    'utf8',
+  );
+  const origRs = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/commands/originality.rs'),
+    'utf8',
+  );
+  const sfxRs = readFileSync(
+    join(ROOT, 'apps/desktop/src-tauri/src/commands/sfx.rs'),
+    'utf8',
+  );
+  const tauriTs = readFileSync(
+    join(ROOT, 'apps/desktop/src/lib/tauri.ts'),
+    'utf8',
+  );
+
+  check(
+    'commands.rs: declara pub mod originality + pub mod sfx',
+    cmdsRs.includes('pub mod originality')
+      && cmdsRs.includes('pub mod sfx'),
+    'sin la declaración del módulo, los Tauri commands no compilan',
+  );
+
+  check(
+    'lib.rs: registra los 3 commands originality_* en invoke_handler',
+    libRs.includes('commands::originality::originality_check_structural')
+      && libRs.includes('commands::originality::originality_hook_alternatives')
+      && libRs.includes('commands::originality::originality_build_manifest'),
+    'los 3 endpoints del Originality Engine v0.10.0 deben ser invocables desde TS',
+  );
+
+  check(
+    'lib.rs: registra los 2 commands sfx_* en invoke_handler',
+    libRs.includes('commands::sfx::sfx_generate')
+      && libRs.includes('commands::sfx::sfx_plan_events'),
+    'los 2 endpoints SFX v0.11.0 deben ser invocables desde TS',
+  );
+
+  check(
+    'commands/sfx.rs: sfx_generate llama ensure_comfyui_vram antes del POST',
+    sfxRs.includes('pipeline::ensure_comfyui_vram')
+      && sfxRs.includes('SFX_MIN_VRAM_GB'),
+    'sin VRAM reclaim Stable Audio 3 OOM si ComfyUI tiene Z-Image cargado (regla GPU-only)',
+  );
+
+  check(
+    'commands/sfx.rs: sfx_plan_events llama wake_llm (planner usa LLM)',
+    sfxRs.includes('pipeline::wake_llm'),
+    'sin wake_llm la primera llamada tras TTL 90 min espera 30 s al respawn → spinner muerto',
+  );
+
+  check(
+    'commands/originality.rs: validate_manifest_input rechaza thesis < 20 chars LOCAL',
+    /chars\(\)\.count\(\)\s*<\s*20/.test(origRs)
+      && origRs.includes('validate_manifest_input'),
+    'la validación local da feedback inmediato sin esperar al sidecar; debe coincidir con el contrato Python (build_manifest req. 20 chars)',
+  );
+
+  check(
+    'lib/tauri.ts: helpers originalityCheckStructural + hookAlternatives + buildManifest',
+    tauriTs.includes('originalityCheckStructural:')
+      && tauriTs.includes('originalityHookAlternatives:')
+      && tauriTs.includes('originalityBuildManifest:'),
+    'los 3 helpers TS deben existir o la UI no puede invocar el backend',
+  );
+
+  check(
+    'lib/tauri.ts: helpers sfxGenerate + sfxPlanEvents',
+    tauriTs.includes('sfxGenerate:')
+      && tauriTs.includes('sfxPlanEvents:'),
+    'los 2 helpers TS para SFX deben existir',
+  );
+
+  check(
+    'lib/tauri.ts: tipos espejo Originality + SFX',
+    tauriTs.includes('StructuralCheckResponse')
+      && tauriTs.includes('HookAlternative')
+      && tauriTs.includes('OriginalityManifest')
+      && tauriTs.includes('SfxEvent'),
+    'los tipos TS deben reflejar los Pydantic models de routes/originality.py + routes/sfx.py',
+  );
+}
+
 // ── Result ─────────────────────────────────────────────────────────
 console.log();
 if (failures.length === 0) {
