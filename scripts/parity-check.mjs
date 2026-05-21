@@ -2179,9 +2179,70 @@ console.log('Parity check — dev ↔ prod invariants\n');
 
   check(
     'manifest.rs: ambos componentes SFX son required=false (opt-in)',
-    /"stable-audio-3-sfx"[\s\S]{0,800}required:\s*false/.test(manifest)
-      && /"stable-audio-3-t5gemma"[\s\S]{0,800}required:\s*false/.test(manifest),
+    /"stable-audio-3-sfx"[\s\S]{0,1500}required:\s*false/.test(manifest)
+      && /"stable-audio-3-t5gemma"[\s\S]{0,1500}required:\s*false/.test(manifest),
     'el feature SFX NO debe auto-instalarse: extras opt-in solo',
+  );
+
+  // v0.12.7 — el repo correcto descubierto vía E2E real es
+  // `Comfy-Org/stable-audio-3` (público, con SentencePiece embebido).
+  // NUNCA `stabilityai/stable-audio-3-small-sfx` (gated + raw HF
+  // transformer → ComfyUI rechaza con `invalid tokenizer`). El parity
+  // garantiza que no se vuelva a poner el repo equivocado en una
+  // refactorización futura.
+  check(
+    'manifest.rs: SFX usa repo Comfy-Org/stable-audio-3 (no stabilityai)',
+    /repo:\s*"Comfy-Org\/stable-audio-3"\.to_string\(\)/.test(manifest)
+      && !/repo:\s*"stabilityai\/stable-audio-3-small-sfx"/.test(manifest),
+    'Comfy-Org tiene las versiones convertidas para ComfyUI (E2E v0.12.7)',
+  );
+
+  const comfyClient = readFileSync(
+    join(ROOT, 'apps/sidecar-py/src/xianxia_ai/models/comfyui_client.py'),
+    'utf8',
+  );
+  check(
+    'comfyui_client.py: wait_for_audio cache-hit busca .flac y .wav',
+    /for ext in \("flac",\s*"wav"\)/.test(comfyClient)
+      || /xianxia_sfx\*\.flac/.test(comfyClient),
+    'ComfyUI v0.22.0 graba siempre .flac aunque SaveAudio.format=wav (E2E v0.12.7)',
+  );
+
+  const sfxWorkflow = readFileSync(
+    join(ROOT, 'apps/sidecar-py/src/xianxia_ai/workflows/stable_audio_3_sfx.json'),
+    'utf8',
+  );
+  check(
+    'workflows/stable_audio_3_sfx.json: incluye nodo ConditioningStableAudio',
+    /"class_type":\s*"ConditioningStableAudio"/.test(sfxWorkflow)
+      && /seconds_start/.test(sfxWorkflow)
+      && /seconds_total/.test(sfxWorkflow),
+    'KSampler exige metadata temporal vía ConditioningStableAudio (E2E v0.12.7)',
+  );
+}
+
+// ── (v0.12.8) Tauri updater signing key resolution ────────────────────
+// El wrapper de build debe preferir la clave de PRODUCCIÓN
+// (~/.tauri/xianxia-updater.key), que matchea con updater.pubkey en
+// tauri.conf.json. Sin esto el bundler emite 3 warnings y los .sig
+// generados NO validan en auto-update. La regresión costó 24 releases
+// silenciosos antes de detectarla.
+{
+  const wrapper = readFileSync(
+    join(ROOT, 'scripts/tauri-build-local.mjs'),
+    'utf8',
+  );
+  check(
+    'tauri-build-local.mjs: prioriza clave de producción ~/.tauri/xianxia-updater.key',
+    /PROD_KEY_PATH\s*=\s*join\(homedir\(\),\s*'\.tauri',\s*'xianxia-updater\.key'\)/.test(wrapper)
+      && /if\s*\(existsSync\(PROD_KEY_PATH\)\)/.test(wrapper),
+    'la clave local mismatchea con updater.pubkey y rompe auto-update (regresión 24 releases)',
+  );
+  check(
+    'tauri-build-local.mjs: carga password de la clave de producción si existe',
+    /PROD_KEY_PASSWORD_PATH/.test(wrapper)
+      && /readFileSync\(\s*PROD_KEY_PASSWORD_PATH/.test(wrapper),
+    'minisign exige password coincidente; sin esto el firmado falla incluso con la priv key correcta',
   );
 }
 

@@ -675,19 +675,33 @@ pub fn full_manifest() -> Vec<Component> {
         //
         // Dos sub-componentes con dependencia: el modelo small-sfx
         // requiere el encoder T5Gemma para CLIPLoader.
+        //
+        // v0.12.6 — REPO CORREGIDO tras E2E real (sesión 2026-05-21):
+        //   - stabilityai/stable-audio-3-small-sfx es gated Y trae el
+        //     formato HF transformer multi-archivo (model_proto externo)
+        //     que ComfyUI rechaza con `ValueError: invalid tokenizer`
+        //     en spiece_tokenizer.py.
+        //   - google/t5gemma-b-b-ul2 NO existe en HuggingFace.
+        //   - El repo correcto es Comfy-Org/stable-audio-3 (público, sin
+        //     gating) que aloja AMBOS archivos pre-convertidos con
+        //     embedded SentencePiece model_proto, listos para ComfyUI.
+        //
+        // Estructura del repo Comfy-Org/stable-audio-3:
+        //   checkpoints/stable_audio_3_small_sfx.safetensors  (2.27 GB)
+        //   text_encoders/t5gemma_b_b_ul2.safetensors         (1.19 GB)
         Component {
             id: "stable-audio-3-t5gemma".to_string(),
             label: "Stable Audio 3 — T5Gemma encoder (≈1.2 GB)".to_string(),
             category: Category::Model,
-            // T5Gemma-b-b-ul2 ≈ 600M params; safetensors FP16 ≈ 1.2 GB.
+            // T5Gemma-b-b-ul2 ≈ 600M params; safetensors FP16 ≈ 1.19 GB.
             size_bytes: 1_300_000_000,
             url: String::new(),
             url_macos: None,
             url_linux: None,
             sha256: None,
             kind: AssetKind::HuggingfaceFileTo {
-                repo: "google/t5gemma-b-b-ul2".to_string(),
-                filename: "t5gemma_b_b_ul2.safetensors".to_string(),
+                repo: "Comfy-Org/stable-audio-3".to_string(),
+                filename: "text_encoders/t5gemma_b_b_ul2.safetensors".to_string(),
                 target_path: "comfyui/models/text_encoders/t5gemma_b_b_ul2.safetensors".to_string(),
             },
             required: false,
@@ -697,16 +711,17 @@ pub fn full_manifest() -> Vec<Component> {
             id: "stable-audio-3-sfx".to_string(),
             label: "Stable Audio 3 SFX (opt-in, audio engine)".to_string(),
             category: Category::Model,
-            // small-sfx 459M params; safetensors F32 ≈ 1.8 GB. ComfyUI
-            // carga FP16 automáticamente (~0.9 GB en VRAM).
-            size_bytes: 1_900_000_000,
+            // small-sfx 459M params; safetensors ≈ 2.27 GB en repo
+            // Comfy-Org (FP16+VAE+CLIP refs embebidos). ComfyUI carga
+            // FP16 automáticamente (~0.9 GB en VRAM).
+            size_bytes: 2_400_000_000,
             url: String::new(),
             url_macos: None,
             url_linux: None,
             sha256: None,
             kind: AssetKind::HuggingfaceFileTo {
-                repo: "stabilityai/stable-audio-3-small-sfx".to_string(),
-                filename: "stable_audio_3_small_sfx.safetensors".to_string(),
+                repo: "Comfy-Org/stable-audio-3".to_string(),
+                filename: "checkpoints/stable_audio_3_small_sfx.safetensors".to_string(),
                 target_path: "comfyui/models/checkpoints/stable_audio_3_small_sfx.safetensors".to_string(),
             },
             required: false,

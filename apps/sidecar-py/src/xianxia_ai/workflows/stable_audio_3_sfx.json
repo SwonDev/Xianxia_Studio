@@ -1,5 +1,5 @@
 {
-  "_comment": "ComfyUI workflow for Stable Audio 3 small-sfx (0.6B, 459M diffusion + T5Gemma encoder). Day-0 support en ComfyUI v0.22.0 (PR #14010, 20-may-2026). Modelo especializado en SFX/foley — output 44.1 kHz estéreo, hasta 2 min por generación. Cabe en 8 GB VRAM holgado (~2 GB con T5Gemma FP16). Pesos: ComfyUI/models/checkpoints/stable_audio_3_small_sfx.safetensors + ComfyUI/models/text_encoders/t5gemma_b_b_ul2.safetensors. Licencia: Stability Community License (comercial OK hasta $1M revenue).",
+  "_comment": "ComfyUI workflow for Stable Audio 3 small-sfx (0.6B, 459M diffusion + T5Gemma encoder). Day-0 support en ComfyUI v0.22.0 (PR #14010, 20-may-2026). Modelo especializado en SFX/foley — output 44.1 kHz estéreo, hasta 2 min por generación. Cabe en 8 GB VRAM holgado (~2 GB con T5Gemma FP16). Pesos: ComfyUI/models/checkpoints/stable_audio_3_small_sfx.safetensors + ComfyUI/models/text_encoders/t5gemma_b_b_ul2.safetensors. Licencia: Stability Community License (comercial OK hasta $1M revenue). v0.12.7: añadido nodo ConditioningStableAudio (obligatorio en v0.22.0) que envuelve positive+negative y añade seconds_start/seconds_total; sin él el KSampler recibe conditioning sin metadata temporal y falla con `KeyError: seconds_start`. Verificado con E2E real (sesión 2026-05-21) — output xianxia_sfx_dragon_roar_00001_.flac generado correctamente sobre RTX 4060.",
   "_placeholders": "{{prompt}} {{duration_seconds}} {{seed}} {{steps}} {{cfg}}",
   "1": {
     "class_type": "CheckpointLoaderSimple",
@@ -32,6 +32,16 @@
       "clip": ["2", 0]
     }
   },
+  "9": {
+    "class_type": "ConditioningStableAudio",
+    "_meta": {"title": "Conditioning + metadata temporal (obligatorio en v0.22.0)"},
+    "inputs": {
+      "positive": ["3", 0],
+      "negative": ["4", 0],
+      "seconds_start": 0.0,
+      "seconds_total": "{{duration_seconds}}"
+    }
+  },
   "5": {
     "class_type": "EmptyLatentAudio",
     "_meta": {"title": "Latent audio canvas (duración configurable)"},
@@ -51,8 +61,8 @@
       "scheduler": "sgm_uniform",
       "denoise": 1.0,
       "model": ["1", 0],
-      "positive": ["3", 0],
-      "negative": ["4", 0],
+      "positive": ["9", 0],
+      "negative": ["9", 1],
       "latent_image": ["5", 0]
     }
   },
@@ -66,7 +76,7 @@
   },
   "8": {
     "class_type": "SaveAudio",
-    "_meta": {"title": "Output WAV PCM 16-bit (compatible ffmpeg mux)"},
+    "_meta": {"title": "Output FLAC 44.1 kHz (ComfyUI v0.22.0 fuerza .flac aunque format=wav)"},
     "inputs": {
       "audio": ["7", 0],
       "filename_prefix": "xianxia_sfx",
