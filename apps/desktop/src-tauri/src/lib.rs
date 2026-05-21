@@ -56,6 +56,15 @@ pub fn run() {
             commands::voice_clones::delete_voice_clone,
             // v0.9.0 — Clip Miner: long video → N viral shorts candidates.
             commands::clipmine::clip_mine_extract,
+            // v0.12.0 — Originality Engine (backend v0.10.0): anti-templating
+            // + EU AI Act compliance. 3 commands proxy a /originality/*.
+            commands::originality::originality_check_structural,
+            commands::originality::originality_hook_alternatives,
+            commands::originality::originality_build_manifest,
+            // v0.12.0 — SFX/Foley (backend v0.11.0): Stable Audio 3 small-sfx
+            // via ComfyUI Day-0. 2 commands proxy con wake_llm + VRAM reclaim.
+            commands::sfx::sfx_generate,
+            commands::sfx::sfx_plan_events,
             commands::library::library_list_videos,
             commands::library::library_delete_video,
             commands::library::library_open_video_folder,

@@ -300,6 +300,83 @@ export interface ClipMineResponse {
   scene_cuts_detected: number;
 }
 
+// ── Originality Engine (v0.10.0 backend / v0.12.0 wire) ─────────────
+export interface PreviousScript {
+  project_id: string;
+  title: string;
+  script_text: string;
+  chapters: string[];
+}
+
+export interface StructuralWarning {
+  code: string;
+  detail: string;
+  /** info | warning | blocking */
+  severity: 'info' | 'warning' | 'blocking';
+}
+
+export interface StructuralCheckResponse {
+  score: number;
+  most_similar_project_id: string | null;
+  warnings: StructuralWarning[];
+  /** approved | pending | rejected */
+  recommended_status: 'approved' | 'pending' | 'rejected';
+}
+
+export interface HookAlternative {
+  /** question | number | contradiction | promise | story */
+  kind: string;
+  text: string;
+  rationale: string;
+}
+
+export interface HookAlternativesResponse {
+  alternatives: HookAlternative[];
+}
+
+export interface ManifestSource {
+  url: string;
+  title: string;
+  extracted_quote: string;
+  /** Unix seconds; 0 → backend pone now */
+  retrieved_at: number;
+}
+
+export interface OriginalityManifest {
+  schema_version: string;
+  project_id: string;
+  topic: string;
+  thesis_user: string;
+  hook_chosen: string;
+  sources: Array<Record<string, unknown>>;
+  human_edits: string[];
+  generated_at: number;
+  ai_disclosure: string;
+}
+
+// ── SFX/Foley (v0.11.0 backend / v0.12.0 wire) ──────────────────────
+export interface SfxGenerateResponse {
+  audio_path: string;
+  duration_seconds: number;
+  prompt: string;
+  seed_used: number;
+  generated_in_seconds: number;
+}
+
+export interface SfxEvent {
+  timestamp_seconds: number;
+  duration_seconds: number;
+  prompt: string;
+  /** impact | ambient | foley | whoosh | natural | mystic */
+  category: 'impact' | 'ambient' | 'foley' | 'whoosh' | 'natural' | 'mystic';
+  volume_db: number;
+  rationale: string;
+}
+
+export interface PlanSfxEventsResponse {
+  events: SfxEvent[];
+}
+
 export interface VoiceAcquisitionResponse {
   clone_id: string;
   clone_path: string;
@@ -586,6 +663,86 @@ export const tauri = {
         min_duration: args.minDuration,
         max_duration: args.maxDuration,
         primary_language: args.primaryLanguage,
+      },
+    }),
+
+  // ── Originality Engine (v0.12.0 wire) ────────────────────────────
+  originalityCheckStructural: (args: {
+    projectId: string;
+    scriptText: string;
+    chapters?: string[];
+    previousScripts: PreviousScript[];
+  }) =>
+    invoke<StructuralCheckResponse>('originality_check_structural', {
+      req: {
+        project_id: args.projectId,
+        script_text: args.scriptText,
+        chapters: args.chapters ?? null,
+        previous_scripts: args.previousScripts,
+      },
+    }),
+  originalityHookAlternatives: (args: {
+    topic: string;
+    outline?: string;
+    primaryLanguage: string;
+    nAlternatives?: number;
+  }) =>
+    invoke<HookAlternativesResponse>('originality_hook_alternatives', {
+      req: {
+        topic: args.topic,
+        outline: args.outline ?? null,
+        primary_language: args.primaryLanguage,
+        n_alternatives: args.nAlternatives ?? 3,
+      },
+    }),
+  originalityBuildManifest: (args: {
+    projectId: string;
+    topic: string;
+    thesisUser: string;
+    hookChosen: string;
+    sources: ManifestSource[];
+    humanEdits: string[];
+  }) =>
+    invoke<OriginalityManifest>('originality_build_manifest', {
+      req: {
+        project_id: args.projectId,
+        topic: args.topic,
+        thesis_user: args.thesisUser,
+        hook_chosen: args.hookChosen,
+        sources: args.sources,
+        human_edits: args.humanEdits,
+      },
+    }),
+
+  // ── SFX/Foley (v0.12.0 wire) ──────────────────────────────────────
+  sfxGenerate: (args: {
+    prompt: string;
+    durationSeconds: number;
+    seed?: number;
+    steps?: number;
+    cfg?: number;
+  }) =>
+    invoke<SfxGenerateResponse>('sfx_generate', {
+      req: {
+        prompt: args.prompt,
+        duration_seconds: args.durationSeconds,
+        seed: args.seed ?? null,
+        steps: args.steps ?? null,
+        cfg: args.cfg ?? null,
+      },
+    }),
+  sfxPlanEvents: (args: {
+    scriptText: string;
+    totalDurationSeconds: number;
+    targetEventCount?: number;
+    styleHint?: string;
+  }) =>
+    invoke<PlanSfxEventsResponse>('sfx_plan_events', {
+      req: {
+        script_text: args.scriptText,
+        total_duration_seconds: args.totalDurationSeconds,
+        target_event_count: args.targetEventCount ?? null,
+        style_hint: args.styleHint ?? null,
       },
     }),
 

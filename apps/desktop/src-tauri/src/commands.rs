@@ -1,6 +1,8 @@
 pub mod clipmine;
 pub mod library;
 pub mod music;
+pub mod originality;
+pub mod sfx;
 pub mod voice_clones;
 
 use serde::{Deserialize, Serialize};
