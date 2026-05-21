@@ -6,6 +6,72 @@ solo bumps PATCH: `0.1.0` → `0.1.1` → `0.1.2`…).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-05-21
+
+### Contrato `narrative_epic byte-idéntico` formalizado en parity-check
+
+Auditoría detectó que la regla "narrative_epic byte-idéntico" era
+ambigua: la `scripts/parity-check.mjs` original protegía sólo 4 anclas
+v0.6.x, pero el CHANGELOG histórico afirmaba "byte-idéntico" cuando
+realmente desde v0.7.5 hubo cambios objetivos (sampler Z-Image, pool
+de variations, título SEO, thumbnail prompt, filtros RAG, retry LLM).
+TODOS son mejoras de calidad sin regresión, pero el contrato debía
+ser explícito.
+
+#### Lo que ahora protege parity-check explícitamente
+
+| Anchor | Archivo | Por qué es inmutable |
+|---|---|---|
+| #1 `STORY BEATS` literal | `presets.py` | Marcador del system prompt narrative_epic v0.6.x |
+| #2 `STORY ARC + ROUNDED CLOSING` | `presets.py` | Arco cerrado obligatorio narrative_epic |
+| #3 `IMAGE_STYLE_BIAS["cinematic"]` | `presets.py` | Ata narrative_epic al look "cine épico" v0.6.x |
+| #4 `get_preset()` fallback default | `presets.py` | preset_id desconocido → narrative_epic |
+| Floor variations cámara | `routes/script.py` | ≥ 20 entradas (baseline v0.7.9) |
+| Floor variations lighting | `routes/script.py` | ≥ 20 entradas (baseline v0.7.9) |
+
+#### Lo que NO protege (mejoras aditivas permitidas)
+
+- Sampler/scheduler del workflow Z-Image (mejoras de calidad libres)
+- Pool de `_CAMERA_VARIATIONS` / `_LIGHTING_VARIATIONS` (puede crecer)
+- Longitud/reglas del título SEO (puede evolucionar con YouTube)
+- Prompt del thumbnail viral (puede evolucionar con tendencias CTR)
+- Filtros `_FICTIONAL_LEAD_PATTERNS` (precisión es mejora)
+- Backoff/retry de LLM (robustez es mejora)
+
+**Regla práctica**: si el cambio mejora la calidad sin romper el shape
+de los outputs ni los contratos aguas abajo (`intro_offset_seconds=1.5`,
+voice tone resolution, preset_id forwarding ≥ 8 sitios,
+`x_vector_only_mode`), va en la categoría aditiva.
+
+#### Cambios
+
+- `scripts/parity-check.mjs`: +6 invariantes nuevos protegiendo las 4
+  anclas v0.6.x + floor de variations.
+- `scripts/parity-check.mjs`: header docstring reescrito con sección
+  "PROTEGIDO / NO PROTEGIDO".
+
+#### Verificación full v0.7.6 → v0.8.0 (13 versiones)
+
+Auditoría sistemática confirma:
+- ✅ `cargo check` exit 0
+- ✅ `pnpm typecheck` exit 0
+- ✅ `pnpm run build` sidecar-node exit 0
+- ✅ `py_compile` 42 ficheros, 0 errors
+- ✅ `parity-check` ahora 6 invariantes más, todos verde
+- ✅ GPU-only nunca CPU offload (solo fallback honesto en engagement.py)
+- ✅ `transparent: false` en tauri.conf.json
+- ✅ Sin partículas/canvas decorativo (`__root.tsx:33` explícito)
+- ✅ `x_vector_only_mode=True` siempre en tts.py:284,356
+- ✅ Sin claim "compilado" en CHANGELOG (12/13 versiones lo dicen)
+- ✅ `INTRO_SEC=1.5` sync render.ts ↔ pipeline.rs
+- ✅ Sin mocks UI
+- ✅ v0.8.0 captions aislado del render core (no wire todavía)
+
+### Sin compilación
+
+Acumulado desde v0.7.5 (último NSIS shippeado): v0.7.6 → v0.8.1
+(14 versiones).
+
 ## [0.8.0] — 2026-05-20
 
 ### Smart Captions: catálogo de 15 estilos importado de HyperFrames (Apache 2.0)
